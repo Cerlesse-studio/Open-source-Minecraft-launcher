@@ -499,26 +499,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cobble"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "futures-util",
- "md-5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha1",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tokio",
- "zip",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2472,6 +2452,26 @@ dependencies = [
  "dunce",
  "is-wsl",
  "libc",
+]
+
+[[package]]
+name = "open-source-minecraft-launcher"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "md-5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tokio",
+ "zip",
 ]
 
 [[package]]

@@ -133,7 +133,6 @@ export function VersionSelectView({
     <div className="space-y-5">
       <PageHeader
         title="版本选择"
-        description="选择已下载到本地的游戏版本，切换当前实例或直接启动游戏。"
         actions={
           <div className="flex items-center gap-2">
             <div className="relative">

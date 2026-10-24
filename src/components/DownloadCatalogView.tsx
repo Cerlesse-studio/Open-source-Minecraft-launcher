@@ -339,7 +339,6 @@ export function DownloadCatalogView({
         <>
           <PageHeader
             title="版本下载"
-            description="从 Mojang 官方镜像库获取正式版、快照与历史版本，点击任意版本即可进入模组加载器与工具配置页面。"
             actions={
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">

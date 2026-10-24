@@ -270,7 +270,6 @@ export function PlayView({
       {!embedded ? (
         <PageHeader
           title="版本设置"
-          description="查看当前版本状态，准备进入世界。"
           actions={
             <div className="flex h-7 items-center gap-2 rounded-full border border-border/70 bg-card/60 px-3 text-[11px] text-muted-foreground">
               <StatusDot tone={headerTone} animated={isRunning} />

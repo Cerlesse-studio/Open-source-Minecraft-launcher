@@ -6,7 +6,7 @@
 // `seconds = 0` installs only. Otherwise the game is started, watched for
 // startup markers, and killed after the timeout.
 
-use cobble_lib::minecraft::{
+use open_source_minecraft_launcher_lib::minecraft::{
     InstallProgress, LaunchRequest, ProgressFn, install_version, prepare_launch,
 };
 use std::io::{BufRead, BufReader};

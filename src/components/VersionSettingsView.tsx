@@ -104,9 +104,6 @@ function LaunchSettingsPanel({
             </span>
             <div className="min-w-0">
               <CardTitle className="text-[13px] font-medium">内存分配</CardTitle>
-              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                只影响 {versionId}。未单独设置时使用启动器默认值。
-              </p>
             </div>
           </div>
         </CardHeader>
@@ -134,9 +131,6 @@ function LaunchSettingsPanel({
             <span>8 GB</span>
             <span>16 GB</span>
           </div>
-          <p className="text-[10px] leading-4 text-muted-foreground/70">
-            约 {(settings.memoryMb / 1024).toFixed(1)} GB。建议至少 2048 MB，安装大量模组时提高到 4096 MB 以上。
-          </p>
         </CardContent>
       </Card>
 
@@ -148,9 +142,6 @@ function LaunchSettingsPanel({
             </span>
             <div className="min-w-0">
               <CardTitle className="text-[13px] font-medium">游戏窗口</CardTitle>
-              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                固定启动时的窗口尺寸，未启用时由游戏决定。
-              </p>
             </div>
           </div>
         </CardHeader>
@@ -160,9 +151,6 @@ function LaunchSettingsPanel({
               <Label htmlFor="version-resolution" className="text-[12px] font-medium">
                 自定义窗口大小
               </Label>
-              <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
-                使用 -width 与 -height 覆盖游戏默认窗口。
-              </p>
             </div>
             <Switch
               id="version-resolution"
@@ -243,9 +231,6 @@ function LaunchSettingsPanel({
             </span>
             <div className="min-w-0">
               <CardTitle className="text-[13px] font-medium">版本目录</CardTitle>
-              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                这个版本的客户端与配置都保存在这里。
-              </p>
             </div>
           </div>
         </CardHeader>
@@ -310,7 +295,6 @@ export function VersionSettingsView({
     <div className="space-y-5">
       <PageHeader
         title="版本设置"
-        description="查看当前版本的运行状态，并单独调整它的启动参数。"
         actions={
           <div className="flex items-center gap-3">
             <span className="hidden items-center gap-1.5 text-[10.5px] text-muted-foreground sm:flex">

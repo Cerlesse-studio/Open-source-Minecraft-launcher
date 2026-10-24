@@ -55,10 +55,7 @@ export function TitleBar({ demo }: { demo: boolean }) {
       <div className="flex items-center gap-2.5" data-tauri-drag-region>
         <GrassBlock size={18} />
         <span className="font-pixel text-[11px] tracking-[0.16em] text-foreground">
-          COBBLE
-        </span>
-        <span className="hidden text-[11px] text-muted-foreground sm:inline">
-          卵石启动器
+          OPEN-SOURCE MINECRAFT LAUNCHER
         </span>
       </div>
       <div
@@ -329,12 +326,12 @@ export function Sidebar({
           "mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/70",
           collapsed ? "justify-center" : "px-1",
         )}
-        title={collapsed ? `Cobble ${launcherVersion} · ${runtimeStatus === "running" ? "运行中" : "空闲"}` : undefined}
+        title={collapsed ? `Open-source-Minecraft-launcher ${launcherVersion} · ${runtimeStatus === "running" ? "运行中" : "空闲"}` : undefined}
       >
         <GrassBlock size={12} />
         {!collapsed ? (
           <>
-            <span className="font-mono">Cobble {launcherVersion}</span>
+            <span className="font-mono">Open-source-Minecraft-launcher {launcherVersion}</span>
             <span className="ml-auto flex items-center gap-1.5">
               <StatusDot tone={runtimeStatus === "running" ? "live" : "muted"} />
               {runtimeStatus === "running" ? "运行中" : "空闲"}

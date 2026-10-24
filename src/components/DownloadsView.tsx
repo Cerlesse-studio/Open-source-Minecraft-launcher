@@ -353,7 +353,6 @@ export function DownloadsView({
     <div className="space-y-5">
       <PageHeader
         title="下载进度"
-        description="实时监控游戏核心、运行依赖库与资源文件的下载进度，支持多线程并发工作池与大文件 HTTP Range 分片加速。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button

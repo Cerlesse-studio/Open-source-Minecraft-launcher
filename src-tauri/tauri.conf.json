@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Cobble",
+  "productName": "Open-source-Minecraft-launcher",
   "version": "0.1.0",
-  "identifier": "com.cobble.launcher",
+  "identifier": "com.opensource.minecraft.launcher",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Cobble",
+        "title": "Open-source-Minecraft-launcher",
         "width": 1220,
         "height": 800,
         "minWidth": 1020,
