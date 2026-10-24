@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="210" viewBox="0 0 420 210" font-family="'Segoe UI','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#172a3f"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="ln" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4fe3d9"/>
+      <stop offset="1" stop-color="#4ab3ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.3" r="0.55">
+      <stop offset="0" stop-color="#4fe3d9" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#4fe3d9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="1" y="1" width="418" height="208" rx="24" fill="url(#bg)" stroke="#263b55"/>
+  <rect x="1" y="1" width="418" height="208" rx="24" fill="url(#glow)"/>
+  <g transform="translate(36 34)">
+    <rect x="0" y="0" width="72" height="72" rx="18" fill="#0b1220" fill-opacity="0.55" stroke="#2c4561"/>
+    <g fill="none" stroke="url(#ln)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 14 V42 M15 35 L22 42 L29 35"/>
+    <path d="M36 14 V42 M29 35 L36 42 L43 35"/>
+    <path d="M50 14 V42 M43 35 L50 42 L57 35"/>
+    <path d="M14 54 H58" stroke="#c6f86a"/>
+    </g>
+  </g>
+  <text x="128" y="62" font-size="22" font-weight="700" fill="#eaf6ff">多线程下载</text>
+  <text x="128" y="90" font-size="13.5" fill="#8fa8c2">最高 64 线程并发拉取</text>
+  <text x="128" y="112" font-size="13.5" fill="#8fa8c2">大文件 HTTP Range 分片 · SHA-1 校验</text>
+    <rect x="36" y="160" width="84" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="78" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">1–64 线程</text>
+    <rect x="128" y="160" width="68" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="162" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">断点分片</text>
+    <rect x="204" y="160" width="68" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="238" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">进度追踪</text>
+</svg>

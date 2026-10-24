@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="210" viewBox="0 0 420 210" font-family="'Segoe UI','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#172a3f"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="ln" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4fe3d9"/>
+      <stop offset="1" stop-color="#4ab3ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.3" r="0.55">
+      <stop offset="0" stop-color="#4fe3d9" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#4fe3d9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="1" y="1" width="418" height="208" rx="24" fill="url(#bg)" stroke="#263b55"/>
+  <rect x="1" y="1" width="418" height="208" rx="24" fill="url(#glow)"/>
+  <g transform="translate(36 34)">
+    <rect x="0" y="0" width="72" height="72" rx="18" fill="#0b1220" fill-opacity="0.55" stroke="#2c4561"/>
+    <g fill="none" stroke="url(#ln)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="36" cy="36" r="22" fill="#4fe3d9" fill-opacity="0.06"/>
+    <circle cx="36" cy="36" r="22"/>
+    <ellipse cx="36" cy="36" rx="10" ry="22"/>
+    <path d="M14 36 H58"/>
+    <circle cx="46" cy="27" r="3.5" fill="#c6f86a" stroke="none"/>
+    <circle cx="27" cy="45" r="3.5" fill="#c6f86a" stroke="none"/>
+    </g>
+  </g>
+  <text x="128" y="62" font-size="22" font-weight="700" fill="#eaf6ff">就近镜像</text>
+  <text x="128" y="90" font-size="13.5" fill="#8fa8c2">默认使用亚太 Anycast CDN</text>
+  <text x="128" y="112" font-size="13.5" fill="#8fa8c2">也可切换 BMCLAPI 或自定义源</text>
+    <rect x="36" y="160" width="44" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="58" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">香港</text>
+    <rect x="88" y="160" width="44" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="110" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">台北</text>
+    <rect x="140" y="160" width="44" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="162" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">东京</text>
+    <rect x="192" y="160" width="56" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
+    <text x="220" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">新加坡</text>
+</svg>

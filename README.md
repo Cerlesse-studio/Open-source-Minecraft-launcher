@@ -1,49 +1,137 @@
+<div align="center">
+
+<img src="docs/images/logo.png" alt="Open-source-Minecraft-launcher" width="128" />
+
 # Open-source-Minecraft-launcher
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+一个轻量、现代的开源 Minecraft Java 版启动器
 
-一个用 **Tauri 2 + React 19 + Rust** 构建的现代化开源 Minecraft 启动器，界面基于 **shadcn/ui + Tailwind CSS v4**。
-下载与启动是完整实现的核心链路：从官方与亚太高速 CDN 获取版本、客户端、依赖库、natives 和资源文件，并在 Java 就绪后直接启动进入游戏。
+基于 **Tauri 2 · Rust · React 19** 构建
 
-## 特性
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-- **游戏版本下载**：读取官方 `version_manifest_v2.json`，多线程下载客户端 jar、libraries、natives、asset index 与资源散列对象。
-- **多线程与 HTTP Range 加速**：支持 1–64 并发工作池，大文件启用 HTTP Range 分片并发拉取与 SHA-1 完整性校验。
-- **模组加载器集成**：支持 Fabric、Quilt、Forge、NeoForge 及 OptiFine 等主流模组加载器安装与配置。
-- **资源中心 (Marketplace)**：集成 Modrinth 模组 (Mods)、整合包 (Modpacks)、光影包 (Shaders) 与数据包 (Datapacks) 浏览与独立版本安装页面。
-- **非大陆就近镜像链路**：默认接入 Cloudflare Anycast 与 AWS CloudFront 亚太分布式边缘节点（覆盖香港 HKG、台北 TPE、东京 NRT、新加坡 SIN 等），低延迟直连，亦支持切换至国内 BMCLAPI 或自定义镜像网关。
-- **规则处理**：按操作系统 / 架构筛选依赖库，处理旧版 `natives` 分类器和 1.19+ 的独立 natives 依赖。
-- **Java 自动安装**：检测系统及托管目录中的 Java；主版本不匹配时从 Adoptium 自动下载 Temurin JRE（Windows / macOS / Linux）。
-- **多版本独立隔离**：每个版本使用独立的子目录，存档、模组、光影和配置文件相互隔离，避免冲突。
-- **单版本启动参数覆盖**：在版本独立设置中为各个版本单独覆盖内存与窗口尺寸。
-- **全功能控制台**：实时捕获游戏 stdout/stderr，高亮显示各类日志级别，支持一键停止进程。
+</div>
 
-## 开发与运行
+---
 
-需要 Node.js 20+、Rust stable，以及 [Tauri 2 的系统依赖](https://v2.tauri.app/start/prerequisites/)。
+## 截图
+
+<table>
+  <tr>
+    <td colspan="2"><img src="docs/images/home.png" alt="主页" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/download.png" alt="下载中心" /></td>
+    <td><img src="docs/images/settings.png" alt="设置" /></td>
+  </tr>
+</table>
+
+## 核心功能
+
+<table>
+  <tr>
+    <td><img src="docs/images/feature-launch.svg" alt="一键启动" /></td>
+    <td><img src="docs/images/feature-download.svg" alt="多线程下载" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/feature-loaders.svg" alt="模组加载器" /></td>
+    <td><img src="docs/images/feature-resources.svg" alt="资源中心" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/feature-mirror.svg" alt="就近镜像" /></td>
+    <td><img src="docs/images/feature-java.svg" alt="Java 自动管理" /></td>
+  </tr>
+</table>
+
+### ▶ 一键启动
+
+从官方版本清单获取正式版、快照与远古版本，自动补全客户端、依赖库、natives 与资源文件后直接进入游戏。每个版本使用独立目录，存档、模组与配置互不干扰；还可以为单个版本单独设置内存与窗口大小。游戏输出会实时显示在日志面板中。
+
+### ⇊ 多线程下载
+
+内置并发下载器，线程数可在 1–64 之间调节。大文件会通过 HTTP Range 拆分成多个分片并行下载，所有文件写入前都会做 SHA-1 校验。下载页面可以查看每个文件的进度与速度。
+
+### ◈ 模组加载器
+
+在下载列表中点击任意版本，即可进入安装页面，选择 **Forge / NeoForge / Fabric / Quilt** 及 **OptiFine**、Fabric API 等附加组件。启动器会自动检查互斥关系，并生成一个可直接启动的独立实例。
+
+### ▦ 资源中心
+
+接入 Modrinth，可按游戏版本、加载器和热度搜索 **模组、整合包、光影包、数据包**。进入独立的版本选择页面挑选文件后，会自动下载到目标实例的 `mods/`、`shaderpacks/`、`datapacks/` 等对应目录。
+
+### ◎ 就近镜像
+
+默认使用官方源及亚太 Anycast CDN（香港 / 台北 / 东京 / 新加坡节点），不经过中国大陆的镜像。也可以在 **设置 → 下载与网络** 中切换到 BMCLAPI 或填写自定义镜像地址。
+
+### ☕ Java 自动管理
+
+启动前会根据版本要求的 Java 主版本，在本机已安装的运行时中自动匹配；没有合适的版本时会自动下载 Eclipse Temurin JRE。也支持手动指定 `java` 可执行文件。
+
+## 快速开始
+
+### 环境要求
+
+- [Node.js](https://nodejs.org/) 20+
+- [Rust](https://www.rust-lang.org/tools/install) stable
+- [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
+
+### 开发运行
 
 ```bash
+git clone https://github.com/<your-name>/Open-source-Minecraft-launcher.git
+cd Open-source-Minecraft-launcher
 npm install
 npm run tauri dev
 ```
 
-构建安装包：
+### 打包
 
 ```bash
 npm run tauri build
 ```
 
-## 验证
+安装包输出在 `src-tauri/target/release/bundle/`。
 
-Rust 单元测试与前端编译：
+### 测试
 
 ```bash
-cd src-tauri && cargo test
 npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-## 开源协议
+## 目录结构
+
+```
+├── src/                     # 前端 (React + TypeScript)
+│   ├── components/          # 页面与业务组件
+│   │   └── ui/              # shadcn/ui 基础组件
+│   └── lib/                 # 类型、后端调用、设置存储
+└── src-tauri/               # 后端 (Rust)
+    └── src/
+        ├── minecraft.rs     # 版本清单、下载、启动参数
+        ├── loaders.rs       # 模组加载器安装
+        ├── content.rs       # Modrinth 资源搜索与下载
+        ├── java.rs          # Java 检测与自动安装
+        ├── net.rs           # 多线程下载器
+        └── lib.rs           # Tauri 命令与事件
+```
+
+游戏文件默认保存在 `~/.cobble/`，可在 **设置 → 游戏与启动** 中修改。
+
+## 尚未支持
+
+- Microsoft 正版登录与皮肤
+- 删除版本、取消下载任务
+- macOS / Linux 尚未充分实机测试
+
+欢迎提交 Issue 与 Pull Request。
+
+## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
 
-Minecraft 是 Mojang Studios 的商标。本项目与 Mojang 或 Microsoft 没有关联。
+> Minecraft 是 Mojang Studios 的商标。本项目与 Mojang 及 Microsoft 无任何关联。
