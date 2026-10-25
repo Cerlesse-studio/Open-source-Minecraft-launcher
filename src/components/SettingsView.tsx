@@ -13,6 +13,7 @@ import {
   Globe,
   Info,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   Upload,
   UserRound,
@@ -23,9 +24,13 @@ import { joinPath, shortPath } from "../lib/format";
 import type {
   JavaInstall,
   LauncherSettings,
+  LauncherVisibility,
   OfflineSkinModel,
   OfflineSkinType,
+  ProcessPriority,
   SystemInfo,
+  VersionIsolation,
+  WindowSizeMode,
 } from "../lib/types";
 import { Avatar, PageHeader } from "./ui";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +41,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -109,6 +120,53 @@ function Field({
         <p className="text-[10px] leading-4 text-destructive">{error}</p>
       ) : null}
     </div>
+  );
+}
+
+function SettingsSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: Array<{ value: T; label: string; description?: string }>;
+  onChange: (val: T) => void;
+  disabled?: boolean;
+}) {
+  const current = options.find((opt) => opt.value === value) ?? options[0];
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <Button
+          variant="outline"
+          className="h-9 w-full justify-between border-border/70 bg-background/40 px-3 text-left font-normal text-[12px] hover:bg-muted/30 hover:text-foreground"
+        >
+          <span className="truncate">{current?.label ?? value}</span>
+          <ChevronDown className="size-3.5 shrink-0 opacity-50" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[240px] p-1">
+        {options.map((opt) => (
+          <DropdownMenuItem
+            key={opt.value}
+            className={cn(
+              "flex cursor-pointer items-center justify-between rounded-sm px-2.5 py-1.5 text-[12px]",
+              value === opt.value && "bg-primary/10 font-medium text-primary",
+            )}
+            onClick={() => onChange(opt.value)}
+          >
+            <div className="flex flex-col">
+              <span>{opt.label}</span>
+              {opt.description ? (
+                <span className="text-[10px] text-muted-foreground">{opt.description}</span>
+              ) : null}
+            </div>
+            {value === opt.value ? <Check className="size-3.5 shrink-0 text-primary" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -315,27 +373,13 @@ export function SettingsView({
 
               <div className="flex items-center gap-3.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
                 <div className="size-10 overflow-hidden rounded-md border border-border/60 bg-background flex items-center justify-center shrink-0">
-                  {settings.offlineSkinType === "mojang" ? (
-                    <img
-                      src={`https://minotar.net/helm/${settings.mojangSkinName?.trim() || settings.playerName || "Steve"}/40.png`}
-                      alt="Avatar"
-                      className="size-full object-contain pixelated"
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                      }}
-                    />
-                  ) : (
-                    <Avatar
-                      name={
-                        settings.offlineSkinType === "steve"
-                          ? "Steve"
-                          : settings.offlineSkinType === "alex"
-                            ? "Alex"
-                            : settings.playerName
-                      }
-                      size={40}
-                    />
-                  )}
+                  <Avatar
+                    name={settings.playerName || "Steve"}
+                    skinType={settings.offlineSkinType}
+                    customSkinPath={settings.customSkinPath}
+                    mojangSkinName={settings.mojangSkinName}
+                    size={40}
+                  />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -591,6 +635,118 @@ export function SettingsView({
         {/* 游戏与启动 Tab */}
         <TabsContent value="launch" className="mt-0 space-y-4 focus-visible:outline-none">
           <div className="grid gap-4 lg:grid-cols-2">
+            <div className="lg:col-span-2">
+              <SettingsSection
+                title="启动选项"
+                icon={<SlidersHorizontal className="size-4" />}
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                  <Field label="默认版本隔离">
+                    <SettingsSelect<VersionIsolation>
+                      value={settings.versionIsolation}
+                      options={[
+                        { value: "all", label: "隔离所有版本", description: "每个版本使用独立的 saves、mods 和配置文件夹" },
+                        { value: "modded", label: "仅隔离模组包", description: "仅为包含模组加载器的版本提供独立文件夹" },
+                        { value: "none", label: "不隔离", description: "所有版本共用根目录下的 saves、mods 和配置" },
+                      ]}
+                      onChange={(val) => onChange({ versionIsolation: val })}
+                    />
+                  </Field>
+
+                  <Field label="游戏窗口标题">
+                    <Input
+                      placeholder="默认"
+                      value={settings.windowTitle}
+                      spellCheck={false}
+                      className="h-9 bg-background/40 text-[12px]"
+                      onChange={(e) => onChange({ windowTitle: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="自定义信息">
+                    <Input
+                      placeholder="PCL"
+                      value={settings.customInfo}
+                      spellCheck={false}
+                      className="h-9 bg-background/40 text-[12px]"
+                      onChange={(e) => onChange({ customInfo: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="启动器可见性">
+                    <SettingsSelect<LauncherVisibility>
+                      value={settings.launcherVisibility}
+                      options={[
+                        { value: "keep", label: "游戏启动后仍保持不变", description: "游戏运行期间启动器正常显示" },
+                        { value: "hide", label: "游戏启动后隐藏启动器", description: "游戏启动后最小化隐藏，游戏退出后自动恢复" },
+                        { value: "close", label: "游戏启动后关闭启动器", description: "游戏启动后直接退出启动器进程" },
+                      ]}
+                      onChange={(val) => onChange({ launcherVisibility: val })}
+                    />
+                  </Field>
+
+                  <Field label="进程优先级">
+                    <SettingsSelect<ProcessPriority>
+                      value={settings.processPriority}
+                      options={[
+                        { value: "normal", label: "中（平衡）" },
+                        { value: "realtime", label: "实时" },
+                        { value: "high", label: "高" },
+                        { value: "above_normal", label: "高于正常" },
+                        { value: "below_normal", label: "低于正常" },
+                        { value: "low", label: "低" },
+                      ]}
+                      onChange={(val) => onChange({ processPriority: val })}
+                    />
+                  </Field>
+
+                  <Field label="窗口大小">
+                    <SettingsSelect<WindowSizeMode>
+                      value={settings.windowSize}
+                      options={[
+                        { value: "default", label: "默认", description: "使用游戏配置或标准分辨率" },
+                        { value: "fullscreen", label: "全屏", description: "以全屏模式启动 Minecraft" },
+                        { value: "custom", label: "自定义", description: "自定义指定的窗口长宽像素" },
+                      ]}
+                      onChange={(val) => {
+                        onChange({
+                          windowSize: val,
+                          resolutionEnabled: val === "custom",
+                        });
+                      }}
+                    />
+                  </Field>
+                </div>
+
+                {settings.windowSize === "custom" && (
+                  <div className="pt-3 border-t border-border/40 space-y-2">
+                    <Label className="text-[11px] text-muted-foreground font-normal">
+                      自定义窗口分辨率 (px)
+                    </Label>
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 max-w-sm">
+                      <Input
+                        type="number"
+                        min={320}
+                        max={7680}
+                        value={settings.width}
+                        className="h-8 bg-background/40 font-mono text-[11px]"
+                        onChange={(e) => onChange({ width: Number(e.target.value) || 1280 })}
+                      />
+                      <span className="text-[11px] text-muted-foreground">×</span>
+                      <Input
+                        type="number"
+                        min={240}
+                        max={4320}
+                        value={settings.height}
+                        className="h-8 bg-background/40 font-mono text-[11px]"
+                        onChange={(e) => onChange({ height: Number(e.target.value) || 720 })}
+                      />
+                    </div>
+                  </div>
+                )}
+              </SettingsSection>
+            </div>
+
             <SettingsSection
               title="游戏文件根目录"
               icon={<FolderOpen className="size-4" />}

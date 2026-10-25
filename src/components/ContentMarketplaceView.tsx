@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "cn";
 import {
   Archive,
@@ -7,7 +7,10 @@ import {
   Boxes,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   FolderOpen,
   Heart,
@@ -114,6 +117,29 @@ function typeDestinationLabel(type: ContentProjectType, instanceId?: string): st
   }
 }
 
+function getPaginationRange(current: number, total: number, maxVisible = 7): Array<number | "..."> {
+  if (total <= maxVisible) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+
+  const side = 2;
+  const left = Math.max(2, current - side);
+  const right = Math.min(total - 1, current + side);
+
+  const range: Array<number | "..."> = [1];
+  if (left > 2) {
+    range.push("...");
+  }
+  for (let i = left; i <= right; i++) {
+    range.push(i);
+  }
+  if (right < total - 1) {
+    range.push("...");
+  }
+  range.push(total);
+  return range;
+}
+
 export function ContentMarketplaceView({
   projectType,
   installed,
@@ -136,6 +162,15 @@ export function ContentMarketplaceView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [totalHits, setTotalHits] = useState(0);
+
+  // Pagination states
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [jumpInput, setJumpInput] = useState("");
+  const prevFilterRef = useRef({ projectType, debouncedQuery, gameVersion, loader, sort });
+
+  const totalPages = Math.max(1, Math.ceil(totalHits / pageSize));
+  const currentPage = Math.min(page, totalPages);
 
   // Selected project to view on dedicated standalone page (no floating modal!)
   const [selectedProject, setSelectedProject] = useState<ContentHit | null>(null);
@@ -195,18 +230,20 @@ export function ContentMarketplaceView({
     }
   };
 
-  // Load content whenever query or filters change
-  const doSearch = async () => {
+  // Load content whenever query, filters, or page change
+  const doSearch = async (targetPage = page, targetPageSize = pageSize) => {
     setLoading(true);
     setError(null);
     try {
+      const offset = (targetPage - 1) * targetPageSize;
       const res = await searchContent({
         query: debouncedQuery,
         projectType,
         gameVersion: gameVersion !== "all" ? gameVersion : undefined,
         loader: loader !== "all" ? loader : undefined,
         sort,
-        limit: 28,
+        offset,
+        limit: targetPageSize,
       });
       setHits(res.hits);
       setTotalHits(res.totalHits);
@@ -218,8 +255,24 @@ export function ContentMarketplaceView({
   };
 
   useEffect(() => {
-    void doSearch();
-  }, [projectType, debouncedQuery, gameVersion, loader, sort]);
+    const pf = prevFilterRef.current;
+    const filterChanged =
+      pf.projectType !== projectType ||
+      pf.debouncedQuery !== debouncedQuery ||
+      pf.gameVersion !== gameVersion ||
+      pf.loader !== loader ||
+      pf.sort !== sort;
+
+    if (filterChanged) {
+      prevFilterRef.current = { projectType, debouncedQuery, gameVersion, loader, sort };
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
+
+    void doSearch(page, pageSize);
+  }, [projectType, debouncedQuery, gameVersion, loader, sort, page, pageSize]);
 
   // If a project is selected, render the dedicated Standalone Page (No Floating Popup!)
   if (selectedProject) {
@@ -496,6 +549,11 @@ export function ContentMarketplaceView({
       <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
         <span>
           找到约 <strong className="font-mono text-foreground">{totalHits}</strong> 个资源
+          {totalHits > 0 ? (
+            <span className="ml-1 text-muted-foreground/75">
+              (第 {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalHits)} 项)
+            </span>
+          ) : null}
         </span>
         {loading ? (
           <span className="flex items-center gap-1.5 text-primary">
@@ -646,6 +704,182 @@ export function ContentMarketplaceView({
           );
         })}
       </div>
+
+      {/* Bottom Pagination Controls */}
+      {totalPages > 1 && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-border/70 bg-card/65 p-3 shadow-xs">
+          {/* Left: Summary & Per-Page Selector */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+            <span>
+              第 <strong className="font-mono text-foreground">{currentPage}</strong> /{" "}
+              <span className="font-mono">{totalPages}</span> 页 · 共{" "}
+              <strong className="font-mono text-foreground">{totalHits}</strong> 项
+            </span>
+
+            <div className="flex items-center gap-1.5 border-l border-border/60 pl-3">
+              <span className="text-[11px]">每页</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-7 gap-1 rounded-md border-border/70 bg-background/60 px-2 font-mono text-[11px]"
+                  >
+                    <span>{pageSize} 条</span>
+                    <ChevronDown className="size-3 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-24">
+                  {[10, 20, 30, 50].map((sz) => (
+                    <DropdownMenuItem
+                      key={sz}
+                      onClick={() => {
+                        setPageSize(sz);
+                        setPage(1);
+                      }}
+                      className="font-mono text-xs cursor-pointer"
+                    >
+                      {sz} 条/页
+                      {pageSize === sz && <Check className="ml-auto size-3 text-primary" />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+
+          {/* Center: Page Navigation Buttons */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon-xs"
+              className="size-7 rounded-md"
+              disabled={currentPage <= 1 || loading}
+              onClick={() => {
+                setPage(1);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              title="第一页"
+            >
+              <ChevronsLeft className="size-3.5" />
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon-xs"
+              className="size-7 rounded-md"
+              disabled={currentPage <= 1 || loading}
+              onClick={() => {
+                setPage((p) => Math.max(1, p - 1));
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              title="上一页"
+            >
+              <ChevronLeft className="size-3.5" />
+            </Button>
+
+            <div className="flex items-center gap-1 px-1">
+              {getPaginationRange(currentPage, totalPages).map((p, idx) => {
+                if (p === "...") {
+                  return (
+                    <span
+                      key={`dots-${idx}`}
+                      className="px-1 text-xs text-muted-foreground select-none"
+                    >
+                      …
+                    </span>
+                  );
+                }
+                const isActive = p === currentPage;
+                return (
+                  <Button
+                    key={p}
+                    variant={isActive ? "default" : "outline"}
+                    size="xs"
+                    className={cn(
+                      "size-7 min-w-7 rounded-md p-0 font-mono text-xs",
+                      isActive
+                        ? "shadow-xs font-semibold"
+                        : "border-border/70 text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => {
+                      setPage(p);
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                  >
+                    {p}
+                  </Button>
+                );
+              })}
+            </div>
+
+            <Button
+              variant="outline"
+              size="icon-xs"
+              className="size-7 rounded-md"
+              disabled={currentPage >= totalPages || loading}
+              onClick={() => {
+                setPage((p) => Math.min(totalPages, p + 1));
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              title="下一页"
+            >
+              <ChevronRight className="size-3.5" />
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon-xs"
+              className="size-7 rounded-md"
+              disabled={currentPage >= totalPages || loading}
+              onClick={() => {
+                setPage(totalPages);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              title="最后一页"
+            >
+              <ChevronsRight className="size-3.5" />
+            </Button>
+          </div>
+
+          {/* Right: Quick Jump */}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="text-[11px]">前往</span>
+            <Input
+              value={jumpInput}
+              onChange={(e) => setJumpInput(e.target.value.replace(/[^0-9]/g, ""))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const target = parseInt(jumpInput, 10);
+                  if (target >= 1 && target <= totalPages) {
+                    setPage(target);
+                    setJumpInput("");
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }
+                }
+              }}
+              placeholder={String(currentPage)}
+              className="h-7 w-12 rounded-md border-border/70 bg-background/60 px-1 text-center font-mono text-[11px]"
+            />
+            <span className="text-[11px]">页</span>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-7 px-2 text-[11px]"
+              onClick={() => {
+                const target = parseInt(jumpInput, 10);
+                if (target >= 1 && target <= totalPages) {
+                  setPage(target);
+                  setJumpInput("");
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }
+              }}
+            >
+              跳转
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {!loading && hits.length === 0 && (
         <Card className="flex min-h-[220px] flex-col items-center justify-center p-8 text-center text-muted-foreground">

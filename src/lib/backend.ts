@@ -10,6 +10,7 @@ import {
   demoInstall,
   demoDeleteVersion,
   demoDeleteBedrockVersion,
+  demoCleanDownloadCache,
   demoInstallBedrockPack,
   demoInstallBedrockVersion,
   demoInstalledVersions,
@@ -21,9 +22,17 @@ import {
   demoSubscribe,
   demoSystemInfo,
   demoVersionLoaders,
+  demoGetBedrockLoaders,
+  demoInstallBedrockLoader,
+  demoGetBedrockMods,
+  demoToggleBedrockMod,
+  demoDeleteBedrockMod,
+  demoInstallBedrockModFile,
 } from "./demo";
 import type {
   BedrockContentItem,
+  BedrockLoadersCatalog,
+  BedrockModItem,
   BedrockStatus,
   BedrockVersionItem,
   ContentProjectType,
@@ -73,9 +82,45 @@ export async function getVersionManifest(
   return invoke<VersionManifest>("get_version_manifest", { root, force });
 }
 
+export async function getBetacraftManifest(
+  root: string,
+  force = false,
+): Promise<VersionManifest> {
+  if (!isDesktop) {
+    try {
+      const res = await fetch("https://files.betacraft.uk/launcher/v2/assets/version_manifest_v2.json");
+      if (res.ok) {
+        const raw = await res.json();
+        const versions = (raw.versions || []).map((v: any) => ({
+          id: v.id,
+          type: v.phase === "beta" ? "old_beta" : v.phase === "oddballs" ? "april_fools" : ["alpha", "classic", "indev", "infdev", "pre-classic"].includes(v.phase) ? "old_alpha" : v.type,
+          url: v.url,
+          time: v.time,
+          releaseTime: v.releaseTime,
+          phase: v.phase,
+          source: "betacraft",
+        }));
+        return {
+          latest: { release: "1.7.10", snapshot: "b1.8.1" },
+          versions,
+        };
+      }
+    } catch {
+      // fallback
+    }
+    return { latest: { release: "1.7.10", snapshot: "b1.8.1" }, versions: [] };
+  }
+  return invoke<VersionManifest>("get_betacraft_manifest", { root, force });
+}
+
 export async function getInstalledVersions(root: string): Promise<InstalledVersion[]> {
   if (!isDesktop) return demoInstalledVersions();
   return invoke<InstalledVersion[]>("get_installed_versions", { root });
+}
+
+export async function readSkinAsDataUrl(path: string): Promise<string> {
+  if (!isDesktop) return "";
+  return invoke<string>("read_skin_as_data_url", { path });
 }
 
 export async function getVersionLoaders(
@@ -138,6 +183,11 @@ export async function installVersion(
   });
 }
 
+export async function cancelInstall(): Promise<boolean> {
+  if (!isDesktop) return true;
+  return invoke<boolean>("cancel_install");
+}
+
 export async function deleteVersion(
   root: string,
   versionId: string,
@@ -173,6 +223,7 @@ export async function openFolderPath(path: string): Promise<void> {
   if (!isDesktop) return;
   await invoke("open_folder", { path });
 }
+export const openFolder = openFolderPath;
 
 export async function getBedrockStatus(root?: string): Promise<BedrockStatus> {
   if (!isDesktop) return demoGetBedrockStatus();
@@ -223,11 +274,74 @@ export async function installBedrockPack(
   return invoke<InstallPackResult>("install_bedrock_pack", { source, filename, root });
 }
 
+export async function cleanDownloadCache(root?: string): Promise<number> {
+  if (!isDesktop) return demoCleanDownloadCache();
+  return invoke<number>("clean_download_cache", { root });
+}
+
 export async function launchBedrock(
   versionId?: string,
   root?: string,
 ): Promise<string> {
   if (!isDesktop) return demoLaunchBedrock();
   return invoke<string>("launch_bedrock", { versionId, root });
+}
+
+export async function getBedrockLoaders(
+  mcVersion: string,
+): Promise<BedrockLoadersCatalog> {
+  if (!isDesktop) return demoGetBedrockLoaders(mcVersion);
+  return invoke<BedrockLoadersCatalog>("get_bedrock_loaders", { mcVersion });
+}
+
+export async function installBedrockLoader(
+  versionId: string,
+  loaderType: string,
+  loaderVersion: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return demoInstallBedrockLoader(versionId, loaderType, loaderVersion);
+  return invoke<string>("install_bedrock_loader", {
+    versionId,
+    loaderType,
+    loaderVersion,
+    root,
+  });
+}
+
+export async function getBedrockMods(
+  versionId: string,
+  root?: string,
+): Promise<BedrockModItem[]> {
+  if (!isDesktop) return demoGetBedrockMods(versionId);
+  return invoke<BedrockModItem[]>("get_bedrock_mods", { versionId, root });
+}
+
+export async function toggleBedrockMod(
+  versionId: string,
+  modId: string,
+  enabled: boolean,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return demoToggleBedrockMod(versionId, modId, enabled);
+  return invoke<void>("toggle_bedrock_mod", { versionId, modId, enabled, root });
+}
+
+export async function deleteBedrockMod(
+  versionId: string,
+  modId: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return demoDeleteBedrockMod(versionId, modId);
+  return invoke<void>("delete_bedrock_mod", { versionId, modId, root });
+}
+
+export async function installBedrockModFile(
+  versionId: string,
+  filePath: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return demoInstallBedrockModFile(versionId, filePath);
+  return invoke<string>("install_bedrock_mod_file", { versionId, filePath, root });
 }
 

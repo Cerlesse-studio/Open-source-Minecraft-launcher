@@ -49,7 +49,7 @@ pub async fn download_file(
             cb(done, total);
         }
     };
-    download_file_multithreaded(
+    download_file_with_mirrors(
         url,
         dest,
         expected_sha1,
@@ -59,6 +59,121 @@ pub async fn download_file(
         Some(&mut delta_adapter),
     )
     .await
+}
+
+/// Returns alternative mirror URLs for known official Minecraft/BMCLAPI/Fabric/Forge/XboxLive CDNs
+/// to transparently prevent 404 or connection failures.
+pub fn get_mirror_urls(url: &str) -> Vec<String> {
+    let mut mirrors = Vec::new();
+    let trimmed = url.trim();
+
+    if trimmed.contains("xboxlive") {
+        if let Ok(parsed) = reqwest::Url::parse(trimmed) {
+            let path_and_query = match parsed.query() {
+                Some(q) => format!("{}?{}", parsed.path(), q),
+                None => parsed.path().to_string(),
+            };
+            let xbox_hosts = [
+                "assets1.xboxlive.cn",
+                "assets2.xboxlive.cn",
+                "d1.xboxlive.cn",
+                "d2.xboxlive.cn",
+                "assets1.xboxlive.com",
+                "assets2.xboxlive.com",
+                "xvcf1.xboxlive.com",
+                "xvcf2.xboxlive.com",
+                "d1.xboxlive.com",
+                "d2.xboxlive.com",
+            ];
+            for host in xbox_hosts {
+                let candidate = format!("http://{host}{path_and_query}");
+                if candidate != trimmed && !mirrors.contains(&candidate) {
+                    mirrors.push(candidate);
+                }
+            }
+        }
+    } else if let Some(path) = trimmed.strip_prefix("https://libraries.minecraft.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+        mirrors.push(format!("https://maven.fabricmc.net/{path}"));
+        mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("http://libraries.minecraft.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://resources.download.minecraft.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("http://resources.download.minecraft.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://piston-meta.mojang.com/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://piston-data.mojang.com/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://launcher.mojang.com/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://launchermeta.mojang.com/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://maven.fabricmc.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://maven.minecraftforge.net/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://maven.neoforged.net/releases/") {
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/maven/") {
+        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
+        mirrors.push(format!("https://maven.fabricmc.net/{path}"));
+        mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/assets/") {
+        mirrors.push(format!("https://resources.download.minecraft.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/") {
+        mirrors.push(format!("https://piston-data.mojang.com/{path}"));
+        mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
+    } else if trimmed.contains("github.com/") && trimmed.contains("/releases/download/") {
+        mirrors.push(format!("https://ghproxy.net/{trimmed}"));
+        mirrors.push(format!("https://gh-proxy.com/{trimmed}"));
+        mirrors.push(trimmed.replace("https://github.com/", "https://github1.roundstudio.top/https://github.com/"));
+    }
+
+    mirrors
+}
+
+/// Download a file to `dest`, with automatic mirror fallback if the primary URL fails or returns 404.
+pub async fn download_file_with_mirrors<'a>(
+    url: &str,
+    dest: &Path,
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+    threads: usize,
+    retry_counter: Option<&AtomicU64>,
+    mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+) -> Result<u64, String> {
+    let mut candidate_urls = vec![url.to_string()];
+    for mirror in get_mirror_urls(url) {
+        if !candidate_urls.contains(&mirror) {
+            candidate_urls.push(mirror);
+        }
+    }
+
+    let mut last_error = String::new();
+    for candidate in &candidate_urls {
+        match download_file_multithreaded(
+            candidate,
+            dest,
+            expected_sha1,
+            expected_size,
+            threads,
+            retry_counter,
+            on_progress.as_mut().map(|cb| &mut **cb),
+        )
+        .await
+        {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) => {
+                last_error = err;
+            }
+        }
+    }
+
+    Err(last_error)
 }
 
 /// Multi-threaded file downloader with HTTP Range segmentation and automatic retries.
@@ -153,8 +268,12 @@ pub async fn download_file_multithreaded<'a>(
                 }
             }
             Err(err) => {
+                let is_404 = err.contains("HTTP 404");
                 last_error = err;
                 let _ = fs::remove_file(&part).await;
+                if is_404 {
+                    break;
+                }
             }
         }
     }
@@ -221,6 +340,10 @@ async fn try_segmented_download<'a>(
         .send()
         .await
         .map_err(|e| format!("分片探测失败 ({url}): {e}"))?;
+
+    if probe.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("下载失败 ({url}): HTTP 404"));
+    }
 
     if probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
         return Ok(None);

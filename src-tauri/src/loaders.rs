@@ -75,10 +75,13 @@ pub struct ExtraModFile {
 // Catalog Queries
 // ---------------------------------------------------------------------------
 
-async fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> {
+async fn get_json_with_timeout_duration<T: for<'de> Deserialize<'de>>(
+    url: &str,
+    timeout: Duration,
+) -> Result<T, String> {
     let response = net::client()
         .get(url)
-        .timeout(Duration::from_secs(12))
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| format!("请求失败 ({url}): {e}"))?;
@@ -90,6 +93,10 @@ async fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(url: &str) -> Resul
         .await
         .map_err(|e| format!("读取响应失败: {e}"))?;
     serde_json::from_str::<T>(&text).map_err(|e| format!("解析响应失败: {e}"))
+}
+
+async fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> {
+    get_json_with_timeout_duration(url, Duration::from_secs(12)).await
 }
 
 #[derive(Deserialize)]
@@ -104,34 +111,101 @@ struct FabricLoaderMeta {
     stable: bool,
 }
 
+#[derive(Deserialize)]
+struct FabricGlobalLoaderEntry {
+    version: String,
+    #[serde(default)]
+    stable: bool,
+}
+
 async fn fetch_fabric(mc_version: &str) -> Vec<LoaderVersionItem> {
-    let url = format!("https://meta.fabricmc.net/v2/versions/loader/{mc_version}");
-    let Ok(entries) = get_json_with_timeout::<Vec<FabricLoaderEntry>>(&url).await else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .take(40)
-        .enumerate()
-        .map(|(idx, entry)| LoaderVersionItem {
-            subtitle: Some(if entry.loader.stable {
-                if idx == 0 {
-                    "推荐稳定版".to_string()
-                } else {
-                    "稳定版".to_string()
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut version_candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        version_candidates.push(clean_mc);
+    }
+
+    // 1. Try version-specific endpoints (BMCLAPI mirror first for high speed, then official)
+    for ver in version_candidates {
+        let specific_urls = [
+            format!("https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{ver}"),
+            format!("https://meta.fabricmc.net/v2/versions/loader/{ver}"),
+        ];
+
+        for url in specific_urls {
+            if let Ok(entries) =
+                get_json_with_timeout_duration::<Vec<FabricLoaderEntry>>(&url, Duration::from_secs(6))
+                    .await
+            {
+                if !entries.is_empty() {
+                    return entries
+                        .into_iter()
+                        .take(40)
+                        .enumerate()
+                        .map(|(idx, entry)| LoaderVersionItem {
+                            subtitle: Some(if entry.loader.stable {
+                                if idx == 0 {
+                                    "推荐稳定版".to_string()
+                                } else {
+                                    "稳定版".to_string()
+                                }
+                            } else {
+                                "测试版".to_string()
+                            }),
+                            version: entry.loader.version,
+                            stable: entry.loader.stable,
+                            release_time: None,
+                            download_url: None,
+                            file_name: None,
+                            sha1: None,
+                            size: None,
+                        })
+                        .collect();
                 }
-            } else {
-                "测试版".to_string()
-            }),
-            version: entry.loader.version,
-            stable: entry.loader.stable,
-            release_time: None,
-            download_url: None,
-            file_name: None,
-            sha1: None,
-            size: None,
-        })
-        .collect()
+            }
+        }
+    }
+
+    // 2. Fallback to global loader versions list if specific version returned empty or unsupported
+    let global_urls = [
+        "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader",
+        "https://meta.fabricmc.net/v2/versions/loader",
+    ];
+
+    for url in global_urls {
+        if let Ok(entries) =
+            get_json_with_timeout_duration::<Vec<FabricGlobalLoaderEntry>>(url, Duration::from_secs(6))
+                .await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(40)
+                    .enumerate()
+                    .map(|(idx, entry)| LoaderVersionItem {
+                        subtitle: Some(if entry.stable {
+                            if idx == 0 {
+                                "推荐稳定版 (通用构建)".to_string()
+                            } else {
+                                "稳定版".to_string()
+                            }
+                        } else {
+                            "测试版".to_string()
+                        }),
+                        version: entry.version,
+                        stable: entry.stable,
+                        release_time: None,
+                        download_url: None,
+                        file_name: None,
+                        sha1: None,
+                        size: None,
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    Vec::new()
 }
 
 #[derive(Deserialize)]
@@ -145,32 +219,44 @@ struct QuiltLoaderMeta {
 }
 
 async fn fetch_quilt(mc_version: &str) -> Vec<LoaderVersionItem> {
-    let url = format!("https://meta.quiltmc.org/v3/versions/loader/{mc_version}");
-    let Ok(entries) = get_json_with_timeout::<Vec<QuiltLoaderEntry>>(&url).await else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .take(35)
-        .map(|entry| {
-            let v = entry.loader.version;
-            let stable = !v.contains("beta") && !v.contains("alpha") && !v.contains("-rc");
-            LoaderVersionItem {
-                version: v,
-                stable,
-                release_time: None,
-                subtitle: Some(if stable {
-                    "稳定版".to_string()
-                } else {
-                    "测试版".to_string()
-                }),
-                download_url: None,
-                file_name: None,
-                sha1: None,
-                size: None,
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        candidates.push(clean_mc);
+    }
+
+    for ver in candidates {
+        let url = format!("https://meta.quiltmc.org/v3/versions/loader/{ver}");
+        if let Ok(entries) =
+            get_json_with_timeout_duration::<Vec<QuiltLoaderEntry>>(&url, Duration::from_secs(6)).await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(35)
+                    .map(|entry| {
+                        let v = entry.loader.version;
+                        let stable = !v.contains("beta") && !v.contains("alpha") && !v.contains("-rc");
+                        LoaderVersionItem {
+                            version: v,
+                            stable,
+                            release_time: None,
+                            subtitle: Some(if stable {
+                                "稳定版".to_string()
+                            } else {
+                                "测试版".to_string()
+                            }),
+                            download_url: None,
+                            file_name: None,
+                            sha1: None,
+                            size: None,
+                        }
+                    })
+                    .collect();
             }
-        })
-        .collect()
+        }
+    }
+    Vec::new()
 }
 
 #[derive(Deserialize)]
@@ -473,34 +559,46 @@ struct ModrinthHashes {
 }
 
 async fn fetch_fabric_api(mc_version: &str) -> Vec<LoaderVersionItem> {
-    let url = format!(
-        "https://api.modrinth.com/v2/project/P7dR8mSH/version?game_versions=%5B%22{mc_version}%22%5D&loaders=%5B%22fabric%22%5D"
-    );
-    let Ok(entries) = get_json_with_timeout::<Vec<ModrinthVersion>>(&url).await else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .take(25)
-        .filter_map(|entry| {
-            let file = entry
-                .files
-                .iter()
-                .find(|f| f.primary)
-                .or_else(|| entry.files.first())?;
-            let stable = entry.version_type.as_deref() == Some("release");
-            Some(LoaderVersionItem {
-                version: entry.version_number,
-                stable,
-                release_time: entry.date_published,
-                subtitle: Some(entry.name),
-                download_url: Some(file.url.clone()),
-                file_name: Some(file.filename.clone()),
-                sha1: file.hashes.as_ref().and_then(|h| h.sha1.clone()),
-                size: file.size,
-            })
-        })
-        .collect()
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        candidates.push(clean_mc);
+    }
+
+    for ver in candidates {
+        let url = format!(
+            "https://api.modrinth.com/v2/project/P7dR8mSH/version?game_versions=%5B%22{ver}%22%5D&loaders=%5B%22fabric%22%5D"
+        );
+        if let Ok(entries) =
+            get_json_with_timeout_duration::<Vec<ModrinthVersion>>(&url, Duration::from_secs(7)).await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(25)
+                    .filter_map(|entry| {
+                        let file = entry
+                            .files
+                            .iter()
+                            .find(|f| f.primary)
+                            .or_else(|| entry.files.first())?;
+                        let stable = entry.version_type.as_deref() == Some("release");
+                        Some(LoaderVersionItem {
+                            version: entry.version_number,
+                            stable,
+                            release_time: entry.date_published,
+                            subtitle: Some(entry.name),
+                            download_url: Some(file.url.clone()),
+                            file_name: Some(file.filename.clone()),
+                            sha1: file.hashes.as_ref().and_then(|h| h.sha1.clone()),
+                            size: file.size,
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
 }
 
 pub async fn fetch_version_loaders(mc_version: &str) -> Result<VersionLoadersCatalog, String> {
@@ -571,20 +669,42 @@ async fn apply_fabric_or_quilt(
     loader_type: &str,
     loader_version: &str,
 ) -> Result<(), String> {
-    let profile_url = if loader_type == "quilt" {
-        format!(
-            "https://meta.quiltmc.org/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
-        )
-    } else {
-        format!(
-            "https://meta.fabricmc.net/v2/versions/loader/{mc_version}/{loader_version}/profile/json"
-        )
-    };
-    let profile: LoaderProfileJson = get_json_with_timeout(&profile_url)
-        .await
-        .map_err(|e| format!("获取 {loader_type} 安装配置失败: {e}"))?;
-    merge_profile_into_version(base, profile);
-    Ok(())
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut mc_candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        mc_candidates.push(clean_mc);
+    }
+
+    let mut urls = Vec::new();
+    for ver in mc_candidates {
+        if loader_type == "quilt" {
+            urls.push(format!(
+                "https://meta.quiltmc.org/v3/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+        } else {
+            // Try BMCLAPI mirror first, then official meta
+            urls.push(format!(
+                "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+            urls.push(format!(
+                "https://meta.fabricmc.net/v2/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+        }
+    }
+
+    let mut last_err = String::new();
+    for url in urls {
+        match get_json_with_timeout_duration::<LoaderProfileJson>(&url, Duration::from_secs(8)).await {
+            Ok(profile) => {
+                merge_profile_into_version(base, profile);
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+    Err(format!("获取 {loader_type} 安装配置失败: {last_err}"))
 }
 
 #[derive(Deserialize)]
@@ -919,4 +1039,16 @@ pub async fn prepare_addons(
     }
 
     Ok(extra_mods)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_fabric_loaders() {
+        let items = fetch_fabric("1.20.1").await;
+        assert!(!items.is_empty(), "Fabric loaders for 1.20.1 should not be empty");
+        assert!(items.iter().any(|i| i.stable));
+    }
 }

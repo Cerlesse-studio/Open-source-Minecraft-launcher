@@ -29,7 +29,7 @@ import type {
   VersionLoadersCatalog,
   VersionSummary,
 } from "../lib/types";
-import { GrassBlock, TypeBadge } from "./ui";
+import { TypeBadge } from "./ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -374,8 +374,29 @@ export function VersionInstallView({
               <ArrowLeft className="size-4" />
             </Button>
 
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
-              <GrassBlock size={26} className="rounded-[3px]" />
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 p-1">
+              <img
+                src={
+                  version.id.startsWith("bedrock:")
+                    ? "/icons/minecraft/bedrock.png"
+                    : version.id.includes("april") ||
+                        version.id.includes("24w14potato") ||
+                        version.id.includes("20w14") ||
+                        version.id.includes("22w13one") ||
+                        version.id.includes("23w13a") ||
+                        version.id.includes("shareware") ||
+                        version.id.includes("love_and_hugs") ||
+                        version.id.includes("3d_shareware")
+                      ? "/icons/minecraft/poisonous_potato.png"
+                      : version.type === "snapshot"
+                        ? "/icons/minecraft/command_block.png"
+                        : version.type === "old_alpha" || version.type === "old_beta"
+                          ? "/icons/minecraft/cobblestone.png"
+                          : "/icons/minecraft/grass_block.png"
+                }
+                alt="version icon"
+                className="size-7 object-contain [image-rendering:pixelated]"
+              />
             </div>
           </div>
 

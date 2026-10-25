@@ -1,5 +1,7 @@
 import type {
   BedrockContentItem,
+  BedrockLoadersCatalog,
+  BedrockModItem,
   BedrockStatus,
   BedrockVersionItem,
   ContentHit,
@@ -1263,5 +1265,110 @@ export async function demoInstallBedrockPack(
 export async function demoLaunchBedrock(): Promise<string> {
   await sleep(400);
   return "已成功启动 Minecraft 基岩版";
+}
+
+export async function demoCleanDownloadCache(): Promise<number> {
+  await sleep(300);
+  return 94953306;
+}
+
+export async function demoGetBedrockLoaders(mcVersion: string): Promise<BedrockLoadersCatalog> {
+  await sleep(200);
+  return {
+    mcVersion,
+    levilamina: [
+      {
+        name: "LeviLamina",
+        version: "26.51.8",
+        loaderType: "levilamina",
+        compatibleMcVersion: mcVersion,
+        downloadUrl: "https://github.com/LiteLDev/LeviLamina/releases/download/v26.51.8/levilamina-v26.51.8-client-release-windows-x64.zip",
+        description: `LeviLamina 官方基岩版客户端模组加载器 (推荐适配: ${mcVersion})`,
+        stable: true,
+      },
+      {
+        name: "LeviLamina",
+        version: "1.9.9",
+        loaderType: "levilamina",
+        compatibleMcVersion: mcVersion,
+        downloadUrl: "https://github.com/LiteLDev/LeviLamina/releases/download/v1.9.9/levilamina-v1.9.9-client-release-windows-x64.zip",
+        description: "LeviLamina 稳定版客户端模组加载器",
+        stable: true,
+      },
+    ],
+    amethyst: [
+      {
+        name: "Amethyst",
+        version: "0.4.1",
+        loaderType: "amethyst",
+        compatibleMcVersion: mcVersion,
+        downloadUrl: "https://github.com/FreerGit/Amethyst/releases/download/v0.4.1/Amethyst-Windows.zip",
+        description: "Amethyst 原生 C++ 客户端模组加载器 v0.4.1",
+        stable: true,
+      },
+    ],
+  };
+}
+
+export async function demoInstallBedrockLoader(
+  versionId: string,
+  loaderType: string,
+  loaderVersion: string,
+): Promise<string> {
+  await sleep(600);
+  return `${loaderType} v${loaderVersion} 已成功安装到基岩版实例 ${versionId}`;
+}
+
+export async function demoGetBedrockMods(_versionId: string): Promise<BedrockModItem[]> {
+  await sleep(150);
+  return [
+    {
+      id: "Zoomify.dll",
+      name: "Zoomify (基岩版缩放视角模组)",
+      fileName: "Zoomify.dll",
+      path: "C:\\Users\\you\\.cobble\\bedrock\\versions\\1.26.51\\mods\\Zoomify.dll",
+      modType: "dll_mod",
+      enabled: true,
+      injectDelay: 0,
+      isPreLoad: true,
+      size: 524288,
+      modifiedTime: "2026-10-25 12:00:00",
+    },
+    {
+      id: "CustomFov.dll",
+      name: "CustomFov (自定义视场角与界面适配)",
+      fileName: "CustomFov.dll",
+      path: "C:\\Users\\you\\.cobble\\bedrock\\versions\\1.26.51\\mods\\CustomFov.dll",
+      modType: "dll_mod",
+      enabled: true,
+      injectDelay: 0,
+      isPreLoad: true,
+      size: 262144,
+      modifiedTime: "2026-10-24 15:30:00",
+    },
+  ];
+}
+
+export async function demoToggleBedrockMod(
+  _versionId: string,
+  _modId: string,
+  _enabled: boolean,
+): Promise<void> {
+  await sleep(100);
+}
+
+export async function demoDeleteBedrockMod(
+  _versionId: string,
+  _modId: string,
+): Promise<void> {
+  await sleep(150);
+}
+
+export async function demoInstallBedrockModFile(
+  versionId: string,
+  _filePath: string,
+): Promise<string> {
+  await sleep(300);
+  return `模组文件已成功导入到基岩版实例 ${versionId}`;
 }
 

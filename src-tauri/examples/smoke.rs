@@ -80,6 +80,12 @@ async fn main() -> Result<(), String> {
         custom_skin_path: None,
         custom_skin_model: None,
         mojang_skin_name: None,
+        version_isolation: None,
+        window_title: None,
+        custom_info: None,
+        launcher_visibility: None,
+        process_priority: None,
+        window_size: None,
     };
 
     println!("Preparing Java and launch arguments…");

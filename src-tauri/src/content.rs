@@ -165,11 +165,14 @@ pub async fn search_content(
     let is_bedrock = loader.as_deref() == Some("bedrock")
         || game_version.as_deref() == Some("bedrock");
     if is_bedrock {
-        let hits = get_bedrock_hits(&query, &project_type);
-        let total = hits.len() as u32;
+        let all_hits = get_bedrock_hits(&query, &project_type);
+        let total = all_hits.len() as u32;
+        let start = (offset as usize).min(all_hits.len());
+        let end = (start + limit as usize).min(all_hits.len());
+        let hits = all_hits[start..end].to_vec();
         return Ok(SearchContentResult {
             hits,
-            offset: 0,
+            offset,
             limit,
             total_hits: total,
         });

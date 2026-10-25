@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import {
   ArrowLeft,
-  Boxes,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -10,13 +9,11 @@ import {
   Cpu,
   Download,
   FileCheck2,
-  FileCode2,
   FolderOpen,
   Gauge,
   HardDriveDownload,
-  Layers3,
   LoaderCircle,
-  Package,
+  Pause,
   Play,
   RotateCcw,
   Search,
@@ -28,6 +25,11 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "cn";
+import {
+  cleanDownloadCache,
+  deleteBedrockVersion,
+  deleteVersion,
+} from "../lib/backend";
 import {
   formatBytes,
   formatSpeed,
@@ -83,11 +85,16 @@ interface DownloadsViewProps {
   onOpenVersionSelect: () => void;
   onOpenFolder: (path: string) => void;
   onNotify?: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
+  onRefreshInstalled?: () => Promise<void>;
+  onPauseInstall?: () => void;
+  onCancelInstall?: () => void;
+  onResumeInstall?: (record: DownloadHistoryRecord) => void;
+  onRemoveQueueItem?: (index: number) => void;
 }
 
 const THREAD_PRESETS = [4, 8, 16, 32, 64];
 
-type ListTab = "all" | "active" | "queued" | "completed" | "failed";
+type ListTab = "all" | "active" | "paused" | "queued" | "completed" | "failed";
 
 const DEFAULT_STAGES: StageProgress[] = [
   {
@@ -150,15 +157,39 @@ function getTaskCleanName(name: string): string {
 function StageIcon({ stage }: { stage: string }) {
   switch (stage) {
     case "prepare":
-      return <FileCode2 className="size-3.5" />;
+      return (
+        <img
+          src="/icons/minecraft/compass.png"
+          alt="prepare"
+          className="size-3.5 object-contain [image-rendering:pixelated]"
+        />
+      );
     case "client":
     case "core":
-      return <Package className="size-3.5" />;
+      return (
+        <img
+          src="/icons/minecraft/crafting_table.png"
+          alt="client"
+          className="size-3.5 object-contain [image-rendering:pixelated]"
+        />
+      );
     case "libraries":
     case "extract":
-      return <Layers3 className="size-3.5" />;
+      return (
+        <img
+          src="/icons/minecraft/redstone_repeater.png"
+          alt="libraries"
+          className="size-3.5 object-contain [image-rendering:pixelated]"
+        />
+      );
     case "assets":
-      return <Boxes className="size-3.5" />;
+      return (
+        <img
+          src="/icons/minecraft/chest.png"
+          alt="assets"
+          className="size-3.5 object-contain [image-rendering:pixelated]"
+        />
+      );
     default:
       return <Download className="size-3.5" />;
   }
@@ -315,13 +346,23 @@ export function DownloadsView({
   onDeleteHistoryItem,
   onOpenVersionSelect,
   onOpenFolder,
-  onNotify: _onNotify,
+  onNotify,
+  onRefreshInstalled,
+  onPauseInstall,
+  onCancelInstall,
+  onResumeInstall,
+  onRemoveQueueItem,
 }: DownloadsViewProps) {
   const [activeTab, setActiveTab] = useState<ListTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showActiveDetails, setShowActiveDetails] = useState(true);
   const [activeDetailTab, setActiveDetailTab] = useState<"stages" | "threads" | "logs">("threads");
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [deletingRecord, setDeletingRecord] = useState<DownloadHistoryRecord | null>(null);
+  const [deleteLocalFiles, setDeleteLocalFiles] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [confirmClearHistory, setConfirmClearHistory] = useState(false);
+  const [cleanResidualsOnClear, setCleanResidualsOnClear] = useState(true);
 
   const activeProgress = installProgress ?? lastProgress;
   const isDownloading = Boolean(installingVersion && installProgress);
@@ -350,6 +391,7 @@ export function DownloadsView({
   // Tab Counts
   const activeCount = isDownloading ? 1 : 0;
   const queuedCount = installQueue.length;
+  const pausedCount = history.filter((h) => h.status === "paused").length;
   const completedCount = history.filter((h) => h.status === "completed").length;
   const failedCount = history.filter((h) => h.status === "failed").length;
   const totalCount = activeCount + queuedCount + history.length;
@@ -361,6 +403,8 @@ export function DownloadsView({
       list = list.filter((h) => h.status === "completed");
     } else if (activeTab === "failed") {
       list = list.filter((h) => h.status === "failed");
+    } else if (activeTab === "paused") {
+      list = list.filter((h) => h.status === "paused");
     } else if (activeTab === "active" || activeTab === "queued") {
       return [];
     }
@@ -433,8 +477,8 @@ export function DownloadsView({
                 variant="ghost"
                 size="sm"
                 className="h-8 gap-1.5 px-2.5 text-[11.5px] text-muted-foreground hover:text-destructive"
-                onClick={onClearHistory}
-                title="清空所有已完成与失败记录"
+                onClick={() => setConfirmClearHistory(true)}
+                title="清空所有已完成与失败记录，支持深度清理残留缓存"
               >
                 <Trash2 className="size-3.5" />
                 <span>清空记录</span>
@@ -633,6 +677,25 @@ export function DownloadsView({
 
           <button
             type="button"
+            onClick={() => setActiveTab("paused")}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors",
+              activeTab === "paused"
+                ? "bg-amber-500 text-black shadow-sm font-semibold"
+                : "bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+            )}
+          >
+            <Pause className="size-3 fill-current" />
+            <span>已暂停</span>
+            {pausedCount > 0 ? (
+              <span className="rounded-full bg-amber-500/20 px-1.5 py-0.2 text-[10px] font-mono text-amber-400">
+                {pausedCount}
+              </span>
+            ) : null}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("queued")}
             className={cn(
               "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors",
@@ -712,17 +775,21 @@ export function DownloadsView({
                 <div className="flex items-center gap-3 min-w-0">
                   <span
                     className={cn(
-                      "flex size-10 shrink-0 items-center justify-center rounded-xl border",
+                      "flex size-10 shrink-0 items-center justify-center rounded-xl border p-1",
                       getTaskEdition(installingVersion) === "bedrock"
                         ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
                         : "border-primary/40 bg-primary/10 text-primary",
                     )}
                   >
-                    {getTaskEdition(installingVersion) === "bedrock" ? (
-                      <Boxes className="size-5" />
-                    ) : (
-                      <Package className="size-5" />
-                    )}
+                    <img
+                      src={
+                        getTaskEdition(installingVersion) === "bedrock"
+                          ? "/icons/minecraft/bedrock.png"
+                          : "/icons/minecraft/grass_block.png"
+                      }
+                      alt="edition icon"
+                      className="size-7 object-contain [image-rendering:pixelated]"
+                    />
                   </span>
 
                   <div className="min-w-0">
@@ -761,7 +828,7 @@ export function DownloadsView({
                 </div>
 
                 {/* Right: Metrics & Actions */}
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
                   <div className="text-right">
                     <p className="font-mono text-[14px] font-semibold text-foreground">
                       {formatSpeed(speedBps)}
@@ -771,6 +838,32 @@ export function DownloadsView({
                       {totalBytes > 0 ? formatBytes(totalBytes) : "计算中"}
                     </p>
                   </div>
+
+                  {onPauseInstall ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 border-amber-500/40 text-amber-400 hover:bg-amber-500/10 px-2.5 text-[11px]"
+                      onClick={onPauseInstall}
+                      title="暂停当前下载任务"
+                    >
+                      <Pause className="size-3.5 fill-current" />
+                      <span>暂停</span>
+                    </Button>
+                  ) : null}
+
+                  {onCancelInstall ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 border-destructive/40 text-destructive hover:bg-destructive/10 px-2.5 text-[11px]"
+                      onClick={onCancelInstall}
+                      title="取消当前下载任务"
+                    >
+                      <XCircle className="size-3.5" />
+                      <span>取消</span>
+                    </Button>
+                  ) : null}
 
                   <Button
                     variant="outline"
@@ -973,8 +1066,12 @@ export function DownloadsView({
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/40 text-muted-foreground">
-                    <Clock className="size-4" />
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/40 p-1 text-muted-foreground">
+                    <img
+                      src="/icons/minecraft/compass.png"
+                      alt="queue"
+                      className="size-5 object-contain [image-rendering:pixelated]"
+                    />
                   </span>
                   <div>
                     <div className="flex items-center gap-2">
@@ -994,44 +1091,73 @@ export function DownloadsView({
                   </div>
                 </div>
 
-                <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                  等待排队
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                    等待排队
+                  </Badge>
+                  {onRemoveQueueItem ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-muted-foreground hover:text-destructive"
+                      onClick={() => onRemoveQueueItem(idx)}
+                      title="取消排队"
+                    >
+                      <Trash2 className="size-3" />
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             </Card>
           ))}
 
-        {/* 3. Completed & Failed Tasks (History List) */}
+        {/* 3. Completed, Paused & Failed Tasks (History List) */}
         {filteredHistory.map((item) => {
           const isBedrock = getTaskEdition(item.versionId) === "bedrock";
           const isSuccess = item.status === "completed";
+          const isPaused = item.status === "paused";
 
           return (
             <Card
               key={item.id}
-              className="border-border/60 bg-card/45 p-4 transition-colors hover:border-border hover:bg-card/70"
+              className={cn(
+                "border-border/60 bg-card/45 p-4 transition-colors hover:border-border hover:bg-card/70",
+                isPaused && "border-amber-500/30 bg-amber-500/[0.02]"
+              )}
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 {/* Left: Icon & Info */}
                 <div className="flex items-center gap-3 min-w-0">
                   <span
                     className={cn(
-                      "flex size-9 shrink-0 items-center justify-center rounded-lg border",
+                      "flex size-9 shrink-0 items-center justify-center rounded-lg border p-1",
                       isSuccess
                         ? isBedrock
                           ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
                           : "border-primary/30 bg-primary/10 text-primary"
-                        : "border-destructive/30 bg-destructive/10 text-destructive",
+                        : isPaused
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                          : "border-destructive/30 bg-destructive/10 text-destructive",
                     )}
                   >
                     {isSuccess ? (
-                      isBedrock ? (
-                        <Boxes className="size-4.5" />
-                      ) : (
-                        <Package className="size-4.5" />
-                      )
+                      <img
+                        src={
+                          isBedrock
+                            ? "/icons/minecraft/bedrock.png"
+                            : "/icons/minecraft/grass_block.png"
+                        }
+                        alt="edition icon"
+                        className="size-6 object-contain [image-rendering:pixelated]"
+                      />
+                    ) : isPaused ? (
+                      <Pause className="size-4.5 fill-current" />
                     ) : (
-                      <XCircle className="size-4.5" />
+                      <img
+                        src="/icons/minecraft/barrier.png"
+                        alt="failed icon"
+                        className="size-5 object-contain [image-rendering:pixelated]"
+                      />
                     )}
                   </span>
 
@@ -1060,6 +1186,14 @@ export function DownloadsView({
                           <Check className="size-2.5 mr-0.5" />
                           已完成
                         </Badge>
+                      ) : isPaused ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4.5 shrink-0 border-amber-500/40 bg-amber-500/15 px-1.5 text-[9.5px] font-normal text-amber-400"
+                        >
+                          <Pause className="size-2 mr-1 fill-current" />
+                          {item.pausedReason || "已暂停"}
+                        </Badge>
                       ) : (
                         <Badge
                           variant="outline"
@@ -1083,6 +1217,17 @@ export function DownloadsView({
                           <span>·</span>
                           <span>{item.finishedAt}</span>
                         </>
+                      ) : isPaused ? (
+                        <>
+                          <span className="text-amber-400 font-medium">
+                            已下载 {formatBytes(item.downloadedBytes || 0)} / {item.totalBytes > 0 ? formatBytes(item.totalBytes) : "计算中"}
+                            {item.totalBytes > 0 ? ` (${Math.round(((item.downloadedBytes || 0) / item.totalBytes) * 100)}%)` : ""}
+                          </span>
+                          <span>·</span>
+                          <span>{item.threads} 线程</span>
+                          <span>·</span>
+                          <span>{item.finishedAt}</span>
+                        </>
                       ) : (
                         <>
                           <span className="text-destructive/90">{item.error || "下载中断"}</span>
@@ -1091,11 +1236,32 @@ export function DownloadsView({
                         </>
                       )}
                     </div>
+
+                    {isPaused && item.totalBytes > 0 ? (
+                      <div className="mt-2 w-full max-w-sm space-y-1">
+                        <Progress
+                          value={Math.min(100, Math.round(((item.downloadedBytes || 0) / item.totalBytes) * 100))}
+                          className="h-1 rounded-sm bg-amber-500/15 [&_[data-slot=progress-indicator]]:bg-amber-400"
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
                 {/* Right: Actions */}
                 <div className="flex items-center gap-2">
+                  {isPaused && onResumeInstall ? (
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-7.5 gap-1.5 px-3 text-[11px] bg-amber-500 text-black hover:bg-amber-400 font-semibold"
+                      onClick={() => onResumeInstall(item)}
+                    >
+                      <Play className="size-3 fill-current" />
+                      <span>继续下载</span>
+                    </Button>
+                  ) : null}
+
                   {isSuccess && onLaunch ? (
                     <Button
                       size="sm"
@@ -1108,16 +1274,18 @@ export function DownloadsView({
                     </Button>
                   ) : null}
 
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7.5 gap-1.5 border-border/80 px-2.5 text-[11px]"
-                    onClick={() => onInstall(item.versionId.replace("Minecraft ", ""))}
-                    title="重新触发多线程下载或校验"
-                  >
-                    <RotateCcw className="size-3" />
-                    <span>{isSuccess ? "校验" : "重试"}</span>
-                  </Button>
+                  {!isPaused ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7.5 gap-1.5 border-border/80 px-2.5 text-[11px]"
+                      onClick={() => onInstall(item.versionId.replace("Minecraft ", ""))}
+                      title="重新触发多线程下载或校验"
+                    >
+                      <RotateCcw className="size-3" />
+                      <span>{isSuccess ? "校验" : "重试"}</span>
+                    </Button>
+                  ) : null}
 
                   <Button
                     size="sm"
@@ -1134,8 +1302,11 @@ export function DownloadsView({
                       size="sm"
                       variant="ghost"
                       className="h-7.5 px-2 text-muted-foreground hover:text-destructive"
-                      onClick={() => onDeleteHistoryItem(item.id)}
-                      title="移除记录"
+                      onClick={() => {
+                        setDeletingRecord(item);
+                        setDeleteLocalFiles(true);
+                      }}
+                      title="删除此任务与关联残留文件"
                     >
                       <Trash2 className="size-3" />
                     </Button>
@@ -1149,8 +1320,12 @@ export function DownloadsView({
         {/* 4. Empty State */}
         {isListEmpty ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/70 bg-card/25 px-6 py-14 text-center">
-            <div className="flex size-12 items-center justify-center rounded-xl border border-border/70 bg-muted/30 text-muted-foreground">
-              <Download className="size-5 text-primary" />
+            <div className="flex size-12 items-center justify-center rounded-xl border border-border/70 bg-muted/30 p-2 text-muted-foreground">
+              <img
+                src="/icons/minecraft/grass_block.png"
+                alt="grass block"
+                className="size-8 object-contain opacity-75 [image-rendering:pixelated]"
+              />
             </div>
             <h3 className="mt-3.5 text-[14px] font-medium text-foreground">
               {searchQuery ? "未找到匹配的下载任务" : "当前没有正在执行或记录的下载任务"}
@@ -1173,6 +1348,185 @@ export function DownloadsView({
           </div>
         ) : null}
       </div>
+
+      {/* 5. Delete History Item Confirmation Modal */}
+      {deletingRecord ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in-0 duration-150">
+          <div className="w-full max-w-sm rounded-xl border border-border/80 bg-background/95 p-5 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-foreground">删除下载任务与文件</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground truncate font-mono">
+                  {deletingRecord.versionId}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-border/70 bg-card/40 p-3 space-y-2">
+              <label className="flex items-start gap-2.5 cursor-pointer text-xs select-none">
+                <input
+                  type="checkbox"
+                  checked={deleteLocalFiles}
+                  onChange={(e) => setDeleteLocalFiles(e.target.checked)}
+                  className="mt-0.5 size-4 rounded border-border accent-destructive cursor-pointer"
+                />
+                <div className="space-y-0.5">
+                  <span className="font-medium text-foreground">
+                    同时彻底删除本地已下载的核心文件与安装包残留
+                  </span>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    清理本地版本目录及 download cache 残留（.zip / .part 临时包），释放硬盘空间。
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isDeleting}
+                onClick={() => setDeletingRecord(null)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isDeleting}
+                className="gap-1.5"
+                onClick={async () => {
+                  if (!deletingRecord) return;
+                  setIsDeleting(true);
+                  try {
+                    if (deleteLocalFiles) {
+                      const edition = getTaskEdition(deletingRecord.versionId);
+                      const cleanVer = deletingRecord.versionId
+                        .replace(/^Minecraft 基岩版 /, "")
+                        .replace(/^Minecraft /, "")
+                        .replace(/^bedrock:/, "")
+                        .trim();
+                      if (edition === "bedrock") {
+                        await deleteBedrockVersion(cleanVer, gameRoot);
+                      } else {
+                        await deleteVersion(gameRoot, cleanVer);
+                      }
+                      await onRefreshInstalled?.();
+                    }
+                    onDeleteHistoryItem?.(deletingRecord.id);
+                    onNotify?.(
+                      "success",
+                      "已成功删除",
+                      deleteLocalFiles
+                        ? `已彻底删除 ${deletingRecord.versionId} 及其本地残留文件。`
+                        : "已从下载历史记录中移除该任务。",
+                    );
+                    setDeletingRecord(null);
+                  } catch (err) {
+                    onNotify?.("error", "删除失败", String(err));
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+              >
+                {isDeleting ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+                确认删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* 6. Clear All History Confirmation Modal */}
+      {confirmClearHistory ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in-0 duration-150">
+          <div className="w-full max-w-sm rounded-xl border border-border/80 bg-background/95 p-5 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-foreground">清空所有下载记录</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  共 {history.length} 条已完成或失败记录
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-border/70 bg-card/40 p-3 space-y-2">
+              <label className="flex items-start gap-2.5 cursor-pointer text-xs select-none">
+                <input
+                  type="checkbox"
+                  checked={cleanResidualsOnClear}
+                  onChange={(e) => setCleanResidualsOnClear(e.target.checked)}
+                  className="mt-0.5 size-4 rounded border-border accent-destructive cursor-pointer"
+                />
+                <div className="space-y-0.5">
+                  <span className="font-medium text-foreground">
+                    同时深度清理所有残留缓存文件
+                  </span>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    扫描并清理基岩版临时压缩包（.zip）、分片缓存（.part）与安装包残留。
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isDeleting}
+                onClick={() => setConfirmClearHistory(false)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isDeleting}
+                className="gap-1.5"
+                onClick={async () => {
+                  setIsDeleting(true);
+                  try {
+                    let detailMsg = "已清空所有下载记录。";
+                    if (cleanResidualsOnClear) {
+                      const freed = await cleanDownloadCache(gameRoot);
+                      if (freed > 0) {
+                        detailMsg = `已清空记录并深度清理了 ${formatBytes(freed)} 的残留文件。`;
+                      } else {
+                        detailMsg = "已清空记录，未发现其他残留缓存。";
+                      }
+                      await onRefreshInstalled?.();
+                    }
+                    onClearHistory();
+                    onNotify?.("success", "清空完成", detailMsg);
+                    setConfirmClearHistory(false);
+                  } catch (err) {
+                    onNotify?.("error", "清理失败", String(err));
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+              >
+                {isDeleting ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+                确认清空
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

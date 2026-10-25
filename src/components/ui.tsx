@@ -1,39 +1,10 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "cn";
 import { progressPercent, stageLabel } from "../lib/format";
-import type { InstallProgress } from "../lib/types";
-
-const GRASS_COLORS: Record<string, string> = {
-  g: "#83c956",
-  d: "#6cae42",
-  k: "#4f8b31",
-  b: "#8b6a4a",
-  r: "#71523a",
-  s: "#5b412c",
-  p: "#8d8d84",
-  o: "#55554f",
-};
-
-const GRASS_PIXELS = [
-  "ggdgggdggdgggggd",
-  "gdgggkggggdgggkg",
-  "ggggdggggggggdgg",
-  "dkgggdgggkgdgggg",
-  "gddgggdggddgkggd",
-  "brrdrrrrrdrrrdrr",
-  "rrbrrrrdrrrrbrrr",
-  "rrrrrsrrrrrrrrrr",
-  "rrbrrrrrrprrrrrr",
-  "rrrrrrprrrrrrbrr",
-  "rbrrrrrrrrrsrrrr",
-  "rrrrsrrrrrrrrrpr",
-  "rrprrrrrbrrrrrrr",
-  "rrrrrrrrrrrrrrsr",
-  "rrrsrrrrrrbrrrrr",
-  "rrrrrrrrprrrrrrr",
-];
+import type { InstallProgress, OfflineSkinType } from "../lib/types";
+import { readSkinAsDataUrl } from "../lib/backend";
 
 export function GrassBlock({
   size = 96,
@@ -43,27 +14,13 @@ export function GrassBlock({
   className?: string;
 }) {
   return (
-    <svg
-      aria-hidden="true"
-      className={cn("pixelated shrink-0", className)}
+    <img
+      src="/icons/minecraft/grass_block.png"
+      alt="Grass Block"
       width={size}
       height={size}
-      viewBox="0 0 16 16"
-      shapeRendering="crispEdges"
-    >
-      {GRASS_PIXELS.map((row, y) =>
-        row.split("").map((pixel, x) => (
-          <rect
-            key={`${x}-${y}`}
-            x={x}
-            y={y}
-            width="1"
-            height="1"
-            fill={GRASS_COLORS[pixel] ?? GRASS_COLORS.r}
-          />
-        )),
-      )}
-    </svg>
+      className={cn("shrink-0 object-contain [image-rendering:pixelated]", className)}
+    />
   );
 }
 
@@ -84,15 +41,171 @@ const SKIN_TONES = [
 ];
 const HAIR_TONES = ["#3b2a20", "#6d4a2b", "#22201e", "#8a6b3a", "#4a3a52"];
 
+const STEVE_PIXELS = [
+  "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f",
+  "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f", "#26180f",
+  "#26180f", "#26180f", "#b98155", "#b98155", "#b98155", "#b98155", "#26180f", "#26180f",
+  "#b98155", "#b98155", "#b98155", "#b98155", "#b98155", "#b98155", "#b98155", "#b98155",
+  "#ffffff", "#2b1b59", "#b98155", "#a06b43", "#a06b43", "#b98155", "#ffffff", "#2b1b59",
+  "#b98155", "#b98155", "#b98155", "#8c5633", "#8c5633", "#b98155", "#b98155", "#b98155",
+  "#b98155", "#b98155", "#543827", "#543827", "#543827", "#543827", "#b98155", "#b98155",
+  "#b98155", "#b98155", "#543827", "#a06b43", "#a06b43", "#543827", "#b98155", "#b98155",
+];
+
+const ALEX_PIXELS = [
+  "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309",
+  "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309", "#b45309",
+  "#b45309", "#b45309", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#b45309", "#b45309",
+  "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a",
+  "#ffffff", "#059669", "#fde68a", "#fcd34d", "#fcd34d", "#fde68a", "#ffffff", "#059669",
+  "#fde68a", "#fde68a", "#fde68a", "#f59e0b", "#f59e0b", "#fde68a", "#fde68a", "#fde68a",
+  "#fde68a", "#fde68a", "#fde68a", "#ea580c", "#ea580c", "#fde68a", "#fde68a", "#fde68a",
+  "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a", "#fde68a",
+];
+
 export function Avatar({
   name,
   size = 40,
   className,
+  skinType = "random",
+  customSkinPath,
+  mojangSkinName,
 }: {
   name: string;
   size?: number;
   className?: string;
+  skinType?: OfflineSkinType;
+  customSkinPath?: string;
+  mojangSkinName?: string;
 }) {
+  const [customDataUrl, setCustomDataUrl] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Load custom skin data URL when skinType is custom and path is provided
+  useEffect(() => {
+    let active = true;
+    if (skinType === "custom" && customSkinPath) {
+      if (customSkinPath.startsWith("data:") || customSkinPath.startsWith("http")) {
+        setCustomDataUrl(customSkinPath);
+      } else {
+        readSkinAsDataUrl(customSkinPath)
+          .then((url) => {
+            if (active) setCustomDataUrl(url);
+          })
+          .catch(() => {
+            if (active) setCustomDataUrl(null);
+          });
+      }
+    } else {
+      setCustomDataUrl(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [skinType, customSkinPath]);
+
+  // When customDataUrl is available, draw the head front + hat layer to canvas
+  useEffect(() => {
+    if (skinType !== "custom" || !customDataUrl) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      ctx.clearRect(0, 0, 64, 64);
+      ctx.imageSmoothingEnabled = false;
+      // 1. Base head front (x=8, y=8, w=8, h=8)
+      ctx.drawImage(img, 8, 8, 8, 8, 0, 0, 64, 64);
+      // 2. Hat/helmet front (x=40, y=8, w=8, h=8)
+      ctx.drawImage(img, 40, 8, 8, 8, 0, 0, 64, 64);
+    };
+    img.src = customDataUrl;
+  }, [skinType, customDataUrl]);
+
+  // 1. Custom Skin Rendering
+  if (skinType === "custom" && customSkinPath) {
+    return (
+      <canvas
+        ref={canvasRef}
+        width={64}
+        height={64}
+        style={{ width: size, height: size }}
+        className={cn("shrink-0 [image-rendering:pixelated]", className)}
+      />
+    );
+  }
+
+  // 2. Mojang Skin Rendering
+  if (skinType === "mojang") {
+    const target = mojangSkinName?.trim() || name || "Steve";
+    return (
+      <img
+        src={`https://minotar.net/helm/${target}/${size}.png`}
+        alt={target}
+        width={size}
+        height={size}
+        className={cn("shrink-0 object-contain [image-rendering:pixelated]", className)}
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+    );
+  }
+
+  // 3. Steve Face Rendering
+  if (skinType === "steve") {
+    return (
+      <svg
+        aria-hidden="true"
+        width={size}
+        height={size}
+        viewBox="0 0 8 8"
+        shapeRendering="crispEdges"
+        className={cn("shrink-0 [image-rendering:pixelated]", className)}
+      >
+        {STEVE_PIXELS.map((fill, idx) => (
+          <rect
+            key={idx}
+            x={idx % 8}
+            y={Math.floor(idx / 8)}
+            width="1"
+            height="1"
+            fill={fill}
+          />
+        ))}
+      </svg>
+    );
+  }
+
+  // 4. Alex Face Rendering
+  if (skinType === "alex") {
+    return (
+      <svg
+        aria-hidden="true"
+        width={size}
+        height={size}
+        viewBox="0 0 8 8"
+        shapeRendering="crispEdges"
+        className={cn("shrink-0 [image-rendering:pixelated]", className)}
+      >
+        {ALEX_PIXELS.map((fill, idx) => (
+          <rect
+            key={idx}
+            x={idx % 8}
+            y={Math.floor(idx / 8)}
+            width="1"
+            height="1"
+            fill={fill}
+          />
+        ))}
+      </svg>
+    );
+  }
+
+  // 5. Default Procedural Avatar
   const hash = hashCode(name || "Steve");
   const [skinLight, skinDark] = SKIN_TONES[hash % SKIN_TONES.length];
   const hair = HAIR_TONES[(hash >> 3) % HAIR_TONES.length];
@@ -114,7 +227,7 @@ export function Avatar({
       height={size}
       viewBox="0 0 8 8"
       shapeRendering="crispEdges"
-      className={cn("pixelated shrink-0", className)}
+      className={cn("shrink-0 [image-rendering:pixelated]", className)}
     >
       <rect width="8" height="8" fill="#0d110f" />
       {rows.map((row, y) =>

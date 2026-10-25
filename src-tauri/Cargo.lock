@@ -2458,6 +2458,7 @@ dependencies = [
 name = "open-source-minecraft-launcher"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "flate2",
  "futures-util",
  "md-5",

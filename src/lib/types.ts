@@ -10,6 +10,8 @@ export interface VersionSummary {
   time?: string;
   releaseTime?: string;
   sha1?: string;
+  phase?: string;
+  source?: "mojang" | "betacraft" | string;
 }
 
 export interface VersionManifest {
@@ -47,6 +49,36 @@ export interface VersionLoadersCatalog {
   quilt: LoaderVersionItem[];
   optifine: LoaderVersionItem[];
   fabricApi: LoaderVersionItem[];
+}
+
+export interface BedrockLoaderItem {
+  name: string;
+  version: string;
+  loaderType: "levilamina" | "amethyst";
+  compatibleMcVersion: string;
+  downloadUrl: string;
+  description: string;
+  releaseTime?: string;
+  stable: boolean;
+}
+
+export interface BedrockLoadersCatalog {
+  mcVersion: string;
+  levilamina: BedrockLoaderItem[];
+  amethyst: BedrockLoaderItem[];
+}
+
+export interface BedrockModItem {
+  id: string;
+  name: string;
+  fileName: string;
+  path: string;
+  modType: "levilamina_plugin" | "dll_mod" | "behavior_pack" | "resource_pack";
+  enabled: boolean;
+  injectDelay: number;
+  isPreLoad: boolean;
+  size: number;
+  modifiedTime: string;
 }
 
 export interface LoaderSelection {
@@ -167,14 +199,20 @@ export interface InstallProgress {
 export interface DownloadHistoryRecord {
   id: string;
   versionId: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "paused" | "cancelled";
   threads: number;
   totalFiles: number;
   totalBytes: number;
+  downloadedBytes?: number;
   peakSpeedBps: number;
   durationMs: number;
   finishedAt: string;
   error?: string;
+  selection?: LoaderSelection;
+  edition?: "java" | "bedrock";
+  bedrockVersionItem?: BedrockVersionItem;
+  apiSource?: string;
+  pausedReason?: string;
 }
 
 export interface InstallResult {
@@ -223,6 +261,17 @@ export interface GameExitPayload {
 export type OfflineSkinType = "random" | "steve" | "alex" | "mojang" | "custom";
 export type OfflineSkinModel = "default" | "slim";
 
+export type VersionIsolation = "all" | "modded" | "none";
+export type LauncherVisibility = "keep" | "hide" | "close";
+export type ProcessPriority =
+  | "normal"
+  | "realtime"
+  | "high"
+  | "above_normal"
+  | "below_normal"
+  | "low";
+export type WindowSizeMode = "default" | "fullscreen" | "custom";
+
 export interface LaunchRequest {
   versionId: string;
   root: string;
@@ -235,6 +284,12 @@ export interface LaunchRequest {
   customSkinPath?: string | null;
   customSkinModel?: OfflineSkinModel | null;
   mojangSkinName?: string | null;
+  versionIsolation?: VersionIsolation;
+  windowTitle?: string | null;
+  customInfo?: string | null;
+  launcherVisibility?: LauncherVisibility;
+  processPriority?: ProcessPriority;
+  windowSize?: WindowSizeMode;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
@@ -255,6 +310,12 @@ export interface LauncherSettings {
   customSkinPath?: string;
   mojangSkinName?: string;
   bedrockApiSource?: "endstone" | "mcserverjars" | "azure_mirror";
+  versionIsolation: VersionIsolation;
+  windowTitle: string;
+  customInfo: string;
+  launcherVisibility: LauncherVisibility;
+  processPriority: ProcessPriority;
+  windowSize: WindowSizeMode;
 }
 
 export type ViewId =
@@ -290,6 +351,8 @@ export interface BedrockVersionItem {
   size: number;
   apiSource?: string | null;
   sha256?: string | null;
+  buildType?: string | null;
+  md5?: string | null;
 }
 
 export interface BedrockContentItem {

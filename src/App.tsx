@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar, TitleBar } from "./components/Chrome";
 import { DownloadCatalogView } from "./components/DownloadCatalogView";
 import { DownloadsView, type DownloadFileEvent } from "./components/DownloadsView";
@@ -11,6 +12,7 @@ import type { LogEntry } from "./components/Console";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
+  cancelInstall,
   deleteBedrockVersion,
   deleteVersion,
   detectJava,
@@ -43,6 +45,7 @@ import type {
   InstalledVersion,
   JavaInstall,
   LauncherSettings,
+  LauncherVisibility,
   LoaderSelection,
   SystemInfo,
   VersionManifest,
@@ -87,7 +90,15 @@ export default function App() {
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   const [installQueue, setInstallQueue] = useState<
     Array<{ versionId: string; selection?: LoaderSelection }>
-  >([]);
+  >(() => {
+    try {
+      const saved = localStorage.getItem("cobble.saved-queue");
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    return [];
+  });
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
   const [lastInstallProgress, setLastInstallProgress] = useState<InstallProgress | null>(
     null,
@@ -101,6 +112,7 @@ export default function App() {
   const [runtime, setRuntime] = useState<RuntimeView>({ status: "idle" });
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [versionSettings, setVersionSettings] = useState(loadVersionSettings);
+  const activeVisibilityRef = useRef<LauncherVisibility>("keep");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem("cobble.sidebar.collapsed") === "1";
@@ -138,6 +150,32 @@ export default function App() {
     } catch {}
   };
 
+  const handleSelectVersion = useCallback(
+    (versionId: string) => {
+      setSelectedVersion(versionId);
+      try {
+        localStorage.setItem("cobble.selected-version", versionId);
+      } catch {}
+      const isBedrock =
+        versionId === "uwp" ||
+        versionId === "bedrock-uwp" ||
+        versionId.startsWith("bedrock:") ||
+        versionId.startsWith("bedrock-") ||
+        versionId.includes("基岩版");
+      if (isBedrock) {
+        handleEditionChange("bedrock");
+        if (versionId.startsWith("bedrock:")) {
+          handleSelectBedrockVersion(versionId.replace(/^bedrock:/, ""));
+        } else if (versionId === "uwp") {
+          handleSelectBedrockVersion("uwp");
+        }
+      } else {
+        handleEditionChange("java");
+      }
+    },
+    [],
+  );
+
   const settingsRef = useRef(settings);
   const versionSettingsRef = useRef(versionSettings);
   const logId = useRef(0);
@@ -147,6 +185,74 @@ export default function App() {
   const latestProgressRef = useRef<InstallProgress | null>(null);
   const lastRoot = useRef(settings.gameRoot);
   const contentRef = useRef<HTMLElement>(null);
+
+  const activeInstallParamsRef = useRef<{
+    versionId: string;
+    selection?: LoaderSelection;
+    edition: "java" | "bedrock";
+    bedrockVersionItem?: BedrockVersionItem;
+    apiSource?: string;
+  } | null>(null);
+  const isPausedByUserRef = useRef(false);
+  const isCancelledByUserRef = useRef(false);
+  const installQueueRef = useRef(installQueue);
+
+  useEffect(() => {
+    installQueueRef.current = installQueue;
+    try {
+      if (installQueue.length > 0) {
+        localStorage.setItem("cobble.saved-queue", JSON.stringify(installQueue));
+      } else {
+        localStorage.removeItem("cobble.saved-queue");
+      }
+    } catch {}
+  }, [installQueue]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const currentTask = activeInstallParamsRef.current;
+      if (currentTask) {
+        const snap = latestProgressRef.current;
+        const targetName =
+          currentTask.edition === "bedrock"
+            ? currentTask.versionId
+            : currentTask.selection?.instanceName?.trim() || currentTask.versionId;
+        const pausedRecord: DownloadHistoryRecord = {
+          id: `paused-${targetName}-${Date.now()}`,
+          versionId: targetName,
+          status: "paused",
+          threads: settingsRef.current.downloadThreads,
+          totalFiles: snap?.total || 1,
+          totalBytes: snap?.totalBytes || snap?.downloadedBytes || 0,
+          downloadedBytes: snap?.downloadedBytes || 0,
+          peakSpeedBps: peakSpeedRef.current,
+          durationMs: 0,
+          finishedAt: timeNow(),
+          selection: currentTask.selection,
+          edition: currentTask.edition,
+          bedrockVersionItem: currentTask.bedrockVersionItem,
+          apiSource: currentTask.apiSource,
+          pausedReason: "软件关闭自动暂停",
+        };
+        try {
+          const stored: DownloadHistoryRecord[] = JSON.parse(
+            localStorage.getItem(HISTORY_STORAGE_KEY) || "[]",
+          );
+          const filtered = stored.filter((r) => r.versionId !== targetName);
+          localStorage.setItem(
+            HISTORY_STORAGE_KEY,
+            JSON.stringify([pausedRecord, ...filtered].slice(0, 40)),
+          );
+        } catch {}
+        void cancelInstall();
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, []);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -373,11 +479,36 @@ export default function App() {
         if (status.state !== "preparing") {
           setLaunchProgress(null);
         }
+        if (status.state === "running" && isDesktop) {
+          const vis = activeVisibilityRef.current;
+          if (vis === "close") {
+            try {
+              void getCurrentWindow().close();
+            } catch {}
+          } else if (vis === "hide") {
+            try {
+              void getCurrentWindow().hide();
+            } catch {}
+          }
+        } else if (status.state === "idle" && isDesktop && activeVisibilityRef.current === "hide") {
+          try {
+            const win = getCurrentWindow();
+            void win.show();
+            void win.setFocus();
+          } catch {}
+        }
       }),
     );
     track(
       subscribe("game:exit", (payload) => {
         setLaunchProgress(null);
+        if (isDesktop && activeVisibilityRef.current === "hide") {
+          try {
+            const win = getCurrentWindow();
+            void win.show();
+            void win.setFocus();
+          } catch {}
+        }
         if (payload.code !== null && payload.code !== 0) {
           pushToast(
             "error",
@@ -496,6 +627,14 @@ export default function App() {
       setPeakSpeedBps(0);
       setSpeedHistory([]);
       setInstallingVersion(targetId);
+      activeInstallParamsRef.current = {
+        versionId,
+        selection,
+        edition: "java",
+      };
+      isPausedByUserRef.current = false;
+      isCancelledByUserRef.current = false;
+
       const initialProgress: InstallProgress = {
         versionId: targetId,
         stage: "prepare",
@@ -539,6 +678,9 @@ export default function App() {
           count ? "游戏文件与附加工具安装完成，可以开始游戏。" : "可以开始游戏。",
         );
       } catch (error) {
+        if (isPausedByUserRef.current || isCancelledByUserRef.current) {
+          return;
+        }
         const record: DownloadHistoryRecord = {
           id: `${targetId}-${Date.now()}`,
           versionId: targetId,
@@ -555,6 +697,9 @@ export default function App() {
         pushToast("error", `安装 ${targetId} 失败`, String(error));
         pushLog("cobble", `安装 ${targetId} 失败: ${String(error)}`);
       } finally {
+        activeInstallParamsRef.current = null;
+        isPausedByUserRef.current = false;
+        isCancelledByUserRef.current = false;
         setInstallingVersion(null);
         setInstallProgress(null);
       }
@@ -580,6 +725,14 @@ export default function App() {
       setPeakSpeedBps(0);
       setSpeedHistory([]);
       setInstallingVersion(targetLabel);
+      activeInstallParamsRef.current = {
+        versionId: targetLabel,
+        edition: "bedrock",
+        bedrockVersionItem: ver,
+        apiSource,
+      };
+      isPausedByUserRef.current = false;
+      isCancelledByUserRef.current = false;
 
       const initialProgress: InstallProgress = {
         versionId: `bedrock:${ver.id}`,
@@ -629,6 +782,9 @@ export default function App() {
         pushToast("success", `${targetLabel} 安装完成`, res);
         pushLog("cobble", `${targetLabel} 安装成功: ${res}`);
       } catch (error) {
+        if (isPausedByUserRef.current || isCancelledByUserRef.current) {
+          return;
+        }
         const record: DownloadHistoryRecord = {
           id: `bedrock-${ver.id}-${Date.now()}`,
           versionId: targetLabel,
@@ -645,12 +801,107 @@ export default function App() {
         pushToast("error", `安装 ${targetLabel} 失败`, String(error));
         pushLog("cobble", `安装 ${targetLabel} 失败: ${String(error)}`);
       } finally {
+        activeInstallParamsRef.current = null;
+        isPausedByUserRef.current = false;
+        isCancelledByUserRef.current = false;
         setInstallingVersion(null);
         setInstallProgress(null);
       }
     },
     [installingVersion, pushLog, pushToast],
   );
+
+  const handlePauseInstall = useCallback(async () => {
+    const currentTask = activeInstallParamsRef.current;
+    if (!currentTask) return;
+    isPausedByUserRef.current = true;
+    await cancelInstall();
+    const snap = latestProgressRef.current;
+    const targetName =
+      currentTask.edition === "bedrock"
+        ? currentTask.versionId
+        : currentTask.selection?.instanceName?.trim() || currentTask.versionId;
+    const pausedRecord: DownloadHistoryRecord = {
+      id: `paused-${targetName}-${Date.now()}`,
+      versionId: targetName,
+      status: "paused",
+      threads: settingsRef.current.downloadThreads,
+      totalFiles: snap?.total || 1,
+      totalBytes: snap?.totalBytes || snap?.downloadedBytes || 0,
+      downloadedBytes: snap?.downloadedBytes || 0,
+      peakSpeedBps: peakSpeedRef.current,
+      durationMs: 0,
+      finishedAt: timeNow(),
+      selection: currentTask.selection,
+      edition: currentTask.edition,
+      bedrockVersionItem: currentTask.bedrockVersionItem,
+      apiSource: currentTask.apiSource,
+      pausedReason: "用户手动暂停",
+    };
+    setDownloadHistory((prev) => {
+      const filtered = prev.filter((r) => r.versionId !== targetName);
+      return [pausedRecord, ...filtered].slice(0, 40);
+    });
+    setInstallingVersion(null);
+    setInstallProgress(null);
+    pushToast(
+      "info",
+      "下载已暂停",
+      `已保存 ${targetName} 当前分片下载进度，可随时点击【继续下载】恢复。`,
+    );
+    pushLog("cobble", `已暂停 ${targetName} 下载。`);
+  }, [pushLog, pushToast]);
+
+  const handleCancelInstall = useCallback(async () => {
+    const currentTask = activeInstallParamsRef.current;
+    if (!currentTask) return;
+    isCancelledByUserRef.current = true;
+    await cancelInstall();
+    const targetName =
+      currentTask.edition === "bedrock"
+        ? currentTask.versionId
+        : currentTask.selection?.instanceName?.trim() || currentTask.versionId;
+    setInstallingVersion(null);
+    setInstallProgress(null);
+    pushToast("info", "下载已取消", `已取消 ${targetName} 的下载任务。`);
+    pushLog("cobble", `已取消 ${targetName} 下载。`);
+  }, [pushLog, pushToast]);
+
+  const handleResumeInstall = useCallback(
+    async (record: DownloadHistoryRecord) => {
+      setDownloadHistory((prev) => prev.filter((r) => r.id !== record.id));
+      if (record.edition === "bedrock" && record.bedrockVersionItem) {
+        void handleInstallBedrock(record.bedrockVersionItem, record.apiSource);
+      } else if (record.edition === "bedrock") {
+        const rawId = record.versionId
+          .replace(/^Minecraft 基岩版 /, "")
+          .replace(/^基岩版 /, "")
+          .replace(/^bedrock:/, "")
+          .trim();
+        void handleInstallBedrock(
+          {
+            id: rawId,
+            version: rawId,
+            name: record.versionId,
+            releaseType: "release",
+            downloadUrl: "",
+            date: "",
+            size: record.totalBytes || 0,
+          },
+          record.apiSource,
+        );
+      } else {
+        const rawId = record.versionId.replace(/^Minecraft /, "").trim();
+        void handleInstall(rawId, record.selection);
+      }
+    },
+    [handleInstall, handleInstallBedrock],
+  );
+
+  const handleRemoveQueueItem = useCallback((idx: number) => {
+    setInstallQueue((prev) => prev.filter((_, i) => i !== idx));
+    pushToast("info", "已移出队列", "已取消该任务的等待排队。");
+  }, [pushToast]);
 
   useEffect(() => {
     if (!installingVersion && installQueue.length > 0) {
@@ -662,7 +913,10 @@ export default function App() {
 
   const handleLaunch = useCallback(
     async (versionOverride?: string, options?: { stay?: boolean }) => {
-      const versionId = versionOverride ?? selectedVersion;
+      let versionId = versionOverride ?? selectedVersion;
+      if (edition === "bedrock" && !versionOverride && (!versionId || !versionId.includes("bedrock"))) {
+        versionId = selectedBedrockVersion ? `bedrock:${selectedBedrockVersion}` : "uwp";
+      }
       if (!versionId) {
         pushToast("info", "还没有选择版本", "先从版本选择页安装一个游戏版本。");
         setView("version-select");
@@ -677,6 +931,7 @@ export default function App() {
       }
 
       const isBedrock =
+        edition === "bedrock" ||
         versionId === "uwp" ||
         versionId === "bedrock-uwp" ||
         versionId.startsWith("bedrock:") ||
@@ -696,6 +951,18 @@ export default function App() {
           const msg = await launchBedrock(target, settingsRef.current.gameRoot);
           pushToast("success", "已唤起 Minecraft 基岩版", msg);
           pushLog("cobble", `成功启动 Minecraft 基岩版: ${msg}`);
+          if (isDesktop) {
+            const vis = settingsRef.current.launcherVisibility;
+            if (vis === "close") {
+              try {
+                void getCurrentWindow().close();
+              } catch {}
+            } else if (vis === "hide") {
+              try {
+                void getCurrentWindow().hide();
+              } catch {}
+            }
+          }
         } catch (err) {
           pushToast("error", "启动基岩版失败", String(err));
           pushLog("cobble", `启动基岩版失败: ${String(err)}`);
@@ -735,6 +1002,19 @@ export default function App() {
         versionId,
       );
 
+      const effectiveWidth =
+        launchSettings.windowSize === "custom" ||
+        (launchSettings.windowSize === "default" && launchSettings.resolutionEnabled)
+          ? launchSettings.width
+          : null;
+      const effectiveHeight =
+        launchSettings.windowSize === "custom" ||
+        (launchSettings.windowSize === "default" && launchSettings.resolutionEnabled)
+          ? launchSettings.height
+          : null;
+
+      activeVisibilityRef.current = launchSettings.launcherVisibility;
+
       try {
         await launchGame({
           versionId,
@@ -742,12 +1022,18 @@ export default function App() {
           playerName: settings.playerName.trim(),
           memoryMb: launchSettings.memoryMb,
           javaPath: settings.javaPath.trim() || null,
-          width: launchSettings.resolutionEnabled ? launchSettings.width : null,
-          height: launchSettings.resolutionEnabled ? launchSettings.height : null,
+          width: effectiveWidth,
+          height: effectiveHeight,
           skinType: settings.offlineSkinType,
           customSkinPath: settings.customSkinPath || null,
           customSkinModel: settings.offlineSkinModel || null,
           mojangSkinName: settings.mojangSkinName || null,
+          versionIsolation: launchSettings.versionIsolation,
+          windowTitle: launchSettings.windowTitle || null,
+          customInfo: launchSettings.customInfo || null,
+          launcherVisibility: launchSettings.launcherVisibility,
+          processPriority: launchSettings.processPriority,
+          windowSize: launchSettings.windowSize,
         });
         // Java may have been installed during launch; reflect it in the UI.
         void detectJavaForRoot(settingsRef.current.gameRoot);
@@ -822,6 +1108,9 @@ export default function App() {
           launcherVersion={systemInfo?.launcherVersion ?? "0.1.0"}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
+          skinType={settings.offlineSkinType}
+          customSkinPath={settings.customSkinPath}
+          mojangSkinName={settings.mojangSkinName}
         />
 
         <main
@@ -854,6 +1143,9 @@ export default function App() {
               edition={edition}
               onEditionChange={handleEditionChange}
               selectedBedrockVersion={selectedBedrockVersion}
+              settings={settings}
+              onUpdateSettings={updateSettings}
+              accountType="offline"
             />
           ) : (
             <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
@@ -867,7 +1159,7 @@ export default function App() {
                   onEditionChange={handleEditionChange}
                   selectedBedrockVersion={selectedBedrockVersion}
                   onSelectBedrockVersion={handleSelectBedrockVersion}
-                  onSelect={setSelectedVersion}
+                  onSelect={handleSelectVersion}
                   onPlay={(versionId) => void handleLaunch(versionId)}
                   onPlayBedrock={(verId) => {
                     void (async () => {
@@ -944,12 +1236,16 @@ export default function App() {
                   history={downloadHistory}
                   installQueue={installQueue}
                   gameRoot={settings.gameRoot}
-                  onSelectVersion={setSelectedVersion}
+                  onSelectVersion={handleSelectVersion}
                   onChangeThreads={(downloadThreads) =>
                     updateSettings({ downloadThreads })
                   }
                   onInstall={(versionId) => void handleInstall(versionId)}
                   onLaunch={(versionId) => void handleLaunch(versionId)}
+                  onPauseInstall={() => void handlePauseInstall()}
+                  onCancelInstall={() => void handleCancelInstall()}
+                  onResumeInstall={(record) => void handleResumeInstall(record)}
+                  onRemoveQueueItem={(idx) => handleRemoveQueueItem(idx)}
                   onClearHistory={() => setDownloadHistory([])}
                   onDeleteHistoryItem={(id) =>
                     setDownloadHistory((prev) => prev.filter((r) => r.id !== id))
@@ -957,6 +1253,9 @@ export default function App() {
                   onOpenVersionSelect={() => setView("download")}
                   onOpenFolder={(path) => void openFolder(path)}
                   onNotify={pushToast}
+                  onRefreshInstalled={async () => {
+                    await refreshInstalled(settings.gameRoot);
+                  }}
                 />
               ) : null}
 
@@ -965,7 +1264,7 @@ export default function App() {
                   manifest={manifest}
                   installed={installed}
                   selectedVersion={selectedVersion}
-                  onSelectVersion={setSelectedVersion}
+                  onSelectVersion={handleSelectVersion}
                   playerName={settings.playerName}
                   gameRoot={settings.gameRoot}
                   javaInstalls={javaInstalls}

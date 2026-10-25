@@ -2,14 +2,23 @@ import type { LauncherSettings } from "./types";
 
 export type VersionLaunchSettings = Pick<
   LauncherSettings,
-  "memoryMb" | "resolutionEnabled" | "width" | "height"
+  | "memoryMb"
+  | "resolutionEnabled"
+  | "width"
+  | "height"
+  | "versionIsolation"
+  | "windowTitle"
+  | "customInfo"
+  | "launcherVisibility"
+  | "processPriority"
+  | "windowSize"
 >;
 
 const STORAGE_KEY = "cobble.version-launch.v1";
 
 export function resolveVersionLaunchSettings(
   defaults: LauncherSettings,
-  overrides: Record<string, VersionLaunchSettings>,
+  overrides: Record<string, Partial<VersionLaunchSettings>>,
   versionId: string,
 ): VersionLaunchSettings {
   const override = overrides[versionId];
@@ -18,6 +27,12 @@ export function resolveVersionLaunchSettings(
     resolutionEnabled: override?.resolutionEnabled ?? defaults.resolutionEnabled,
     width: override?.width ?? defaults.width,
     height: override?.height ?? defaults.height,
+    versionIsolation: override?.versionIsolation ?? defaults.versionIsolation,
+    windowTitle: override?.windowTitle ?? defaults.windowTitle,
+    customInfo: override?.customInfo ?? defaults.customInfo,
+    launcherVisibility: override?.launcherVisibility ?? defaults.launcherVisibility,
+    processPriority: override?.processPriority ?? defaults.processPriority,
+    windowSize: override?.windowSize ?? defaults.windowSize,
   };
 }
 
@@ -32,6 +47,31 @@ function sanitize(value: Partial<VersionLaunchSettings>): VersionLaunchSettings 
     resolutionEnabled: Boolean(value.resolutionEnabled),
     width: Number.isFinite(width) ? Math.min(7680, Math.max(320, width)) : 1280,
     height: Number.isFinite(height) ? Math.min(4320, Math.max(240, height)) : 720,
+    versionIsolation:
+      value.versionIsolation === "modded" || value.versionIsolation === "none"
+        ? value.versionIsolation
+        : "all",
+    windowTitle: typeof value.windowTitle === "string" ? value.windowTitle : "",
+    customInfo:
+      typeof value.customInfo === "string" && value.customInfo.trim()
+        ? value.customInfo.trim()
+        : "PCL",
+    launcherVisibility:
+      value.launcherVisibility === "hide" || value.launcherVisibility === "close"
+        ? value.launcherVisibility
+        : "keep",
+    processPriority:
+      value.processPriority === "realtime" ||
+      value.processPriority === "high" ||
+      value.processPriority === "above_normal" ||
+      value.processPriority === "below_normal" ||
+      value.processPriority === "low"
+        ? value.processPriority
+        : "normal",
+    windowSize:
+      value.windowSize === "fullscreen" || value.windowSize === "custom"
+        ? value.windowSize
+        : "default",
   };
 }
 

@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import { isDesktop } from "../lib/backend";
-import type { GameStateName, ViewId } from "../lib/types";
+import type { GameStateName, OfflineSkinType, ViewId } from "../lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, StatusDot } from "./ui";
@@ -53,7 +53,7 @@ export function TitleBar({ demo }: { demo: boolean }) {
   return (
     <header className="flex h-11 shrink-0 items-center border-b border-border/70 bg-[#070a08] pl-4">
       <div className="flex items-center gap-2.5" data-tauri-drag-region>
-        <img src="/logo.png" alt="" className="size-5 shrink-0 rounded-[4px] object-contain shadow-xs" />
+        <img src="/logo.png" alt="" className="size-5 shrink-0 rounded-[4px] object-contain shadow-xs [image-rendering:pixelated]" />
         <span className="font-pixel text-[11px] tracking-[0.16em] text-foreground">
           OPEN-SOURCE MINECRAFT LAUNCHER
         </span>
@@ -134,6 +134,9 @@ export function Sidebar({
   launcherVersion,
   collapsed,
   onToggleCollapsed,
+  skinType,
+  customSkinPath,
+  mojangSkinName,
 }: {
   view: ViewId;
   onNavigate: (view: ViewId) => void;
@@ -147,6 +150,9 @@ export function Sidebar({
   launcherVersion: string;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  skinType?: OfflineSkinType;
+  customSkinPath?: string;
+  mojangSkinName?: string;
 }) {
   const javaLabel = javaMajor
     ? `Java ${javaMajor}`
@@ -176,7 +182,13 @@ export function Sidebar({
         title={collapsed ? `${playerName} · 打开启动器设置` : "打开启动器设置"}
       >
         <div className="overflow-hidden rounded-lg border border-border/70 bg-background">
-          <Avatar name={playerName} size={collapsed ? 36 : 38} />
+          <Avatar
+            name={playerName}
+            size={collapsed ? 36 : 38}
+            skinType={skinType}
+            customSkinPath={customSkinPath}
+            mojangSkinName={mojangSkinName}
+          />
         </div>
         {!collapsed ? (
           <>

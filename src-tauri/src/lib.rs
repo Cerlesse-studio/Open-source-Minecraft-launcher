@@ -27,6 +27,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[derive(Default)]
 pub struct InstallState {
     running: Mutex<Option<String>>,
+    abort_handle: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 pub struct GameState {
@@ -126,8 +127,31 @@ async fn get_version_manifest(
 }
 
 #[tauri::command]
+async fn get_betacraft_manifest(
+    root: String,
+    force: Option<bool>,
+) -> Result<VersionManifest, String> {
+    let root = if root.trim().is_empty() {
+        PathBuf::from(".cobble")
+    } else {
+        PathBuf::from(root)
+    };
+    minecraft::fetch_betacraft_manifest(&root, force.unwrap_or(false)).await
+}
+
+#[tauri::command]
 fn get_installed_versions(root: String) -> Result<Vec<InstalledVersion>, String> {
     minecraft::list_installed(&PathBuf::from(root))
+}
+
+#[tauri::command]
+async fn read_skin_as_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("无法读取皮肤文件: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/png;base64,{b64}"))
 }
 
 #[tauri::command]
@@ -199,19 +223,41 @@ async fn install_version(
         *running = Some(target_label);
     }
 
-    let result = minecraft::install_version_with_options(
-        &PathBuf::from(&request.root),
-        &request.version_id,
-        request.concurrency,
-        request.selection,
-        emit_progress(&app),
-    )
-    .await;
+    let app_handle = app.clone();
+    let root_path = PathBuf::from(&request.root);
+    let version_id = request.version_id.clone();
+    let concurrency = request.concurrency;
+    let selection = request.selection.clone();
+
+    let task = tokio::spawn(async move {
+        minecraft::install_version_with_options(
+            &root_path,
+            &version_id,
+            concurrency,
+            selection,
+            emit_progress(&app_handle),
+        )
+        .await
+    });
+
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        *guard = Some(task.abort_handle());
+    }
+
+    let join_res = task.await;
 
     if let Ok(mut running) = state.running.lock() {
         *running = None;
     }
-    result
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        *guard = None;
+    }
+
+    match join_res {
+        Ok(res) => res,
+        Err(e) if e.is_cancelled() => Err("下载任务已被用户取消或暂停".to_string()),
+        Err(e) => Err(format!("安装任务执行异常: {e}")),
+    }
 }
 
 #[tauri::command]
@@ -397,7 +443,17 @@ async fn launch_game(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    {
+        let priority_flag = match request.process_priority.as_deref() {
+            Some("realtime") => 0x0000_0100,
+            Some("high") => 0x0000_0080,
+            Some("above_normal") => 0x0000_8000,
+            Some("below_normal") => 0x0000_4000,
+            Some("low") => 0x0000_0040,
+            _ => 0x0000_0020, // normal
+        };
+        command.creation_flags(CREATE_NO_WINDOW | priority_flag);
+    }
 
     let mut child = command
         .spawn()
@@ -549,6 +605,7 @@ fn get_bedrock_content(category: Option<String>) -> Vec<bedrock::BedrockContentI
 #[tauri::command]
 async fn install_bedrock_version(
     app: AppHandle,
+    state: State<'_, InstallState>,
     version_id: String,
     download_url: Option<String>,
     root: Option<String>,
@@ -560,16 +617,96 @@ async fn install_bedrock_version(
         None => default_root(&app)?,
     };
 
+    let target_label = format!("bedrock:{version_id}");
+    {
+        let mut running = state
+            .running
+            .lock()
+            .map_err(|_| "安装状态不可用".to_string())?;
+        if let Some(active) = running.as_ref() {
+            return Err(format!("正在安装 {active}，请等待当前任务完成"));
+        }
+        *running = Some(target_label);
+    }
+
+    let app_handle = app.clone();
+    let ver_id = version_id.clone();
     let url = download_url.unwrap_or_default();
-    bedrock::install_bedrock_version(
-        &app,
-        &p,
-        &version_id,
-        &url,
-        api_source.as_deref(),
-        threads.unwrap_or(8),
-    )
-    .await
+    let th = threads.unwrap_or(8);
+
+    let task = tokio::spawn(async move {
+        bedrock::install_bedrock_version(
+            &app_handle,
+            &p,
+            &ver_id,
+            &url,
+            api_source.as_deref(),
+            th,
+        )
+        .await
+    });
+
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        *guard = Some(task.abort_handle());
+    }
+
+    let join_res = task.await;
+
+    if let Ok(mut running) = state.running.lock() {
+        *running = None;
+    }
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        *guard = None;
+    }
+
+    match join_res {
+        Ok(res) => res,
+        Err(e) if e.is_cancelled() => Err("下载任务已被用户取消或暂停".to_string()),
+        Err(e) => Err(format!("基岩版安装任务执行异常: {e}")),
+    }
+}
+
+#[tauri::command]
+async fn cancel_install(
+    app: AppHandle,
+    state: State<'_, InstallState>,
+) -> Result<bool, String> {
+    let mut aborted = false;
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        if let Some(handle) = guard.take() {
+            handle.abort();
+            aborted = true;
+        }
+    }
+    let version_name = if let Ok(mut running) = state.running.lock() {
+        running.take()
+    } else {
+        None
+    };
+
+    if let Some(name) = version_name {
+        let _ = app.emit(
+            "install:progress",
+            minecraft::InstallProgress {
+                version_id: name,
+                stage: "cancelled".to_string(),
+                done: 0,
+                total: 1,
+                detail: "下载已取消/已暂停".to_string(),
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                speed_bps: 0,
+                threads: 0,
+                active_threads: 0,
+                skipped_files: 0,
+                retried_files: 0,
+                active_tasks: vec![],
+                stages: vec![],
+            },
+        );
+    }
+
+    Ok(aborted)
 }
 
 #[tauri::command]
@@ -689,6 +826,94 @@ async fn delete_bedrock_version(
     bedrock::delete_bedrock_version(&p, &version_id).await
 }
 
+#[tauri::command]
+async fn clean_download_cache(
+    app: AppHandle,
+    root: Option<String>,
+) -> Result<u64, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::clean_download_cache(&p).await
+}
+
+#[tauri::command]
+async fn get_bedrock_loaders(mc_version: String) -> Result<bedrock::BedrockLoadersCatalog, String> {
+    Ok(bedrock::fetch_bedrock_loaders(&mc_version).await)
+}
+
+#[tauri::command]
+async fn install_bedrock_loader(
+    app: AppHandle,
+    version_id: String,
+    loader_type: String,
+    loader_version: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::install_bedrock_loader(&p, &version_id, &loader_type, &loader_version).await
+}
+
+#[tauri::command]
+fn get_bedrock_mods(
+    app: AppHandle,
+    version_id: String,
+    root: Option<String>,
+) -> Result<Vec<bedrock::BedrockModItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::get_bedrock_mods(&p, &version_id)
+}
+
+#[tauri::command]
+fn toggle_bedrock_mod(
+    app: AppHandle,
+    version_id: String,
+    mod_id: String,
+    enabled: bool,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::toggle_bedrock_mod(&p, &version_id, &mod_id, enabled)
+}
+
+#[tauri::command]
+fn delete_bedrock_mod(
+    app: AppHandle,
+    version_id: String,
+    mod_id: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::delete_bedrock_mod(&p, &version_id, &mod_id)
+}
+
+#[tauri::command]
+fn install_bedrock_mod_file(
+    app: AppHandle,
+    version_id: String,
+    file_path: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::install_bedrock_mod_file(&p, &version_id, &file_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -698,7 +923,9 @@ pub fn run() {
         .manage(GameState::default())
         .invoke_handler(tauri::generate_handler![
             get_version_manifest,
+            get_betacraft_manifest,
             get_installed_versions,
+            read_skin_as_data_url,
             get_version_loaders,
             search_content,
             get_content_versions,
@@ -717,6 +944,14 @@ pub fn run() {
             delete_bedrock_version,
             install_bedrock_pack,
             launch_bedrock,
+            clean_download_cache,
+            cancel_install,
+            get_bedrock_loaders,
+            install_bedrock_loader,
+            get_bedrock_mods,
+            toggle_bedrock_mod,
+            delete_bedrock_mod,
+            install_bedrock_mod_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

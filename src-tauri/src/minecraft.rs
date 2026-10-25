@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 pub const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+pub const BETACRAFT_MANIFEST_URL: &str =
+    "https://files.betacraft.uk/launcher/v2/assets/version_manifest_v2.json";
 pub const RESOURCES_URL: &str = "https://resources.download.minecraft.net";
 pub const LIBRARIES_URL: &str = "https://libraries.minecraft.net";
 
@@ -42,6 +44,10 @@ pub struct VersionSummary {
     pub time: Option<String>,
     pub release_time: Option<String>,
     pub sha1: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -444,21 +450,29 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
     }
 
     let fetched = async {
-        let response = net::client()
-            .get(VERSION_MANIFEST_URL)
-            .send()
-            .await
-            .map_err(|e| format!("无法连接 Mojang 版本服务: {e}"))?;
-        if !response.status().is_success() {
-            return Err(format!("版本清单请求失败: HTTP {}", response.status()));
+        let manifest_urls = [
+            VERSION_MANIFEST_URL,
+            "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json",
+        ];
+        let mut last_err = String::new();
+        for u in manifest_urls {
+            match net::client().get(u).send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(text) = response.text().await {
+                        if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                            return Ok::<_, String>((manifest, text));
+                        }
+                    }
+                }
+                Ok(response) => {
+                    last_err = format!("HTTP {}", response.status());
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
         }
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("读取版本清单失败: {e}"))?;
-        let manifest: VersionManifest =
-            serde_json::from_str(&text).map_err(|e| format!("版本清单解析失败: {e}"))?;
-        Ok::<_, String>((manifest, text))
+        Err(format!("版本清单请求失败: {last_err}"))
     }
     .await;
 
@@ -468,6 +482,112 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
             let _ = tokio::fs::write(&cache, text).await;
+            Ok(manifest)
+        }
+        Err(error) => {
+            if let Ok(text) = tokio::fs::read_to_string(&cache).await {
+                if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                    return Ok(manifest);
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BetaCraftManifest {
+    pub trim_at: Option<String>,
+    #[serde(default)]
+    pub versions: Vec<BetaCraftVersionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BetaCraftVersionSummary {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub version_type: String,
+    pub url: String,
+    pub time: Option<String>,
+    pub release_time: Option<String>,
+    pub phase: Option<String>,
+    pub protocol_version: Option<serde_json::Value>,
+}
+
+pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<VersionManifest, String> {
+    let root = net::absolute_path(root);
+    let root = root.as_path();
+    let cache = root.join("meta").join("betacraft_version_manifest_v2.json");
+
+    if !force {
+        if let Ok(text) = tokio::fs::read_to_string(&cache).await {
+            if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                return Ok(manifest);
+            }
+        }
+    }
+
+    let fetched = async {
+        let response = net::client()
+            .get(BETACRAFT_MANIFEST_URL)
+            .send()
+            .await
+            .map_err(|e| format!("无法连接 BetaCraft 版本服务: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!("BetaCraft 版本清单请求失败: HTTP {}", response.status()));
+        }
+        let text = response
+            .text()
+            .await
+            .map_err(|e| format!("读取 BetaCraft 版本清单失败: {e}"))?;
+        let raw: BetaCraftManifest =
+            serde_json::from_str(&text).map_err(|e| format!("BetaCraft 版本清单解析失败: {e}"))?;
+
+        let versions: Vec<VersionSummary> = raw
+            .versions
+            .into_iter()
+            .map(|v| {
+                let phase_str = v.phase.clone().unwrap_or_else(|| "legacy".to_string());
+                let mapped_type = match phase_str.as_str() {
+                    "beta" => "old_beta".to_string(),
+                    "alpha" | "infdev" | "indev" | "classic" | "pre-classic" => "old_alpha".to_string(),
+                    "oddballs" => "april_fools".to_string(),
+                    "post-1.0" => v.version_type.clone(),
+                    _ => v.version_type.clone(),
+                };
+                VersionSummary {
+                    id: v.id,
+                    version_type: mapped_type,
+                    url: v.url,
+                    time: v.time,
+                    release_time: v.release_time,
+                    sha1: None,
+                    phase: v.phase,
+                    source: Some("betacraft".to_string()),
+                }
+            })
+            .collect();
+
+        let manifest = VersionManifest {
+            latest: LatestVersions {
+                release: "1.7.10".to_string(),
+                snapshot: "b1.8.1".to_string(),
+            },
+            versions,
+        };
+        Ok::<_, String>(manifest)
+    }
+    .await;
+
+    match fetched {
+        Ok(manifest) => {
+            if let Some(parent) = cache.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            if let Ok(serialized) = serde_json::to_string(&manifest) {
+                let _ = tokio::fs::write(&cache, serialized).await;
+            }
             Ok(manifest)
         }
         Err(error) => {
@@ -562,12 +682,15 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
 }
 
 pub async fn delete_version(root: &Path, version_id: &str) -> Result<(), String> {
-    safe_version_id(version_id)?;
+    let clean_id = version_id
+        .trim()
+        .trim_start_matches("Minecraft ")
+        .trim();
+    safe_version_id(clean_id)?;
     let root = net::absolute_path(root);
-    let target = versions_dir(&root).join(version_id);
+    let target = versions_dir(&root).join(clean_id);
     if target.is_dir() {
-        tokio::fs::remove_dir_all(&target)
-            .await
+        crate::bedrock::force_remove_dir_all(&target)
             .map_err(|e| format!("删除版本目录失败: {e}"))?;
         Ok(())
     } else {
@@ -1146,7 +1269,7 @@ async fn download_jobs_with_tracker(
                         );
                     };
 
-                    let downloaded_res = net::download_file_multithreaded(
+                    let downloaded_res = net::download_file_with_mirrors(
                         &job.url,
                         &job.dest,
                         job.sha1.as_deref(),
@@ -1462,7 +1585,7 @@ async fn download_client_with_tracker(
         );
     };
 
-    let res = net::download_file_multithreaded(
+    let res = net::download_file_with_mirrors(
         client.url.as_deref().unwrap_or_default(),
         &dest,
         client.sha1.as_deref(),
@@ -1529,7 +1652,8 @@ pub async fn install_version_with_options(
 ) -> Result<InstallResult, String> {
     let root = net::absolute_path(root);
     let root = root.as_path();
-    safe_version_id(version_id)?;
+    let clean_version_id = version_id.strip_prefix("betacraft:").unwrap_or(version_id);
+    safe_version_id(clean_version_id)?;
 
     let selection = selection.unwrap_or_default();
     let instance_id = selection
@@ -1537,7 +1661,7 @@ pub async fn install_version_with_options(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(version_id)
+        .unwrap_or(clean_version_id)
         .to_string();
     safe_version_id(&instance_id)?;
 
@@ -1548,28 +1672,44 @@ pub async fn install_version_with_options(
     let tracker = DownloadTracker::new(&instance_id, threads, has_addons, progress);
     tracker.emit_now("prepare", 0, prepare_steps, "读取版本清单");
 
-    let mut manifest = fetch_manifest(root, false).await?;
-    if !manifest
-        .versions
-        .iter()
-        .any(|version| version.id == version_id)
-    {
-        manifest = fetch_manifest(root, true).await?;
+    let is_betacraft_prefixed = version_id.starts_with("betacraft:");
+    let mut summary = None;
+
+    if !is_betacraft_prefixed {
+        if let Ok(manifest) = fetch_manifest(root, false).await {
+            summary = manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+        }
     }
-    let summary = manifest
-        .versions
-        .iter()
-        .find(|v| v.id == version_id)
-        .ok_or_else(|| format!("版本清单中找不到 {version_id}"))?;
+
+    if summary.is_none() {
+        if let Ok(b_manifest) = fetch_betacraft_manifest(root, false).await {
+            summary = b_manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+        }
+    }
+
+    if summary.is_none() {
+        if !is_betacraft_prefixed {
+            if let Ok(manifest) = fetch_manifest(root, true).await {
+                summary = manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+            }
+        }
+        if summary.is_none() {
+            if let Ok(b_manifest) = fetch_betacraft_manifest(root, true).await {
+                summary = b_manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+            }
+        }
+    }
+
+    let summary = summary.ok_or_else(|| format!("版本清单中找不到 {clean_version_id}"))?;
     tracker.add_stage_completed("prepare", 1, 0);
     tracker.emit_now(
         "prepare",
         1,
         prepare_steps,
-        format!("解析版本配置 {version_id}.json"),
+        format!("解析版本配置 {}.json", summary.id),
     );
 
-    let mut version = load_version(root, summary).await?;
+    let mut version = load_version(root, &summary).await?;
     if version.inherits_from.is_some() {
         tracker.set_stage_status("prepare", "error");
         return Err("暂不支持安装基于 inheritsFrom 的模组版本".to_string());
@@ -1581,7 +1721,7 @@ pub async fn install_version_with_options(
         .await
         .map_err(|e| format!("无法创建游戏目录: {e}"))?;
 
-    version.mc_version = Some(version_id.to_string());
+    version.mc_version = Some(clean_version_id.to_string());
     version.id = instance_id.clone();
     version.optifine_version = selection
         .optifine_version
@@ -1607,7 +1747,7 @@ pub async fn install_version_with_options(
         let extra_mods = crate::loaders::prepare_addons(
             root,
             &instance_dir,
-            version_id,
+            clean_version_id,
             &mut version,
             &selection,
         )
@@ -1831,6 +1971,12 @@ pub struct LaunchRequest {
     pub custom_skin_path: Option<String>,
     pub custom_skin_model: Option<String>,
     pub mojang_skin_name: Option<String>,
+    pub version_isolation: Option<String>,
+    pub window_title: Option<String>,
+    pub custom_info: Option<String>,
+    pub launcher_visibility: Option<String>,
+    pub process_priority: Option<String>,
+    pub window_size: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2058,7 +2204,31 @@ fn asset_game_dir(root: &Path, version: &VersionDetail) -> String {
     path.to_string_lossy().to_string()
 }
 
-pub fn build_launch_spec(
+pub fn is_modded_version(version: &VersionDetail) -> bool {
+    let main = &version.main_class;
+    if main.contains("fabric")
+        || main.contains("forge")
+        || main.contains("neoforge")
+        || main.contains("quilt")
+        || main.contains("optifine")
+    {
+        return true;
+    }
+    for lib in &version.libraries {
+        let name = &lib.name;
+        if name.starts_with("net.fabricmc:")
+            || name.starts_with("net.minecraftforge:")
+            || name.starts_with("net.neoforged:")
+            || name.starts_with("org.quiltmc:")
+            || name.starts_with("optifine:")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn build_launch_spec(
     root: &Path,
     version: &VersionDetail,
     java: PathBuf,
@@ -2080,11 +2250,31 @@ pub fn build_launch_spec(
         return Err("客户端 jar 不存在，请重新安装该版本".to_string());
     }
 
+    let version_isolation = request.version_isolation.as_deref().unwrap_or("all");
+    let target_game_dir = match version_isolation {
+        "none" => root.to_path_buf(),
+        "modded" => {
+            if is_modded_version(version) {
+                instance_dir.clone()
+            } else {
+                root.to_path_buf()
+            }
+        }
+        _ => instance_dir.clone(), // "all"
+    };
+
+    let window_size_mode = request.window_size.as_deref().unwrap_or("default");
     let mut features = HashMap::new();
-    let custom_resolution = request
-        .width
-        .zip(request.height)
-        .filter(|(w, h)| *w >= 320 && *h >= 240);
+    let custom_resolution = if window_size_mode == "custom"
+        || (window_size_mode == "default" && request.width.is_some() && request.height.is_some())
+    {
+        request
+            .width
+            .zip(request.height)
+            .filter(|(w, h)| *w >= 320 && *h >= 240)
+    } else {
+        None
+    };
     features.insert(
         "has_custom_resolution".to_string(),
         custom_resolution.is_some(),
@@ -2125,7 +2315,7 @@ pub fn build_launch_spec(
     insert(
         &mut vars,
         "game_directory",
-        instance_dir.to_string_lossy().to_string(),
+        target_game_dir.to_string_lossy().to_string(),
     );
     insert(
         &mut vars,
@@ -2150,7 +2340,13 @@ pub fn build_launch_spec(
             .clone()
             .unwrap_or_else(|| "release".to_string()),
     );
-    insert(&mut vars, "launcher_name", "Cobble".to_string());
+    let custom_info = request
+        .custom_info
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("PCL");
+    insert(&mut vars, "launcher_name", custom_info.to_string());
     insert(
         &mut vars,
         "launcher_version",
@@ -2184,7 +2380,14 @@ pub fn build_launch_spec(
     let mut jvm_args: Vec<String> = vec![
         format!("-Xms{}M", (memory / 2).clamp(512, 2048)),
         format!("-Xmx{memory}M"),
+        format!("-Dminecraft.launcher.brand={custom_info}"),
     ];
+
+    if let Some(title) = request.window_title.as_deref().map(str::trim) {
+        if !title.is_empty() && title != "默认" {
+            jvm_args.push(format!("-Dorg.lwjgl.opengl.Window.title={title}"));
+        }
+    }
 
     if let Some(arguments) = &version.arguments {
         let version_jvm = collect_arguments(&arguments.jvm, &features, &vars);
@@ -2267,13 +2470,26 @@ pub fn build_launch_spec(
         game_args.extend(["--accessToken".into(), "0".into()]);
     }
 
+    if window_size_mode == "fullscreen" {
+        if !game_args.iter().any(|a| a == "--fullscreen") {
+            game_args.push("--fullscreen".to_string());
+        }
+    } else if let Some((w, h)) = custom_resolution {
+        if !game_args.iter().any(|a| a == "--width") {
+            game_args.extend(["--width".into(), w.to_string()]);
+        }
+        if !game_args.iter().any(|a| a == "--height") {
+            game_args.extend(["--height".into(), h.to_string()]);
+        }
+    }
+
     let mut args = jvm_args;
     args.extend(game_args);
 
     Ok(LaunchSpec {
         java,
         args,
-        cwd: instance_dir,
+        cwd: target_game_dir,
         java_major,
     })
 }
@@ -2481,5 +2697,38 @@ mod tests {
             "org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3-natives-windows.jar"
         );
         assert!(url.starts_with("https://libraries.minecraft.net/"));
+    }
+
+    #[test]
+    fn test_betacraft_manifest_parsing_and_mapping() {
+        let sample_json = r#"{
+            "trim_at": "1.7.10",
+            "versions": [
+                {
+                    "id": "b1.7.3",
+                    "url": "https://files.betacraft.uk/launcher/v2/assets/jsons/b1.7.3.json",
+                    "releaseTime": "2011-07-08T07:43:51+00:00",
+                    "time": "2011-07-08T07:32:16+00:00",
+                    "protocolVersion": "beta_14",
+                    "type": "release",
+                    "phase": "beta"
+                },
+                {
+                    "id": "c0.0.14a_08",
+                    "url": "https://files.betacraft.uk/launcher/v2/assets/jsons/c0.0.14a_08.json",
+                    "releaseTime": "2009-05-28T20:37:40+00:00",
+                    "time": "2009-05-28T20:37:40+00:00",
+                    "type": "release",
+                    "phase": "classic"
+                }
+            ]
+        }"#;
+
+        let parsed: BetaCraftManifest = serde_json::from_str(sample_json).unwrap();
+        assert_eq!(parsed.versions.len(), 2);
+        assert_eq!(parsed.versions[0].id, "b1.7.3");
+        assert_eq!(parsed.versions[0].phase.as_deref(), Some("beta"));
+        assert_eq!(parsed.versions[1].id, "c0.0.14a_08");
+        assert_eq!(parsed.versions[1].phase.as_deref(), Some("classic"));
     }
 }

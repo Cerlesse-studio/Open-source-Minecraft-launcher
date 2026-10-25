@@ -56,13 +56,14 @@ const UNIFIED_FILTERS: Array<{
   id: UnifiedFilter;
   label: string;
   icon: typeof Layers3;
+  imageSrc?: string;
 }> = [
-  { id: "all", label: "全部版本 (混排)", icon: Layers3 },
-  { id: "java", label: "☕ 仅 Java 版", icon: Coffee },
-  { id: "bedrock", label: "☸ 仅基岩版", icon: Boxes },
-  { id: "april_fools", label: "🎭 愚人节特别版", icon: Sparkles },
-  { id: "modded", label: "⚡ 模组版本 (Fabric/Forge/OptiFine)", icon: Cpu },
-  { id: "release", label: "📦 官方原版", icon: Package },
+  { id: "all", label: "全部版本 (混排)", icon: Layers3, imageSrc: "/icons/minecraft/compass.png" },
+  { id: "java", label: "仅 Java 版", icon: Coffee, imageSrc: "/icons/minecraft/grass_block.png" },
+  { id: "bedrock", label: "仅基岩版", icon: Boxes, imageSrc: "/icons/minecraft/bedrock.png" },
+  { id: "april_fools", label: "愚人节限定", icon: Sparkles, imageSrc: "/icons/minecraft/poisonous_potato.png" },
+  { id: "modded", label: "模组版本 (Fabric/Forge)", icon: Cpu, imageSrc: "/icons/minecraft/anvil.png" },
+  { id: "release", label: "官方正式版", icon: Package, imageSrc: "/icons/minecraft/crafting_table.png" },
 ];
 
 export interface VersionSelectViewProps {
@@ -437,16 +438,7 @@ export function VersionSelectView({
                 {UNIFIED_FILTERS.map((item) => {
                   const active = filter === item.id;
                   const Icon = item.icon;
-                  const count =
-                    item.id === "all"
-                      ? filterCounts.all
-                      : item.id === "java"
-                        ? filterCounts.java
-                        : item.id === "bedrock"
-                          ? filterCounts.bedrock
-                          : item.id === "modded"
-                            ? filterCounts.modded
-                            : filterCounts.release;
+                  const count = filterCounts[item.id] ?? 0;
                   return (
                     <button
                       key={item.id}
@@ -460,7 +452,15 @@ export function VersionSelectView({
                       )}
                     >
                       <span className="flex items-center gap-2">
-                        <Icon className="size-3.5 shrink-0" />
+                        {item.imageSrc ? (
+                          <img
+                            src={item.imageSrc}
+                            alt=""
+                            className="size-4 shrink-0 object-contain [image-rendering:pixelated]"
+                          />
+                        ) : (
+                          <Icon className="size-3.5 shrink-0" />
+                        )}
                         {item.label}
                       </span>
                       <span
@@ -594,24 +594,43 @@ export function VersionSelectView({
                         aria-pressed={isSelected}
                       >
                         {/* Glyph icon */}
-                        <span
-                          className={cn(
-                            "flex size-9 shrink-0 items-center justify-center rounded-md border",
-                            isJava
-                              ? item.type === "release"
-                                ? "border-primary/25 bg-primary/10 text-primary"
+                        {(() => {
+                          const isFools = isAprilFoolsVersion(item.id);
+                          const itemIconSrc = isJava
+                            ? isFools
+                              ? "/icons/minecraft/poisonous_potato.png"
+                              : item.loader || item.optifineVersion
+                                ? "/icons/minecraft/anvil.png"
                                 : item.type === "snapshot"
-                                  ? "border-gold/25 bg-gold/10 text-gold"
-                                  : "border-border/70 bg-muted/50 text-muted-foreground"
-                              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
-                          )}
-                        >
-                          {isJava ? (
-                            <Coffee className="size-4 text-primary" />
-                          ) : (
-                            <Boxes className="size-4 text-emerald-400" />
-                          )}
-                        </span>
+                                  ? "/icons/minecraft/command_block.png"
+                                  : item.type === "release"
+                                    ? "/icons/minecraft/grass_block.png"
+                                    : "/icons/minecraft/cobblestone.png"
+                            : "/icons/minecraft/bedrock.png";
+
+                          return (
+                            <span
+                              className={cn(
+                                "flex size-9 shrink-0 items-center justify-center rounded-md border p-1 shadow-2xs",
+                                isJava
+                                  ? isFools
+                                    ? "border-purple-500/35 bg-purple-500/15"
+                                    : item.type === "release"
+                                      ? "border-primary/25 bg-primary/10"
+                                      : item.type === "snapshot"
+                                        ? "border-gold/25 bg-gold/10"
+                                        : "border-border/70 bg-muted/50"
+                                  : "border-emerald-500/30 bg-emerald-500/10",
+                              )}
+                            >
+                              <img
+                                src={itemIconSrc}
+                                alt=""
+                                className="size-6 object-contain drop-shadow-xs [image-rendering:pixelated]"
+                              />
+                            </span>
+                          );
+                        })()}
 
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-1.5">

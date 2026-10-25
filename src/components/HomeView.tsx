@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Camera,
   Check,
   ChevronDown,
   Layers3,
@@ -9,10 +10,12 @@ import {
   Newspaper,
   Play,
   RefreshCw,
+  RotateCcw,
   SlidersHorizontal,
   Square,
   UserRound,
 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +38,7 @@ import {
 } from "../lib/news";
 import {
   getBedrockStatus,
+  isDesktop,
   launchBedrock,
 } from "../lib/backend";
 import type {
@@ -43,6 +47,7 @@ import type {
   GameStateName,
   InstallProgress,
   InstalledVersion,
+  LauncherSettings,
 } from "../lib/types";
 import { Avatar, GrassBlock, StatusDot, TypeBadge } from "./ui";
 
@@ -70,6 +75,9 @@ interface HomeViewProps {
   edition?: GameEdition;
   onEditionChange?: (edition: GameEdition) => void;
   selectedBedrockVersion?: string;
+  settings?: LauncherSettings;
+  onUpdateSettings?: (patch: Partial<LauncherSettings>) => void;
+  accountType?: "offline" | "microsoft";
 }
 
 function NewsFallback({ size = 28 }: { size?: number }) {
@@ -160,9 +168,11 @@ export function HomeView({
   gameRoot,
   onOpenDownloadBedrock,
   onNotify,
-  edition: _controlledEdition,
-  onEditionChange: _onEditionChange,
+  edition = "java",
   selectedBedrockVersion = "uwp",
+  settings,
+  onUpdateSettings,
+  accountType = "offline",
 }: HomeViewProps) {
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
   const [bedrockLaunching, setBedrockLaunching] = useState(false);
@@ -170,6 +180,101 @@ export function HomeView({
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isOffline = accountType === "offline";
+
+  const isBedrock =
+    edition === "bedrock" ||
+    selectedVersion === "uwp" ||
+    selectedVersion === "bedrock-uwp" ||
+    selectedVersion.startsWith("bedrock:") ||
+    selectedVersion.startsWith("bedrock-") ||
+    (bedrockStatus?.installedVersions.includes(selectedVersion) ?? false);
+
+  const activeBedrockVersion = useMemo(() => {
+    if (selectedVersion.startsWith("bedrock:")) {
+      return selectedVersion.replace(/^bedrock:/, "");
+    }
+    if (selectedBedrockVersion && selectedBedrockVersion !== "uwp") {
+      return selectedBedrockVersion;
+    }
+    if (bedrockStatus?.installedVersions && bedrockStatus.installedVersions.length > 0) {
+      return bedrockStatus.installedVersions[0];
+    }
+    if (bedrockStatus?.uwpInstalled) {
+      return "uwp";
+    }
+    return selectedBedrockVersion || "uwp";
+  }, [selectedVersion, selectedBedrockVersion, bedrockStatus]);
+
+  const isBedrockInstalled = useMemo(() => {
+    if (activeBedrockVersion === "uwp") {
+      return Boolean(bedrockStatus?.uwpInstalled);
+    }
+    return Boolean(
+      bedrockStatus?.installedVersions.includes(activeBedrockVersion) ||
+      bedrockStatus?.standaloneInstalled
+    );
+  }, [activeBedrockVersion, bedrockStatus]);
+
+  const displayVersion = isBedrock
+    ? activeBedrockVersion === "uwp"
+      ? "Minecraft for Windows (UWP)"
+      : `基岩版: ${activeBedrockVersion}`
+    : selectedVersion || "—";
+
+  const handleUploadSkin = useCallback(async () => {
+    if (!isOffline) {
+      onNotify?.("info", "仅限离线账户", "当前只有离线账户支持本地上传皮肤。");
+      return;
+    }
+
+    if (isDesktop) {
+      try {
+        const picked = await openDialog({
+          directory: false,
+          multiple: false,
+          filters: [{ name: "Minecraft 皮肤 (*.png)", extensions: ["png"] }],
+          title: "选择离线皮肤文件 (PNG)",
+        });
+        if (typeof picked === "string" && picked.trim()) {
+          onUpdateSettings?.({
+            offlineSkinType: "custom",
+            customSkinPath: picked.trim(),
+          });
+          onNotify?.("success", "皮肤已更新", "已成功更换离线自定义皮肤");
+        }
+      } catch (error) {
+        onNotify?.("error", "选择皮肤失败", String(error));
+      }
+    } else {
+      fileInputRef.current?.click();
+    }
+  }, [isOffline, onNotify, onUpdateSettings]);
+
+  const handleBrowserFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith(".png")) {
+        onNotify?.("error", "文件格式错误", "请上传 .png 格式的皮肤文件。");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        onUpdateSettings?.({
+          offlineSkinType: "custom",
+          customSkinPath: result,
+        });
+        onNotify?.("success", "皮肤已更新", `已加载皮肤: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+      e.target.value = "";
+    },
+    [onNotify, onUpdateSettings],
+  );
 
   const refreshBedrockStatus = useCallback(async () => {
     try {
@@ -188,9 +293,9 @@ export function HomeView({
     setBedrockLaunching(true);
     try {
       const target =
-        selectedBedrockVersion === "uwp" || !selectedBedrockVersion
+        activeBedrockVersion === "uwp" || !activeBedrockVersion
           ? undefined
-          : selectedBedrockVersion;
+          : activeBedrockVersion;
       const msg = await launchBedrock(target, gameRoot);
       onNotify?.("success", "已唤起 Minecraft 基岩版", msg);
     } catch (e) {
@@ -237,27 +342,39 @@ export function HomeView({
     ? progressPercent(activeProgress.done, activeProgress.total)
     : null;
 
+  const effectiveInstalled = isBedrock ? isBedrockInstalled : isInstalled;
+
   const statusTone = isRunning
     ? "live"
-    : isLaunching
+    : isLaunching || bedrockLaunching
       ? "pending"
-      : isInstalled
+      : effectiveInstalled
         ? "online"
         : "warn";
   const statusLabel = isRunning
     ? "游戏运行中"
-    : isLaunching
-      ? activeProgress?.detail || runtime.detail || "正在检查运行环境"
-      : isInstalled
-        ? "准备就绪，随时出发"
-        : selectedVersion
-          ? "此版本尚未安装"
-          : "还没有可启动的版本";
+    : isLaunching || bedrockLaunching
+      ? activeProgress?.detail || runtime.detail || "正在检查运行环境…"
+      : isBedrock
+        ? isBedrockInstalled
+          ? "基岩版已就绪，随时出发"
+          : "尚未下载安装此基岩版本"
+        : isInstalled
+          ? "准备就绪，随时出发"
+          : selectedVersion
+            ? "此版本尚未安装"
+            : "还没有可启动的版本";
   const launchLabel = isRunning
     ? "结束游戏"
-    : isLaunching
+    : isLaunching || bedrockLaunching
       ? "正在启动…"
-      : "启动游戏";
+      : isBedrock
+        ? isBedrockInstalled
+          ? "启动基岩版"
+          : "下载基岩版"
+        : isInstalled
+          ? "启动游戏"
+          : "下载游戏";
 
   return (
     <div className="relative z-10 h-full overflow-y-auto p-4 min-[900px]:overflow-hidden">
@@ -459,12 +576,83 @@ export function HomeView({
         <aside className="flex min-h-[560px] flex-col overflow-y-auto rounded-xl border border-border/70 bg-card/45 p-5 min-[900px]:min-h-0">
           {/* Unified Player Profile */}
           <div>
-            <div className="relative size-[168px] overflow-hidden rounded-xl border border-border/80 bg-[#0a0f0b] grass-glow">
-              <Avatar name={playerName} size={168} className="size-full" />
-              <span className="absolute bottom-2 left-2 rounded border border-white/10 bg-black/55 px-1.5 py-0.5 text-[9px] text-white/75 backdrop-blur-sm">
-                离线档案
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png"
+              className="hidden"
+              onChange={handleBrowserFileChange}
+            />
+            <div
+              role={isOffline ? "button" : undefined}
+              tabIndex={isOffline ? 0 : undefined}
+              onClick={isOffline ? () => void handleUploadSkin() : undefined}
+              onKeyDown={
+                isOffline
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        void handleUploadSkin();
+                      }
+                    }
+                  : undefined
+              }
+              className={cn(
+                "group relative size-[168px] overflow-hidden rounded-xl border border-border/80 bg-[#0a0f0b] grass-glow select-none transition-all",
+                isOffline &&
+                  "cursor-pointer hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+              )}
+              title={
+                isOffline
+                  ? "点击上传自定义皮肤 (PNG)"
+                  : "在线账户暂不支持本地皮肤上传"
+              }
+            >
+              <Avatar
+                name={playerName}
+                size={168}
+                className="size-full transition-transform duration-300 group-hover:scale-105"
+                skinType={settings?.offlineSkinType}
+                customSkinPath={settings?.customSkinPath}
+                mojangSkinName={settings?.mojangSkinName}
+              />
+              <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
+                {isOffline ? "离线档案" : "在线档案"}
               </span>
+
+              {isOffline ? (
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60 backdrop-blur-[2px] opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                  <div className="rounded-full bg-primary/25 p-2 text-primary ring-1 ring-primary/50">
+                    <Camera className="size-5" />
+                  </div>
+                  <span className="text-[12px] font-medium text-white shadow-sm">
+                    点击上传皮肤
+                  </span>
+                  <span className="text-[9.5px] text-white/70">
+                    支持 64×64 PNG
+                  </span>
+                </div>
+              ) : null}
             </div>
+
+            {isOffline && settings?.offlineSkinType === "custom" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateSettings?.({
+                    offlineSkinType: "random",
+                    customSkinPath: undefined,
+                  });
+                  onNotify?.("info", "已恢复默认皮肤", "离线皮肤已重置为默认随机。");
+                }}
+                className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                title="恢复为默认随机皮肤"
+              >
+                <RotateCcw className="size-3" />
+                <span>恢复默认皮肤</span>
+              </button>
+            ) : null}
+
             <div className="mt-3.5 min-w-0">
               <p className="truncate text-[19px] font-semibold leading-tight tracking-[-0.01em]">
                 {playerName.trim() || "未命名玩家"}
@@ -491,13 +679,13 @@ export function HomeView({
               >
                 <StatusDot
                   tone={statusTone}
-                  animated={isLaunching}
+                  animated={isLaunching || bedrockLaunching}
                   className="shrink-0"
                 />
                 <span className="truncate">{statusLabel}</span>
               </span>
               <span className="shrink-0 font-mono text-[10px] text-muted-foreground/80">
-                {selectedVersion || "—"}
+                {displayVersion}
               </span>
             </div>
 
@@ -579,16 +767,9 @@ export function HomeView({
 
             {/* Unified Big Play Button */}
             {(() => {
-              const isBedrock =
-                selectedVersion === "uwp" ||
-                selectedVersion === "bedrock-uwp" ||
-                selectedVersion.startsWith("bedrock:") ||
-                selectedVersion.startsWith("bedrock-") ||
-                (bedrockStatus?.installedVersions.includes(selectedVersion) ?? false);
-
               const handleUnifiedPlay = () => {
                 if (isBedrock) {
-                  if (bedrockStatus?.uwpInstalled || bedrockStatus?.standaloneInstalled) {
+                  if (isBedrockInstalled) {
                     void handleLaunchBedrock();
                   } else {
                     onOpenDownloadBedrock?.();
@@ -609,7 +790,9 @@ export function HomeView({
                     size="lg"
                     variant={isRunning ? "outline" : "default"}
                     onClick={handleUnifiedPlay}
-                    disabled={(isLaunching || bedrockLaunching || nameInvalid) && !isRunning}
+                    disabled={
+                      (isLaunching || bedrockLaunching || (!isBedrock && nameInvalid)) && !isRunning
+                    }
                     className={cn(
                       "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
                       isRunning
@@ -632,7 +815,7 @@ export function HomeView({
                       : isLaunching || bedrockLaunching
                         ? "正在启动…"
                         : isBedrock
-                          ? bedrockStatus?.uwpInstalled || bedrockStatus?.standaloneInstalled
+                          ? isBedrockInstalled
                             ? "启动基岩版"
                             : "获取并下载基岩版"
                           : launchLabel}

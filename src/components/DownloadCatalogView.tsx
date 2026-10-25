@@ -42,10 +42,12 @@ import {
   deleteVersion,
   getBedrockStatus,
   getBedrockVersions,
+  getBetacraftManifest,
   installBedrockVersion,
   launchBedrock,
 } from "../lib/backend";
 import { ContentMarketplaceView } from "./ContentMarketplaceView";
+import { BedrockModLoaderModal } from "./BedrockModLoaderModal";
 import type {
   BedrockStatus,
   BedrockVersionItem,
@@ -76,13 +78,14 @@ const FILTERS: Array<{
   id: Filter;
   label: string;
   icon: typeof Layers3;
+  imageSrc?: string;
 }> = [
-  { id: "all", label: "全部可下载", icon: Layers3 },
-  { id: "release", label: "Java 正式版", icon: Package },
-  { id: "snapshot", label: "Java 快照", icon: FlaskConical },
-  { id: "april_fools", label: "🎭 愚人节限定", icon: Sparkles },
-  { id: "legacy", label: "远古版本", icon: Archive },
-  { id: "bedrock", label: "基岩版核心", icon: Boxes },
+  { id: "all", label: "全部可下载", icon: Layers3, imageSrc: "/icons/minecraft/compass.png" },
+  { id: "release", label: "Java 正式版", icon: Package, imageSrc: "/icons/minecraft/grass_block.png" },
+  { id: "snapshot", label: "Java 快照", icon: FlaskConical, imageSrc: "/icons/minecraft/command_block.png" },
+  { id: "april_fools", label: "愚人节限定", icon: Sparkles, imageSrc: "/icons/minecraft/poisonous_potato.png" },
+  { id: "legacy", label: "远古版本档案", icon: Archive, imageSrc: "/icons/minecraft/cobblestone.png" },
+  { id: "bedrock", label: "基岩版核心", icon: Boxes, imageSrc: "/icons/minecraft/bedrock.png" },
 ];
 
 export interface AprilFoolsMeta {
@@ -206,32 +209,37 @@ export const APRIL_FOOLS_FALLBACK_VERSIONS: VersionSummary[] = [
 
 const GROUP_META: Record<
   GroupId,
-  { title: string; description: string; icon: typeof Layers3 }
+  { title: string; description: string; icon: typeof Layers3; imageSrc: string }
 > = {
   release: {
     title: "Java 正式版",
     description: "稳定版本，适合日常游玩",
     icon: Package,
+    imageSrc: "/icons/minecraft/grass_block.png",
   },
   snapshot: {
     title: "Java 快照",
     description: "抢先体验开发中的新内容",
     icon: FlaskConical,
+    imageSrc: "/icons/minecraft/command_block.png",
   },
   april_fools: {
     title: "愚人节特别版 (April Fools' Updates)",
     description: "Mojang 历年愚人节脑洞神作：毒马铃薯维度、21.4亿随机维度、一次一个方块、3D软盘共享版等",
     icon: Sparkles,
+    imageSrc: "/icons/minecraft/poisonous_potato.png",
   },
   legacy: {
-    title: "远古版本",
-    description: "Beta 与 Alpha 历史版本",
+    title: "BetaCraft 远古版本档案库",
+    description: "files.betacraft.uk · 汇集 290+ 远古历史版本（Classic, Indev, Infdev, Alpha, Beta），修复现代系统声音缺失与皮肤黑屏",
     icon: Archive,
+    imageSrc: "/icons/minecraft/cobblestone.png",
   },
   bedrock: {
     title: "基岩版 (Bedrock Edition)",
     description: "官方独立服务端核心、正式版与 Windows Store 渠道",
     icon: Boxes,
+    imageSrc: "/icons/minecraft/bedrock.png",
   },
 };
 
@@ -276,35 +284,42 @@ const CATALOG_CATEGORIES: Array<{
   { id: "datapack", label: "数据包", icon: Cpu, desc: "原版世界与规则" },
 ];
 
-function VersionGlyph({ type }: { type: string }) {
+function VersionGlyph({ type, source }: { type: string; source?: string }) {
+  let iconSrc = "/icons/minecraft/grass_block.png";
+  let borderClass = "border-primary/25 bg-primary/10";
+  let altText = "Java 正式版";
+
   if (type === "bedrock") {
-    return (
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-        <Boxes className="size-4" />
-      </span>
-    );
+    iconSrc = "/icons/minecraft/bedrock.png";
+    borderClass = "border-emerald-500/30 bg-emerald-500/10";
+    altText = "基岩版";
+  } else if (type === "april_fools") {
+    iconSrc = "/icons/minecraft/poisonous_potato.png";
+    borderClass = "border-purple-500/35 bg-purple-500/15";
+    altText = "愚人节限定";
+  } else if (type === "snapshot") {
+    iconSrc = "/icons/minecraft/command_block.png";
+    borderClass = "border-gold/30 bg-gold/10";
+    altText = "开发快照";
+  } else if (type === "old_beta" || type === "old_alpha" || type === "legacy" || type === "betacraft" || source === "betacraft") {
+    iconSrc = "/icons/minecraft/cobblestone.png";
+    borderClass = "border-amber-500/30 bg-amber-500/10";
+    altText = "远古版本";
   }
-  if (type === "april_fools") {
-    return (
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-purple-500/35 bg-purple-500/15 text-purple-400 shadow-xs">
-        <Sparkles className="size-4" />
-      </span>
-    );
-  }
-  const Icon =
-    type === "snapshot" ? FlaskConical : type === "release" ? Package : Archive;
+
   return (
     <span
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-md border",
-        type === "release"
-          ? "border-primary/25 bg-primary/10 text-primary"
-          : type === "snapshot"
-            ? "border-gold/25 bg-gold/10 text-gold"
-            : "border-border/70 bg-muted/50 text-muted-foreground",
+        "flex size-9 shrink-0 items-center justify-center rounded-md border p-1 shadow-2xs transition-transform group-hover:scale-105",
+        borderClass,
       )}
     >
-      <Icon className="size-4" />
+      <img
+        src={iconSrc}
+        alt={altText}
+        className="size-6 object-contain drop-shadow-xs [image-rendering:pixelated]"
+        loading="lazy"
+      />
     </span>
   );
 }
@@ -345,16 +360,40 @@ export function DownloadCatalogView({
     release: 10,
     snapshot: 6,
     april_fools: 15,
-    legacy: 4,
+    legacy: 15,
     bedrock: 25,
   });
+
+  const [betacraftManifest, setBetacraftManifest] = useState<VersionManifest | null>(null);
+  const [betacraftLoading, setBetacraftLoading] = useState(false);
+  const [betacraftPhaseFilter, setBetacraftPhaseFilter] = useState<string>("all");
+  const [legacySource, setLegacySource] = useState<"all" | "betacraft" | "mojang">("all");
+
+  const loadBetacraft = async (force = false) => {
+    setBetacraftLoading(true);
+    try {
+      const bm = await getBetacraftManifest(gameRoot, force);
+      setBetacraftManifest(bm);
+    } catch {
+      // ignore
+    } finally {
+      setBetacraftLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadBetacraft();
+  }, [gameRoot]);
 
   const [bedrockVersions, setBedrockVersions] = useState<BedrockVersionItem[]>([]);
   const [bedrockTypeFilter, setBedrockTypeFilter] = useState<"all" | "release" | "preview">("all");
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
   const [installingBedrockId, setInstallingBedrockId] = useState<string | null>(null);
-  const [bedrockApiSource, setBedrockApiSource] = useState<"endstone" | "mcserverjars" | "azure_mirror">("endstone");
+  const [bedrockApiSource, setBedrockApiSource] = useState<
+    "mcappx" | "bedrockboot_gitee" | "bmcbl" | "endstone" | "azure_mirror"
+  >("mcappx");
   const [bedrockLoading, setBedrockLoading] = useState(false);
+  const [bedrockLoaderModalVer, setBedrockLoaderModalVer] = useState<BedrockVersionItem | null>(null);
 
   const loadBedrock = async (source = bedrockApiSource) => {
     setBedrockLoading(true);
@@ -451,6 +490,49 @@ export function DownloadCatalogView({
       ),
     ];
 
+    const allBetaCraft = (betacraftManifest?.versions ?? []).filter(matches);
+    const mojangLegacy = all.filter(
+      (version) =>
+        version.type !== "release" &&
+        version.type !== "snapshot" &&
+        !isAprilFools(version),
+    );
+
+    let legacyItems: VersionSummary[] = [];
+    if (legacySource === "mojang") {
+      legacyItems = mojangLegacy;
+    } else if (legacySource === "betacraft") {
+      legacyItems = allBetaCraft;
+    } else {
+      const seen = new Set<string>();
+      legacyItems = [];
+      for (const v of allBetaCraft) {
+        seen.add(v.id);
+        legacyItems.push(v);
+      }
+      for (const v of mojangLegacy) {
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          legacyItems.push(v);
+        }
+      }
+    }
+
+    if (betacraftPhaseFilter !== "all") {
+      legacyItems = legacyItems.filter((v) => {
+        const ph = (v.phase || "").toLowerCase();
+        if (ph) return ph === betacraftPhaseFilter.toLowerCase();
+        const idLower = v.id.toLowerCase();
+        if (betacraftPhaseFilter === "beta") return idLower.startsWith("b") || v.type === "old_beta";
+        if (betacraftPhaseFilter === "alpha") return idLower.startsWith("a") || v.type === "old_alpha";
+        if (betacraftPhaseFilter === "classic") return idLower.startsWith("c");
+        if (betacraftPhaseFilter === "indev") return idLower.startsWith("in");
+        if (betacraftPhaseFilter === "infdev") return idLower.startsWith("inf");
+        if (betacraftPhaseFilter === "oddballs") return idLower.includes("rd") || idLower.includes("test");
+        return true;
+      });
+    }
+
     return [
       { id: "release", items: all.filter((version) => version.type === "release") },
       {
@@ -465,12 +547,7 @@ export function DownloadCatalogView({
       },
       {
         id: "legacy",
-        items: all.filter(
-          (version) =>
-            version.type !== "release" &&
-            version.type !== "snapshot" &&
-            !isAprilFools(version),
-        ),
+        items: legacyItems,
       },
       {
         id: "bedrock",
@@ -478,7 +555,7 @@ export function DownloadCatalogView({
         bedrockItems: filteredBedrock,
       },
     ];
-  }, [manifest, bedrockVersions, query]);
+  }, [manifest, betacraftManifest, bedrockVersions, query, betacraftPhaseFilter, legacySource]);
 
   const counts = useMemo(() => {
     const byGroup = Object.fromEntries(
@@ -657,7 +734,7 @@ export function DownloadCatalogView({
                 value={query}
                 onChange={(event) => {
                   setQuery(event.target.value);
-                  setLimits({ release: 10, snapshot: 6, april_fools: 15, legacy: 4, bedrock: 25 });
+                  setLimits({ release: 10, snapshot: 6, april_fools: 15, legacy: 15, bedrock: 25 });
                 }}
                 placeholder="搜索版本号"
                 aria-label="搜索版本号"
@@ -800,12 +877,20 @@ export function DownloadCatalogView({
                         active && "bg-accent/70 text-foreground",
                       )}
                     >
-                      <Icon
-                        className={cn(
-                          "size-3.5",
-                          active ? "text-primary" : "text-muted-foreground/70",
-                        )}
-                      />
+                      {item.imageSrc ? (
+                        <img
+                          src={item.imageSrc}
+                          alt=""
+                          className="size-3.5 shrink-0 object-contain [image-rendering:pixelated]"
+                        />
+                      ) : (
+                        <Icon
+                          className={cn(
+                            "size-3.5",
+                            active ? "text-primary" : "text-muted-foreground/70",
+                          )}
+                        />
+                      )}
                       <span className="flex-1 text-left">{item.label}</span>
                       <span className="font-mono text-[9px] text-muted-foreground/70">
                         {count}
@@ -909,8 +994,16 @@ export function DownloadCatalogView({
                     }
                     aria-expanded={open}
                   >
-                    <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/60 text-primary">
-                      <Icon className="size-3.5" />
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/60 p-1">
+                      {meta.imageSrc ? (
+                        <img
+                          src={meta.imageSrc}
+                          alt=""
+                          className="size-4.5 object-contain [image-rendering:pixelated]"
+                        />
+                      ) : (
+                        <Icon className="size-3.5 text-primary" />
+                      )}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
@@ -944,9 +1037,54 @@ export function DownloadCatalogView({
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="flex items-center gap-1.5 font-medium text-foreground">
                                 <Globe className="size-3.5 text-emerald-400" />
-                                <span>第三方下载 API 源：</span>
+                                <span>基岩版下载数据源 (BedrockBoot)：</span>
                               </div>
-                              <div className="inline-flex items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
+                              <div className="inline-flex flex-wrap items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("mcappx");
+                                    void loadBedrock("mcappx");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "mcappx"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  McAppx 官方源 (推荐)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("bedrockboot_gitee");
+                                    void loadBedrock("bedrockboot_gitee");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "bedrockboot_gitee"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  BedrockBoot Gitee 源
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("bmcbl");
+                                    void loadBedrock("bmcbl");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "bmcbl"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  BMCBL 源
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -960,22 +1098,7 @@ export function DownloadCatalogView({
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
-                                  EndstoneMC 全版本 API
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setBedrockApiSource("mcserverjars");
-                                    void loadBedrock("mcserverjars");
-                                  }}
-                                  className={cn(
-                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
-                                    bedrockApiSource === "mcserverjars"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
-                                      : "text-muted-foreground hover:text-foreground",
-                                  )}
-                                >
-                                  MCServerJars API
+                                  EndstoneMC 社区源
                                 </button>
                                 <button
                                   type="button"
@@ -1093,6 +1216,23 @@ export function DownloadCatalogView({
                                             <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
                                               基岩版
                                             </Badge>
+                                            {ver.buildType ? (
+                                              <Badge
+                                                variant="outline"
+                                                className="h-4 rounded-[4px] border-emerald-500/40 bg-emerald-500/10 px-1.5 font-mono text-[9px] font-semibold text-emerald-300"
+                                              >
+                                                {ver.buildType}
+                                              </Badge>
+                                            ) : null}
+                                            {ver.md5 ? (
+                                              <Badge
+                                                variant="outline"
+                                                title={`MD5 校验值: ${ver.md5}`}
+                                                className="h-4 rounded-[4px] border-border/60 bg-muted/30 px-1.5 font-mono text-[9px] font-normal text-muted-foreground"
+                                              >
+                                                MD5: {ver.md5.slice(0, 8)}…
+                                              </Badge>
+                                            ) : null}
                                             {ver.apiSource ? (
                                               <Badge
                                                 variant="outline"
@@ -1150,6 +1290,16 @@ export function DownloadCatalogView({
                                               启动
                                             </Button>
                                             <Button
+                                              variant="outline"
+                                              size="sm"
+                                              className="h-7 gap-1 border-primary/40 text-xs text-primary hover:bg-primary/10"
+                                              onClick={() => setBedrockLoaderModalVer(ver)}
+                                              title="配置 LeviLamina 模组加载器与原生 DLL 模组"
+                                            >
+                                              <Boxes className="size-3" />
+                                              模组与加载器
+                                            </Button>
+                                            <Button
                                               variant="ghost"
                                               size="icon-sm"
                                               className="size-7 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
@@ -1166,7 +1316,18 @@ export function DownloadCatalogView({
                                               <Trash2 className="size-3.5" />
                                             </Button>
                                           </>
-                                        ) : null}
+                                        ) : (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 gap-1 text-xs text-muted-foreground hover:text-foreground"
+                                            onClick={() => setBedrockLoaderModalVer(ver)}
+                                            title="预览并准备适配该版本的模组加载器"
+                                          >
+                                            <Boxes className="size-3" />
+                                            加载器
+                                          </Button>
+                                        )}
 
                                         <Button
                                           variant={isInstalled ? "ghost" : "default"}
@@ -1209,105 +1370,218 @@ export function DownloadCatalogView({
                           })()}
                         </>
                       ) : (
-                        visible.map((version) => {
-                          const local = installedMap.get(version.id);
-                          const latest = manifest?.latest.release === version.id;
-                          const foolsMeta = APRIL_FOOLS_REGISTRY[version.id];
-                          const isAprilFools = group.id === "april_fools" || Boolean(foolsMeta);
-                          const glyphType = isAprilFools ? "april_fools" : version.type;
+                        <>
+                          {group.id === "legacy" ? (
+                            <div className="space-y-2 border-b border-border/60 bg-muted/20 px-3.5 py-2.5 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="flex items-center gap-1.5 font-medium text-foreground">
+                                    <Archive className="size-3.5 text-amber-400" />
+                                    <span>远古版本数据源：</span>
+                                  </div>
+                                  <div className="inline-flex items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setLegacySource("all")}
+                                      className={cn(
+                                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                        legacySource === "all"
+                                          ? "bg-amber-500/20 text-amber-400 shadow-xs font-semibold"
+                                          : "text-muted-foreground hover:text-foreground",
+                                      )}
+                                    >
+                                      全部聚合源 (推荐)
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setLegacySource("betacraft")}
+                                      className={cn(
+                                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                        legacySource === "betacraft"
+                                          ? "bg-amber-500/20 text-amber-400 shadow-xs font-semibold"
+                                          : "text-muted-foreground hover:text-foreground",
+                                      )}
+                                    >
+                                      BetaCraft 档案库 (files.betacraft.uk)
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setLegacySource("mojang")}
+                                      className={cn(
+                                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                        legacySource === "mojang"
+                                          ? "bg-amber-500/20 text-amber-400 shadow-xs font-semibold"
+                                          : "text-muted-foreground hover:text-foreground",
+                                      )}
+                                    >
+                                      Mojang 官方源
+                                    </button>
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+                                  onClick={() => void loadBetacraft(true)}
+                                  disabled={betacraftLoading}
+                                >
+                                  <RefreshCw className={cn("size-2.5", betacraftLoading && "animate-spin")} />
+                                  刷新 BetaCraft 清单
+                                </Button>
+                              </div>
 
-                          return (
-                            <div
-                              key={version.id}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => onSelectVersion(version)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  onSelectVersion(version);
-                                }
-                              }}
-                              className={cn(
-                                "group flex cursor-pointer items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/25",
-                                isAprilFools && "hover:bg-purple-500/[0.04]",
-                              )}
-                            >
-                              <div className="flex min-w-0 flex-1 items-center gap-3">
-                                <VersionGlyph type={glyphType} />
-                                <span className="min-w-0 flex-1">
-                                  <span className="flex flex-wrap items-center gap-1.5">
-                                    <span className="font-mono text-[12px] font-medium text-foreground">
-                                      {version.id}
-                                    </span>
-                                    {foolsMeta ? (
-                                      <span className="text-[12px] font-semibold text-purple-400">
-                                        · {foolsMeta.titleZh}
-                                      </span>
-                                    ) : null}
-                                    {foolsMeta ? (
-                                      <Badge className="h-4 rounded-[4px] border-0 bg-purple-500/20 px-1.5 text-[9px] font-medium text-purple-300">
-                                        {foolsMeta.tag}
-                                      </Badge>
-                                    ) : null}
-                                    {foolsMeta ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="h-4 rounded-[4px] border-purple-500/35 px-1 text-[9px] text-purple-300/80"
-                                      >
-                                        {foolsMeta.year} 愚人节
-                                      </Badge>
-                                    ) : null}
-                                    {latest ? (
-                                      <Badge className="h-4 rounded-[4px] border-0 bg-gold/15 px-1.5 text-[9px] font-normal text-gold">
-                                        最新
-                                      </Badge>
-                                    ) : null}
-                                    {local ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="h-4 rounded-[4px] border-primary/25 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
-                                      >
-                                        已下载
-                                      </Badge>
-                                    ) : null}
-                                  </span>
-
-                                  {foolsMeta?.subtitle ? (
-                                    <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground/90">
-                                      {foolsMeta.subtitle}
-                                    </p>
-                                  ) : null}
-
-                                  <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-                                    {foolsMeta?.highlights && foolsMeta.highlights.length > 0 ? (
-                                      <span className="flex flex-wrap items-center gap-1 mr-1">
-                                        {foolsMeta.highlights.map((h) => (
-                                          <span
-                                            key={h}
-                                            className="rounded bg-muted/60 px-1.5 py-0.2 text-[9px] text-muted-foreground/90"
-                                          >
-                                            {h}
-                                          </span>
-                                        ))}
-                                      </span>
-                                    ) : null}
-                                    <span>发布于 {formatDate(version.releaseTime)}</span>
-                                    <span className="text-border">/</span>
-                                    <TypeBadge
-                                      type={glyphType}
-                                      tone={isAprilFools ? "gold" : typeTone(version.type)}
-                                      label={isAprilFools ? "愚人节限定" : typeLabel(version.type)}
-                                    />
-                                  </span>
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-[11px] font-medium text-muted-foreground mr-1">阶段筛选：</span>
+                                  {[
+                                    { id: "all", label: "全部" },
+                                    { id: "beta", label: "Beta" },
+                                    { id: "alpha", label: "Alpha" },
+                                    { id: "infdev", label: "Infdev" },
+                                    { id: "indev", label: "Indev" },
+                                    { id: "classic", label: "Classic" },
+                                    { id: "pre-classic", label: "Pre-Classic" },
+                                    { id: "oddballs", label: "早期特殊/奇趣" },
+                                    { id: "post-1.0", label: "Post-1.0" },
+                                  ].map((phase) => (
+                                    <button
+                                      key={phase.id}
+                                      type="button"
+                                      onClick={() => setBetacraftPhaseFilter(phase.id)}
+                                      className={cn(
+                                        "rounded-md px-2 py-0.5 text-[10.5px] font-medium transition-colors",
+                                        betacraftPhaseFilter === phase.id
+                                          ? "bg-amber-500/20 text-amber-400 shadow-xs font-semibold"
+                                          : "bg-background/40 text-muted-foreground hover:text-foreground",
+                                      )}
+                                    >
+                                      {phase.label}
+                                    </button>
+                                  ))}
+                                </div>
+                                <span className="text-[10px] text-muted-foreground">
+                                  BetaCraft 独家收录早期 Classic/Indev/Infdev 并修复现代系统声音缺失与皮肤黑屏
                                 </span>
                               </div>
-                              <div className="flex shrink-0 items-center">
-                                {renderActions(version)}
-                              </div>
                             </div>
-                          );
-                        })
+                          ) : null}
+
+                          {visible.map((version) => {
+                            const local = installedMap.get(version.id);
+                            const latest = manifest?.latest.release === version.id;
+                            const foolsMeta = APRIL_FOOLS_REGISTRY[version.id];
+                            const isAprilFools = group.id === "april_fools" || Boolean(foolsMeta);
+                            const glyphType = isAprilFools ? "april_fools" : version.type;
+
+                            return (
+                              <div
+                                key={version.id}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => onSelectVersion(version)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    onSelectVersion(version);
+                                  }
+                                }}
+                                className={cn(
+                                  "group flex cursor-pointer items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/25",
+                                  isAprilFools && "hover:bg-purple-500/[0.04]",
+                                )}
+                              >
+                                <div className="flex min-w-0 flex-1 items-center gap-3">
+                                  <VersionGlyph type={glyphType} source={version.source} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="flex flex-wrap items-center gap-1.5">
+                                      <span className="font-mono text-[12px] font-medium text-foreground">
+                                        {version.id}
+                                      </span>
+                                      {version.source === "betacraft" ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="h-4 rounded-[4px] border-amber-500/40 bg-amber-500/10 px-1.5 font-mono text-[9px] font-normal text-amber-400"
+                                        >
+                                          BetaCraft
+                                        </Badge>
+                                      ) : null}
+                                      {version.phase ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="h-4 rounded-[4px] border-border/80 bg-muted/40 px-1.5 font-mono text-[9px] font-normal text-muted-foreground uppercase"
+                                        >
+                                          {version.phase}
+                                        </Badge>
+                                      ) : null}
+                                      {foolsMeta ? (
+                                        <span className="text-[12px] font-semibold text-purple-400">
+                                          · {foolsMeta.titleZh}
+                                        </span>
+                                      ) : null}
+                                      {foolsMeta ? (
+                                        <Badge className="h-4 rounded-[4px] border-0 bg-purple-500/20 px-1.5 text-[9px] font-medium text-purple-300">
+                                          {foolsMeta.tag}
+                                        </Badge>
+                                      ) : null}
+                                      {foolsMeta ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="h-4 rounded-[4px] border-purple-500/35 px-1 text-[9px] text-purple-300/80"
+                                        >
+                                          {foolsMeta.year} 愚人节
+                                        </Badge>
+                                      ) : null}
+                                      {latest ? (
+                                        <Badge className="h-4 rounded-[4px] border-0 bg-gold/15 px-1.5 text-[9px] font-normal text-gold">
+                                          最新
+                                        </Badge>
+                                      ) : null}
+                                      {local ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="h-4 rounded-[4px] border-primary/25 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
+                                        >
+                                          已下载
+                                        </Badge>
+                                      ) : null}
+                                    </span>
+
+                                    {foolsMeta?.subtitle ? (
+                                      <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground/90">
+                                        {foolsMeta.subtitle}
+                                      </p>
+                                    ) : null}
+
+                                    <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                                      {foolsMeta?.highlights && foolsMeta.highlights.length > 0 ? (
+                                        <span className="flex flex-wrap items-center gap-1 mr-1">
+                                          {foolsMeta.highlights.map((h) => (
+                                            <span
+                                              key={h}
+                                              className="rounded bg-muted/60 px-1.5 py-0.2 text-[9px] text-muted-foreground/90"
+                                            >
+                                              {h}
+                                            </span>
+                                          ))}
+                                        </span>
+                                      ) : null}
+                                      <span>发布于 {formatDate(version.releaseTime)}</span>
+                                      <span className="text-border">/</span>
+                                      <TypeBadge
+                                        type={glyphType}
+                                        tone={isAprilFools ? "gold" : typeTone(version.type)}
+                                        label={isAprilFools ? "愚人节限定" : typeLabel(version.type)}
+                                      />
+                                    </span>
+                                  </span>
+                                </div>
+                                <div className="flex shrink-0 items-center">
+                                  {renderActions(version)}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </>
                       )}
                       {group.id !== "bedrock" && group.items.length > visible.length ? (
                         <Button
@@ -1405,6 +1679,17 @@ export function DownloadCatalogView({
       </div>
     </div>
   ) : null}
+
+  {bedrockLoaderModalVer && (
+    <BedrockModLoaderModal
+      version={bedrockLoaderModalVer}
+      gameRoot={gameRoot}
+      onClose={() => {
+        setBedrockLoaderModalVer(null);
+        void loadBedrock();
+      }}
+    />
+  )}
 </div>
 );
 }

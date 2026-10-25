@@ -18,6 +18,12 @@ export const defaultSettings: LauncherSettings = {
   customSkinPath: "",
   mojangSkinName: "",
   bedrockApiSource: "endstone",
+  versionIsolation: "all",
+  windowTitle: "",
+  customInfo: "PCL",
+  launcherVisibility: "keep",
+  processPriority: "normal",
+  windowSize: "default",
 };
 
 export function loadSettings(): LauncherSettings {
@@ -64,6 +70,32 @@ export function loadSettings(): LauncherSettings {
         parsed.bedrockApiSource === "mcserverjars" || parsed.bedrockApiSource === "azure_mirror"
           ? parsed.bedrockApiSource
           : "endstone",
+      versionIsolation:
+        parsed.versionIsolation === "modded" || parsed.versionIsolation === "none"
+          ? parsed.versionIsolation
+          : "all",
+      windowTitle:
+        typeof parsed.windowTitle === "string" ? parsed.windowTitle : "",
+      customInfo:
+        typeof parsed.customInfo === "string" && parsed.customInfo.trim()
+          ? parsed.customInfo.trim()
+          : "PCL",
+      launcherVisibility:
+        parsed.launcherVisibility === "hide" || parsed.launcherVisibility === "close"
+          ? parsed.launcherVisibility
+          : "keep",
+      processPriority:
+        parsed.processPriority === "realtime" ||
+        parsed.processPriority === "high" ||
+        parsed.processPriority === "above_normal" ||
+        parsed.processPriority === "below_normal" ||
+        parsed.processPriority === "low"
+          ? parsed.processPriority
+          : "normal",
+      windowSize:
+        parsed.windowSize === "fullscreen" || parsed.windowSize === "custom"
+          ? parsed.windowSize
+          : "default",
     };
   } catch {
     return { ...defaultSettings };
