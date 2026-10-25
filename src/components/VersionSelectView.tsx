@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Boxes,
   Check,
@@ -135,26 +135,25 @@ export function VersionSelectView({
   const [deletingItem, setDeletingItem] = useState<MixedVersionItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    void (async () => {
-      try {
-        const [s, bVers] = await Promise.all([
-          getBedrockStatus(gameRoot),
-          getBedrockVersions(),
-        ]);
-        if (mounted) {
-          setBedrockStatus(s);
-          setCloudBedrockVersions(bVers.slice(0, 4));
-        }
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
+  const refreshStatus = useCallback(async () => {
+    try {
+      const [s, bVers] = await Promise.all([
+        getBedrockStatus(gameRoot),
+        getBedrockVersions(),
+      ]);
+      setBedrockStatus(s);
+      setCloudBedrockVersions(bVers.slice(0, 4));
+    } catch {
+      // ignore
+    }
   }, [gameRoot]);
+
+  useEffect(() => {
+    void refreshStatus();
+    const onFocus = () => void refreshStatus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshStatus, selectedBedrockVersion, _edition]);
 
   // Combine Java versions and Bedrock versions into a mixed list
   const mixedItems = useMemo<MixedVersionItem[]>(() => {
@@ -196,7 +195,7 @@ export function VersionSelectView({
         edition: "bedrock",
         type: "bds",
         dateStr: "独立核心已就绪",
-        pathDisplay: `bedrock/versions/${bdsVer}/bedrock_server.exe`,
+        pathDisplay: `bedrock/versions/${bdsVer}/`,
       });
     }
 

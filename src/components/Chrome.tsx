@@ -28,7 +28,7 @@ async function withWindow(action: (window: ReturnType<typeof getCurrentWindow>) 
   }
 }
 
-export function TitleBar({ demo }: { demo: boolean }) {
+export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -51,11 +51,11 @@ export function TitleBar({ demo }: { demo: boolean }) {
   }, []);
 
   return (
-    <header className="flex h-11 shrink-0 items-center border-b border-border/70 bg-[#070a08] pl-4">
+    <header className="flex h-11 shrink-0 items-center border-b border-border/70 bg-sidebar/95 backdrop-blur-xs pl-4">
       <div className="flex items-center gap-2.5" data-tauri-drag-region>
         <img src="/logo.png" alt="" className="size-5 shrink-0 rounded-[4px] object-contain shadow-xs [image-rendering:pixelated]" />
         <span className="font-pixel text-[11px] tracking-[0.16em] text-foreground">
-          OPEN-SOURCE MINECRAFT LAUNCHER
+          {title?.trim() || "OPEN-SOURCE MINECRAFT LAUNCHER"}
         </span>
       </div>
       <div

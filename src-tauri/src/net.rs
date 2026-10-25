@@ -112,16 +112,25 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.fabricmc.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
-        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.minecraftforge.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
-        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.neoforged.net/releases/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
-    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/maven/") {
-        mirrors.push(format!("https://libraries.minecraft.net/{path}"));
-        mirrors.push(format!("https://maven.fabricmc.net/{path}"));
         mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/maven/") {
+        if path.starts_with("net/minecraftforge/") {
+            mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
+        } else if path.starts_with("net/neoforged/") {
+            mirrors.push(format!("https://maven.neoforged.net/releases/{path}"));
+        } else if path.starts_with("net/fabricmc/") {
+            mirrors.push(format!("https://maven.fabricmc.net/{path}"));
+        } else if path.starts_with("org/quiltmc/") {
+            mirrors.push(format!("https://maven.quiltmc.org/repository/release/{path}"));
+        } else {
+            mirrors.push(format!("https://libraries.minecraft.net/{path}"));
+            mirrors.push(format!("https://maven.fabricmc.net/{path}"));
+            mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
+        }
     } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/assets/") {
         mirrors.push(format!("https://resources.download.minecraft.net/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/") {

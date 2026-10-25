@@ -456,7 +456,7 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
         ];
         let mut last_err = String::new();
         for u in manifest_urls {
-            match net::client().get(u).send().await {
+            match net::client().get(u).timeout(Duration::from_secs(4)).send().await {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(text) = response.text().await {
                         if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
@@ -626,6 +626,9 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
         } else {
             continue;
         };
+        let parsed_detail = std::fs::read_to_string(&json_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<VersionDetail>(&text).ok());
         let jar_exists = dir.join(format!("{id}.jar")).is_file()
             || std::fs::read_dir(&dir)
                 .map(|mut it| {
@@ -640,20 +643,66 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
                         .unwrap_or(false)
                     })
                 })
+                .unwrap_or(false)
+            || parsed_detail
+                .as_ref()
+                .and_then(|d| d.inherits_from.as_ref())
+                .map(|parent| {
+                    versions_dir(&root)
+                        .join(parent)
+                        .join(format!("{parent}.jar"))
+                        .is_file()
+                })
                 .unwrap_or(false);
         if !jar_exists {
             continue;
         }
-        let parsed_detail = std::fs::read_to_string(&json_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<VersionDetail>(&text).ok());
         let version_type = parsed_detail
             .as_ref()
             .and_then(|detail| detail.version_type.clone())
             .unwrap_or_else(|| "release".to_string());
-        let mc_version = parsed_detail.as_ref().and_then(|d| d.mc_version.clone());
-        let loader = parsed_detail.as_ref().and_then(|d| d.loader.clone());
-        let loader_version = parsed_detail.as_ref().and_then(|d| d.loader_version.clone());
+        let mc_version = parsed_detail
+            .as_ref()
+            .and_then(|d| d.mc_version.clone())
+            .or_else(|| parsed_detail.as_ref().and_then(|d| d.inherits_from.clone()));
+        let (loader, loader_version) = if parsed_detail
+            .as_ref()
+            .and_then(|d| d.loader.clone())
+            .is_some()
+        {
+            (
+                parsed_detail.as_ref().and_then(|d| d.loader.clone()),
+                parsed_detail.as_ref().and_then(|d| d.loader_version.clone()),
+            )
+        } else {
+            let mut detected = (None, None);
+            if let Some(detail) = &parsed_detail {
+                for lib in &detail.libraries {
+                    if lib.name.starts_with("net.minecraftforge:forge:") {
+                        let parts: Vec<&str> = lib.name.split(':').collect();
+                        if parts.len() >= 3 {
+                            let fver = parts[2];
+                            let lver = fver.split('-').nth(1).unwrap_or(fver);
+                            detected = (Some("forge".to_string()), Some(lver.to_string()));
+                            break;
+                        }
+                    } else if lib.name.starts_with("net.neoforged:neoforge:") {
+                        let parts: Vec<&str> = lib.name.split(':').collect();
+                        if parts.len() >= 3 {
+                            detected = (Some("neoforge".to_string()), Some(parts[2].to_string()));
+                            break;
+                        }
+                    } else if lib.name.starts_with("net.fabricmc:fabric-loader:") {
+                        let parts: Vec<&str> = lib.name.split(':').collect();
+                        if parts.len() >= 3 {
+                            detected = (Some("fabric".to_string()), Some(parts[2].to_string()));
+                            break;
+                        }
+                    }
+                }
+            }
+            detected
+        };
         let optifine_version = parsed_detail
             .as_ref()
             .and_then(|d| d.optifine_version.clone());
@@ -739,7 +788,158 @@ async fn load_version(root: &Path, summary: &VersionSummary) -> Result<VersionDe
     let text = tokio::fs::read_to_string(&json_path)
         .await
         .map_err(|e| format!("读取版本信息失败: {e}"))?;
-    serde_json::from_str::<VersionDetail>(&text).map_err(|e| format!("版本信息解析失败: {e}"))
+    let detail: VersionDetail =
+        serde_json::from_str(&text).map_err(|e| format!("版本信息解析失败: {e}"))?;
+    Box::pin(resolve_inherits_from(root, detail)).await
+}
+
+pub fn library_conflict_key(lib: &Library) -> String {
+    let base = lib.name.split('@').next().unwrap_or(&lib.name);
+    let parts: Vec<&str> = base.split(':').collect();
+    let group = parts.first().copied().unwrap_or("");
+    let artifact = parts.get(1).copied().unwrap_or("");
+    let classifier = parts.get(3).copied().unwrap_or("");
+    let has_natives_map = lib.natives.as_ref().map(|n| !n.is_empty()).unwrap_or(false);
+    format!(
+        "{group}:{artifact}:{classifier}:{}",
+        if has_natives_map { "natives" } else { "jar" }
+    )
+}
+
+fn native_library_matches_current_arch(name: &str) -> bool {
+    if !name.contains(":natives-") {
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if name.contains("-x86") && !name.contains("x86_64") {
+            return false;
+        }
+        if name.contains("-arm64") || name.contains("-aarch64") {
+            return false;
+        }
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        if name.contains("-arm64") || name.contains("-aarch64") || name.contains("x86_64") {
+            return false;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if name.contains("-x86") {
+            return false;
+        }
+    }
+    true
+}
+
+pub async fn resolve_inherits_from(
+    root: &Path,
+    mut version: VersionDetail,
+) -> Result<VersionDetail, String> {
+    let Some(parent_id) = version.inherits_from.clone() else {
+        return Ok(version);
+    };
+
+    // 1. Try local versions/<parent_id>/<parent_id>.json
+    let parent_json_path = version_dir(root, &parent_id).join(format!("{parent_id}.json"));
+    let parent_text = if let Ok(text) = tokio::fs::read_to_string(&parent_json_path).await {
+        text
+    } else {
+        // 2. Try meta/versions/<parent_id>.json or meta/versions/<parent_id>/<parent_id>.json
+        let meta_flat = root
+            .join("meta")
+            .join("versions")
+            .join(format!("{parent_id}.json"));
+        let meta_nested = root
+            .join("meta")
+            .join("versions")
+            .join(&parent_id)
+            .join(format!("{parent_id}.json"));
+        if let Ok(text) = tokio::fs::read_to_string(&meta_flat).await {
+            text
+        } else if let Ok(text) = tokio::fs::read_to_string(&meta_nested).await {
+            text
+        } else {
+            // 3. Fetch from manifest
+            let manifest = fetch_manifest(root, false).await?;
+            let summary = manifest
+                .versions
+                .iter()
+                .find(|v| v.id == parent_id)
+                .ok_or_else(|| format!("无法找到父版本 {parent_id}"))?;
+            let detail = Box::pin(load_version(root, summary)).await?;
+            serde_json::to_string(&detail).map_err(|e| e.to_string())?
+        }
+    };
+
+    let parent_detail: VersionDetail = serde_json::from_str(&parent_text)
+        .map_err(|e| format!("解析父版本 {parent_id} 配置失败: {e}"))?;
+
+    // Recursively resolve in case the parent also inherits
+    let parent_detail = Box::pin(resolve_inherits_from(root, parent_detail)).await?;
+
+    if version.asset_index.is_none() {
+        version.asset_index = parent_detail.asset_index;
+    }
+    if version.assets.is_none() {
+        version.assets = parent_detail.assets;
+    }
+    if version.downloads.is_none() {
+        version.downloads = parent_detail.downloads;
+    }
+    if version.java_version.is_none() {
+        version.java_version = parent_detail.java_version;
+    }
+    if version.mc_version.is_none() {
+        version.mc_version = parent_detail.mc_version.or(Some(parent_id.clone()));
+    }
+    if version.logging.is_none() {
+        version.logging = parent_detail.logging;
+    }
+
+    // Merge arguments:
+    if let Some(parent_args) = parent_detail.arguments {
+        let child_args = version.arguments.get_or_insert_with(|| Arguments {
+            game: Vec::new(),
+            jvm: Vec::new(),
+        });
+        // JVM arguments: parent JVM args first, then child JVM args (matching merge_profile_into_version)
+        let mut combined_jvm = parent_args.jvm;
+        combined_jvm.extend(child_args.jvm.drain(..));
+        child_args.jvm = combined_jvm;
+
+        // Game arguments: parent game args (standard Mojang args) followed by child args
+        let mut combined_game = parent_args.game;
+        combined_game.extend(child_args.game.drain(..));
+        child_args.game = combined_game;
+    } else if version.arguments.is_none() {
+        version.arguments = parent_detail.arguments;
+    }
+
+    if version.minecraft_arguments.is_none() {
+        version.minecraft_arguments = parent_detail.minecraft_arguments;
+    }
+
+    // Combine libraries: child libraries come first, then parent libraries (dedup by group:artifact:classifier:natives)
+    let mut combined = Vec::new();
+    let mut child_keys = std::collections::HashSet::new();
+    for lib in version.libraries {
+        let key = library_conflict_key(&lib);
+        if child_keys.insert(key) {
+            combined.push(lib);
+        }
+    }
+    for plib in parent_detail.libraries {
+        let key = library_conflict_key(&plib);
+        if !child_keys.contains(&key) {
+            combined.push(plib);
+        }
+    }
+    version.libraries = combined;
+
+    Ok(version)
 }
 
 fn classifier_for(lib: &Library) -> Option<String> {
@@ -777,7 +977,17 @@ fn maven_artifact_from_name(name: &str) -> Option<(String, String, String, Strin
     file_name.push('.');
     file_name.push_str(&extension);
     let rel = format!("{group_path}/{artifact}/{version}/{file_name}");
-    let url = format!("{LIBRARIES_URL}/{rel}");
+    let url = if group.starts_with("net.minecraftforge") {
+        format!("https://maven.minecraftforge.net/{rel}")
+    } else if group.starts_with("net.neoforged") {
+        format!("https://maven.neoforged.net/releases/{rel}")
+    } else if group.starts_with("net.fabricmc") {
+        format!("https://maven.fabricmc.net/{rel}")
+    } else if group.starts_with("org.quiltmc") {
+        format!("https://maven.quiltmc.org/repository/release/{rel}")
+    } else {
+        format!("{LIBRARIES_URL}/{rel}")
+    };
     Some((
         rel,
         url,
@@ -791,10 +1001,28 @@ fn artifact_job(artifact: &Artifact, base: &Path, name: &str) -> Option<FileJob>
         .path
         .clone()
         .or_else(|| maven_artifact_from_name(name).map(|(rel, _, _, _)| rel))?;
-    let url = artifact
-        .url
-        .clone()
-        .or_else(|| maven_artifact_from_name(name).map(|(_, url, _, _)| url))?;
+
+    // Check if the library is a local generated target (e.g. Forge :client or :server)
+    if name.contains(":client") || name.contains(":server") {
+        let is_empty_url = artifact.url.as_deref().map(str::trim).unwrap_or("").is_empty();
+        if is_empty_url
+            || name.starts_with("net.minecraftforge:forge:")
+            || name.starts_with("net.neoforged:neoforge:")
+        {
+            return None;
+        }
+    }
+
+    let raw_url = artifact.url.as_deref().unwrap_or("").trim();
+    let url = if !raw_url.is_empty() {
+        raw_url.to_string()
+    } else if artifact.url.is_none() {
+        let (_, default_url, _, _) = maven_artifact_from_name(name)?;
+        default_url
+    } else {
+        return None;
+    };
+
     Some(FileJob {
         url,
         dest: base.join(path),
@@ -812,14 +1040,25 @@ fn plan_libraries(
     let mut plan = LibraryPlan::default();
     let libraries = libraries_dir(root);
     let mut seen = HashSet::new();
+    let mut seen_ga = HashSet::new();
 
     for lib in &version.libraries {
-        if !rules_allow(&lib.rules, features) {
+        if !rules_allow(&lib.rules, features) || !native_library_matches_current_arch(&lib.name) {
             continue;
         }
 
         let downloads = lib.downloads.as_ref();
         let mut native_jar = None;
+        let ga_key = {
+            let base = lib.name.split('@').next().unwrap_or(&lib.name);
+            let parts: Vec<&str> = base.split(':').collect();
+            format!(
+                "{}:{}:{}",
+                parts.first().copied().unwrap_or(""),
+                parts.get(1).copied().unwrap_or(""),
+                parts.get(3).copied().unwrap_or("")
+            )
+        };
 
         if let Some(classifier) = classifier_for(lib) {
             if let Some(artifact) = downloads
@@ -834,37 +1073,48 @@ fn plan_libraries(
         }
 
         if let Some(artifact) = downloads.and_then(|d| d.artifact.as_ref()) {
-            if let Some(job) = artifact_job(artifact, &libraries, &lib.name) {
-                if seen.insert(job.dest.clone()) {
-                    plan.classpath.push(job.dest.clone());
+            if seen_ga.insert(ga_key) {
+                let path = artifact
+                    .path
+                    .clone()
+                    .or_else(|| maven_artifact_from_name(&lib.name).map(|(rel, _, _, _)| rel));
+                if let Some(rel) = path {
+                    let dest = libraries.join(rel);
+                    if seen.insert(dest.clone()) {
+                        plan.classpath.push(dest);
+                    }
+                }
+                if let Some(job) = artifact_job(artifact, &libraries, &lib.name) {
                     plan.jobs.push(job);
                 }
             }
         } else if downloads.is_none() {
             if let Some((rel, default_url, _, classifier)) = maven_artifact_from_name(&lib.name) {
-                let dest = libraries.join(&rel);
-                let url = match lib.url.as_deref() {
-                    Some(repo) if !repo.trim().is_empty() => {
-                        let trimmed = repo.trim_end_matches('/');
-                        if trimmed.ends_with(".jar") {
-                            trimmed.to_string()
-                        } else {
-                            format!("{trimmed}/{rel}")
+                if seen_ga.insert(ga_key) {
+                    let dest = libraries.join(&rel);
+                    let url = match lib.url.as_deref() {
+                        Some(repo) if !repo.trim().is_empty() => {
+                            let trimmed = repo.trim_end_matches('/');
+                            if trimmed.ends_with(".jar") {
+                                trimmed.to_string()
+                            } else {
+                                format!("{trimmed}/{rel}")
+                            }
                         }
-                    }
-                    _ => default_url,
-                };
-                if seen.insert(dest.clone()) {
-                    plan.classpath.push(dest.clone());
-                    plan.jobs.push(FileJob {
-                        url,
-                        dest,
-                        sha1: lib.sha1.clone(),
-                        size: lib.size,
-                        verify_existing: lib.sha1.is_some(),
-                    });
-                    if !classifier.is_empty() && classifier.starts_with("natives-") {
-                        native_jar = Some(libraries.join(rel));
+                        _ => default_url,
+                    };
+                    if seen.insert(dest.clone()) {
+                        plan.classpath.push(dest.clone());
+                        plan.jobs.push(FileJob {
+                            url,
+                            dest,
+                            sha1: lib.sha1.clone(),
+                            size: lib.size,
+                            verify_existing: lib.sha1.is_some(),
+                        });
+                        if !classifier.is_empty() && classifier.starts_with("natives-") {
+                            native_jar = Some(libraries.join(rel));
+                        }
                     }
                 }
             }
@@ -1343,7 +1593,23 @@ fn extract_natives(jars: &[PathBuf], natives_dir: &Path) -> Result<usize, String
                 continue;
             }
             let name = entry.name().to_string();
-            if name.starts_with("META-INF/") || name.contains("..") {
+            if name.starts_with("META-INF/")
+                || name.contains("..")
+                || name.ends_with(".git")
+                || name.ends_with(".sha1")
+            {
+                continue;
+            }
+            let lower_name = name.to_lowercase();
+            #[cfg(target_arch = "x86_64")]
+            if (lower_name.contains("/x86/") && !lower_name.contains("/x86_64/"))
+                || lower_name.contains("/arm64/")
+                || lower_name.contains("/aarch64/")
+            {
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if lower_name.contains("/x86/") || lower_name.contains("/x64/") || lower_name.contains("/x86_64/") {
                 continue;
             }
             let Some(file_name) = Path::new(&name).file_name() else {
@@ -1711,8 +1977,7 @@ pub async fn install_version_with_options(
 
     let mut version = load_version(root, &summary).await?;
     if version.inherits_from.is_some() {
-        tracker.set_stage_status("prepare", "error");
-        return Err("暂不支持安装基于 inheritsFrom 的模组版本".to_string());
+        version = resolve_inherits_from(root, version).await?;
     }
     tracker.add_stage_completed("prepare", 1, 0);
 
@@ -1938,6 +2203,33 @@ pub async fn install_version_with_options(
         assets_task,
         addons_task
     )?;
+
+    if has_addons {
+        if let (Some(loader_type), Some(loader_ver)) = (
+            version.loader.as_deref(),
+            version.loader_version.as_deref(),
+        ) {
+            if loader_type == "forge" || loader_type == "neoforge" {
+                tracker.emit_now("addons", 1, 1, "正在通过安装器构建模组核心");
+                // Ensure vanilla jar exists at versions/<clean_version_id>/<clean_version_id>.jar
+                let base_ver_dir = root.join("versions").join(clean_version_id);
+                let base_jar = base_ver_dir.join(format!("{clean_version_id}.jar"));
+                let inst_jar = instance_dir.join(format!("{instance_id}.jar"));
+                if !base_jar.is_file() && inst_jar.is_file() {
+                    let _ = tokio::fs::create_dir_all(&base_ver_dir).await;
+                    let _ = tokio::fs::copy(&inst_jar, &base_jar).await;
+                }
+                let _ = crate::loaders::ensure_forge_or_neoforge_client_jar(
+                    root,
+                    clean_version_id,
+                    loader_type,
+                    loader_ver,
+                    None,
+                )
+                .await;
+            }
+        }
+    }
 
     tracker.emit_now("done", 1, 1, "游戏文件已就绪");
 
@@ -2188,11 +2480,6 @@ fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
     out
 }
 
-fn resolve_libraries(root: &Path, version: &VersionDetail) -> Vec<PathBuf> {
-    let features = HashMap::new();
-    plan_libraries(root, version, &features).classpath
-}
-
 fn asset_game_dir(root: &Path, version: &VersionDetail) -> String {
     let index = version
         .asset_index
@@ -2246,7 +2533,16 @@ fn build_launch_spec(
     if !instance_dir.is_dir() {
         return Err("版本尚未安装完成".to_string());
     }
-    if !instance_dir.join(format!("{}.jar", version.id)).is_file() {
+    let client_jar = if instance_dir.join(format!("{}.jar", version.id)).is_file() {
+        instance_dir.join(format!("{}.jar", version.id))
+    } else if let Some(parent) = &version.inherits_from {
+        game_dir(root, parent).join(format!("{parent}.jar"))
+    } else if let Some(mc_ver) = &version.mc_version {
+        game_dir(root, mc_ver).join(format!("{mc_ver}.jar"))
+    } else {
+        instance_dir.join(format!("{}.jar", version.id))
+    };
+    if !client_jar.is_file() {
         return Err("客户端 jar 不存在，请重新安装该版本".to_string());
     }
 
@@ -2295,8 +2591,13 @@ fn build_launch_spec(
         .or_else(|| version.assets.clone())
         .unwrap_or_else(|| "legacy".to_string());
 
-    let mut classpath = resolve_libraries(root, version);
-    classpath.push(instance_dir.join(format!("{}.jar", version.id)));
+    let plan = plan_libraries(root, version, &features);
+    let mut classpath = plan.classpath;
+    let client_jar_filename = client_jar
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    classpath.push(client_jar);
     let classpath_string = classpath
         .iter()
         .map(|p| p.to_string_lossy().to_string())
@@ -2305,6 +2606,21 @@ fn build_launch_spec(
 
     let natives_dir = instance_dir.join("natives");
     std::fs::create_dir_all(&natives_dir).map_err(|e| format!("无法创建 natives 目录: {e}"))?;
+    let has_native_binaries = std::fs::read_dir(&natives_dir)
+        .ok()
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "dll" | "so" | "dylib"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if !has_native_binaries && !plan.native_jars.is_empty() {
+        let _ = extract_natives(&plan.native_jars, &natives_dir);
+    }
 
     let mut vars: HashMap<String, String> = HashMap::new();
     let insert = |vars: &mut HashMap<String, String>, k: &str, v: String| {
@@ -2391,9 +2707,15 @@ fn build_launch_spec(
 
     if let Some(arguments) = &version.arguments {
         let version_jvm = collect_arguments(&arguments.jvm, &features, &vars);
-        for arg in version_jvm {
+        for mut arg in version_jvm {
             if arg.starts_with("-Xmx") || arg.starts_with("-Xms") {
                 continue;
+            }
+            if arg.starts_with("-DignoreList=") && !client_jar_filename.is_empty() {
+                if !arg.contains(&client_jar_filename) {
+                    arg.push(',');
+                    arg.push_str(&client_jar_filename);
+                }
             }
             jvm_args.push(arg);
         }
@@ -2506,8 +2828,11 @@ pub async fn prepare_launch(
     let local_json =
         version_dir(root, &request.version_id).join(format!("{}.json", request.version_id));
     let version = match tokio::fs::read_to_string(&local_json).await {
-        Ok(text) => serde_json::from_str::<VersionDetail>(&text)
-            .map_err(|e| format!("本地版本信息损坏: {e}"))?,
+        Ok(text) => {
+            let detail = serde_json::from_str::<VersionDetail>(&text)
+                .map_err(|e| format!("本地版本信息损坏: {e}"))?;
+            resolve_inherits_from(root, detail).await?
+        }
         Err(_) => {
             let manifest = fetch_manifest(root, false).await?;
             let summary = manifest
@@ -2613,6 +2938,56 @@ pub async fn prepare_launch(
         }
     }
 
+    let (is_forge_like, loader_kind, loader_ver) = {
+        if let (Some(l), Some(lv)) = (&version.loader, &version.loader_version) {
+            (l == "forge" || l == "neoforge", l.clone(), lv.clone())
+        } else {
+            let mut detected = None;
+            for lib in &version.libraries {
+                if lib.name.starts_with("net.minecraftforge:forge:") {
+                    let parts: Vec<&str> = lib.name.split(':').collect();
+                    if parts.len() >= 3 {
+                        let fver = parts[2];
+                        let loader_ver = fver.split('-').nth(1).unwrap_or(fver).to_string();
+                        detected = Some(("forge".to_string(), loader_ver));
+                        break;
+                    }
+                } else if lib.name.starts_with("net.neoforged:neoforge:") {
+                    let parts: Vec<&str> = lib.name.split(':').collect();
+                    if parts.len() >= 3 {
+                        detected = Some(("neoforge".to_string(), parts[2].to_string()));
+                        break;
+                    }
+                }
+            }
+            if let Some((l, lv)) = detected {
+                (true, l, lv)
+            } else {
+                (false, String::new(), String::new())
+            }
+        }
+    };
+
+    if is_forge_like {
+        let clean_mc = version.mc_version.as_deref().unwrap_or(&version.id);
+        let clean_mc = clean_mc.split('-').next().unwrap_or(clean_mc);
+        progress(InstallProgress::basic(
+            request.version_id.clone(),
+            "prepare",
+            0,
+            1,
+            "正在检查并构建模组核心".to_string(),
+        ));
+        crate::loaders::ensure_forge_or_neoforge_client_jar(
+            root,
+            clean_mc,
+            &loader_kind,
+            &loader_ver,
+            Some(&java),
+        )
+        .await?;
+    }
+
     let spec = build_launch_spec(
         root,
         &version,
@@ -2697,6 +3072,19 @@ mod tests {
             "org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3-natives-windows.jar"
         );
         assert!(url.starts_with("https://libraries.minecraft.net/"));
+
+        let (f_path, f_url, _, _) =
+            maven_artifact_from_name("net.minecraftforge:forgespi:8.0.0").unwrap();
+        assert_eq!(f_path, "net/minecraftforge/forgespi/8.0.0/forgespi-8.0.0.jar");
+        assert!(f_url.starts_with("https://maven.minecraftforge.net/"));
+
+        let artifact = Artifact {
+            path: Some("net/minecraftforge/forge/1.21.11-61.2.4/forge-1.21.11-61.2.4-client.jar".to_string()),
+            url: Some("".to_string()),
+            sha1: None,
+            size: None,
+        };
+        assert!(artifact_job(&artifact, Path::new("test"), "net.minecraftforge:forge:1.21.11-61.2.4:client").is_none());
     }
 
     #[test]
@@ -2730,5 +3118,43 @@ mod tests {
         assert_eq!(parsed.versions[0].phase.as_deref(), Some("beta"));
         assert_eq!(parsed.versions[1].id, "c0.0.14a_08");
         assert_eq!(parsed.versions[1].phase.as_deref(), Some("classic"));
+    }
+
+    #[test]
+    fn library_conflict_key_preserves_classifiers_and_filters_foreign_arch() {
+        let base_lwjgl = Library {
+            name: "org.lwjgl:lwjgl:3.3.3".to_string(),
+            downloads: None,
+            url: None,
+            sha1: None,
+            size: None,
+            natives: None,
+            rules: Vec::new(),
+        };
+        let natives_lwjgl = Library {
+            name: "org.lwjgl:lwjgl:3.3.3:natives-windows".to_string(),
+            downloads: None,
+            url: None,
+            sha1: None,
+            size: None,
+            natives: None,
+            rules: Vec::new(),
+        };
+        assert_ne!(
+            library_conflict_key(&base_lwjgl),
+            library_conflict_key(&natives_lwjgl)
+        );
+        assert!(native_library_matches_current_arch(
+            "org.lwjgl:lwjgl:3.3.3:natives-windows"
+        ));
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(!native_library_matches_current_arch(
+                "org.lwjgl:lwjgl:3.3.3:natives-windows-x86"
+            ));
+            assert!(!native_library_matches_current_arch(
+                "org.lwjgl:lwjgl:3.3.3:natives-windows-arm64"
+            ));
+        }
     }
 }

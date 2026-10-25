@@ -25,9 +25,11 @@ import {
   launchBedrock,
   launchGame,
   openFolderPath,
+  readSkinAsDataUrl,
   stopGame,
   subscribe,
 } from "./lib/backend";
+import { applyThemeToDom } from "./lib/theme";
 import { timeNow } from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
 import {
@@ -185,6 +187,42 @@ export default function App() {
   const latestProgressRef = useRef<InstallProgress | null>(null);
   const lastRoot = useRef(settings.gameRoot);
   const contentRef = useRef<HTMLElement>(null);
+  const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    applyThemeToDom(settings);
+  }, [
+    settings.themeColor,
+    settings.customThemeColor,
+    settings.themeMode,
+    settings.fontFamily,
+    settings.enableAnimation,
+  ]);
+
+  useEffect(() => {
+    let alive = true;
+    if (settings.backgroundType === "custom" && settings.customBackgroundPath) {
+      if (
+        settings.customBackgroundPath.startsWith("data:") ||
+        settings.customBackgroundPath.startsWith("http")
+      ) {
+        setBgDataUrl(settings.customBackgroundPath);
+      } else {
+        readSkinAsDataUrl(settings.customBackgroundPath)
+          .then((url) => {
+            if (alive) setBgDataUrl(url);
+          })
+          .catch(() => {
+            if (alive) setBgDataUrl(null);
+          });
+      }
+    } else {
+      setBgDataUrl(null);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [settings.backgroundType, settings.customBackgroundPath]);
 
   const activeInstallParamsRef = useRef<{
     versionId: string;
@@ -398,10 +436,10 @@ export default function App() {
       setManifest(null);
       setSelectedVersion("");
       setJavaInstalls([]);
+      void detectJavaForRoot(settings.gameRoot);
     }
     void refreshManifest(settings.gameRoot);
     void refreshInstalled(settings.gameRoot);
-    void detectJavaForRoot(settings.gameRoot);
   }, [settings.gameRoot, refreshInstalled, refreshManifest, detectJavaForRoot]);
 
   // Pick a sensible default instance once data arrives.
@@ -779,6 +817,12 @@ export default function App() {
           finishedAt: timeNow(),
         };
         setDownloadHistory((prev) => [record, ...prev].slice(0, 40));
+        setSelectedBedrockVersion(ver.id);
+        setSelectedVersion(`bedrock:${ver.id}`);
+        try {
+          localStorage.setItem("cobble.selected-bedrock", ver.id);
+          localStorage.setItem("cobble.selected-version", `bedrock:${ver.id}`);
+        } catch {}
         pushToast("success", `${targetLabel} 安装完成`, res);
         pushLog("cobble", `${targetLabel} 安装成功: ${res}`);
       } catch (error) {
@@ -1093,7 +1137,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
-      <TitleBar demo={!isDesktop} />
+      <TitleBar demo={!isDesktop} title={settings.windowTitle} />
       <div className="flex min-h-0 flex-1">
         <Sidebar
           view={view}
@@ -1121,10 +1165,49 @@ export default function App() {
               : "relative min-h-0 flex-1 overflow-y-auto"
           }
         >
-          <div
-            aria-hidden="true"
-            className="world-grid pointer-events-none absolute inset-0 opacity-40"
-          />
+          {/* Background Wallpaper Layer */}
+          {settings.backgroundType === "custom" && bgDataUrl ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat transition-all duration-300"
+              style={{
+                backgroundImage: `url(${bgDataUrl})`,
+                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
+                opacity: settings.backgroundOpacity / 100,
+                transform: settings.backgroundBlur > 0 ? "scale(1.05)" : undefined,
+              }}
+            />
+          ) : settings.backgroundType === "dirt" ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-25 [image-rendering:pixelated]"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23573d26'/%3E%3Crect x='0' y='0' width='8' height='8' fill='%2369492d'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%2347311e'/%3E%3Crect x='2' y='2' width='4' height='4' fill='%237a5534'/%3E%3Crect x='10' y='10' width='4' height='4' fill='%23573d26'/%3E%3Crect x='4' y='10' width='2' height='2' fill='%23865d39'/%3E%3Crect x='10' y='4' width='2' height='2' fill='%23382717'/%3E%3C/svg%3E")`,
+                backgroundRepeat: "repeat",
+                backgroundSize: "32px 32px",
+                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
+              }}
+            />
+          ) : settings.backgroundType === "stone" ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-25 [image-rendering:pixelated]"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%235c5c5c'/%3E%3Crect x='0' y='0' width='8' height='8' fill='%236b6b6b'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%234a4a4a'/%3E%3Crect x='2' y='2' width='4' height='4' fill='%237a7a7a'/%3E%3Crect x='10' y='10' width='4' height='4' fill='%23525252'/%3E%3Crect x='4' y='10' width='2' height='2' fill='%238c8c8c'/%3E%3Crect x='10' y='4' width='2' height='2' fill='%233b3b3b'/%3E%3C/svg%3E")`,
+                backgroundRepeat: "repeat",
+                backgroundSize: "32px 32px",
+                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
+              }}
+            />
+          ) : null}
+
+          {/* 3D World Grid Layer */}
+          {settings.showWorldGrid ? (
+            <div
+              aria-hidden="true"
+              className="world-grid pointer-events-none absolute inset-0 opacity-40"
+            />
+          ) : null}
           {view === "home" ? (
             <HomeView
               installed={installed}

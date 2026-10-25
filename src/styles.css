@@ -87,6 +87,40 @@
   --sidebar-ring: #9bdd6b;
 }
 
+.light {
+  color-scheme: light;
+  --background: #f6f8f5;
+  --foreground: #151e16;
+  --card: #ffffff;
+  --card-foreground: #151e16;
+  --popover: #ffffff;
+  --popover-foreground: #151e16;
+  --secondary: #eef3ed;
+  --secondary-foreground: #1f2a21;
+  --muted: #eef3ed;
+  --muted-foreground: #5a6e5e;
+  --accent: #e2ede1;
+  --accent-foreground: #151e16;
+  --destructive: #e05243;
+  --destructive-foreground: #ffffff;
+  --border: #d4e0d3;
+  --input: #d4e0d3;
+  --sidebar: #f0f5ee;
+  --sidebar-foreground: #151e16;
+  --sidebar-accent: #e4eee2;
+  --sidebar-accent-foreground: #151e16;
+  --sidebar-border: #d4e0d3;
+}
+
+.reduce-motion,
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -215,6 +249,12 @@
 
   .tabular {
     font-variant-numeric: tabular-nums;
+  }
+
+  .mica-enabled [class*="bg-card"],
+  .mica-enabled [class*="bg-sidebar"] {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 }
 

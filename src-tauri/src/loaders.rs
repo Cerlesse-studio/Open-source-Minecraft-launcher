@@ -657,9 +657,22 @@ fn merge_profile_into_version(base: &mut VersionDetail, profile: LoaderProfileJs
         target.jvm.extend(loader_args.jvm);
         target.game.extend(loader_args.game);
     }
-    // Prepend loader libraries so loader's patched ASM/LaunchWrapper/Mixin takes priority
-    let mut combined = profile.libraries;
-    combined.append(&mut base.libraries);
+    // Prepend loader libraries so loader's patched ASM/LaunchWrapper/Mixin takes priority,
+    // while removing conflicting versions of the same (group, artifact, classifier) from base.
+    let mut loader_keys = std::collections::HashSet::new();
+    let mut combined = Vec::with_capacity(profile.libraries.len() + base.libraries.len());
+    for lib in profile.libraries {
+        let key = crate::minecraft::library_conflict_key(&lib);
+        if loader_keys.insert(key) {
+            combined.push(lib);
+        }
+    }
+    for lib in base.libraries.drain(..) {
+        let key = crate::minecraft::library_conflict_key(&lib);
+        if !loader_keys.contains(&key) {
+            combined.push(lib);
+        }
+    }
     base.libraries = combined;
 }
 
@@ -717,6 +730,8 @@ struct InstallerInstallProfile {
 
 fn normalize_forge_library(mut lib: Library, default_maven_base: &str) -> Library {
     // Ensure libraries that only provide `name` or empty `artifact.url` have a valid URL
+    // BUT do NOT fabricate remote URLs for local processor outputs (such as :client or :server jars)
+    let is_local_target = lib.name.contains(":client") || lib.name.contains(":server");
     if let Some(ref mut downloads) = lib.downloads {
         if let Some(ref mut artifact) = downloads.artifact {
             if artifact
@@ -725,13 +740,15 @@ fn normalize_forge_library(mut lib: Library, default_maven_base: &str) -> Librar
                 .map(|u| u.trim().is_empty())
                 .unwrap_or(true)
             {
-                if let Some(ref path) = artifact.path {
-                    let base = default_maven_base.trim_end_matches('/');
-                    artifact.url = Some(format!("{base}/{path}"));
+                if !is_local_target {
+                    if let Some(ref path) = artifact.path {
+                        let base = default_maven_base.trim_end_matches('/');
+                        artifact.url = Some(format!("{base}/{path}"));
+                    }
                 }
             }
         }
-    } else if lib.url.is_none() {
+    } else if lib.url.is_none() && !is_local_target {
         lib.url = Some(default_maven_base.to_string());
     }
     lib
@@ -827,6 +844,243 @@ fn extract_installer_archive(
     Ok((profile, extra_libs))
 }
 
+pub fn get_installer_info(
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+) -> (Vec<String>, &'static str, String) {
+    if loader_type == "neoforge" {
+        let fname = format!("neoforge-{loader_version}-installer.jar");
+        let urls = vec![
+            format!(
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/{loader_version}/{fname}"
+            ),
+            format!(
+                "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/{loader_version}/{fname}"
+            ),
+        ];
+        (urls, "https://maven.neoforged.net/releases/", fname)
+    } else {
+        let fname = format!("forge-{mc_version}-{loader_version}-installer.jar");
+        let urls = vec![
+            format!(
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/{mc_version}-{loader_version}/{fname}"
+            ),
+            format!(
+                "https://bmclapi2.bangbang93.com/forge/download?mcversion={mc_version}&version={loader_version}&category=installer&format=jar"
+            ),
+        ];
+        (urls, "https://maven.minecraftforge.net/", fname)
+    }
+}
+
+pub fn is_valid_patched_client_jar(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    if meta.len() < 100 * 1024 {
+        return false;
+    }
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    let has_mc = archive.by_name("net/minecraft/client/Minecraft.class").is_ok();
+    has_mc || archive.by_name("net/minecraft/client/main/Main.class").is_ok()
+}
+
+pub async fn ensure_forge_or_neoforge_client_jar(
+    root: &Path,
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+    java_override: Option<&Path>,
+) -> Result<(), String> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let parts: Vec<u32> = clean_mc
+        .split('.')
+        .filter_map(|p| p.parse::<u32>().ok())
+        .collect();
+    // Older Forge (<= 1.12.2) doesn't use modern client.jar post-processing
+    if parts.len() >= 2 && (parts[0] < 1 || (parts[0] == 1 && parts[1] < 13)) {
+        return Ok(());
+    }
+
+    let libraries_dir = root.join("libraries");
+    let client_rel_path = if loader_type == "neoforge" {
+        format!("net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-client.jar")
+    } else {
+        format!("net/minecraftforge/forge/{clean_mc}-{loader_version}/forge-{clean_mc}-{loader_version}-client.jar")
+    };
+    let client_jar_path = libraries_dir.join(&client_rel_path);
+
+    // Check if client jar already exists and contains net/minecraft/client/Minecraft.class
+    let check_path = client_jar_path.clone();
+    let already_valid = tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+        .await
+        .unwrap_or(false);
+    if already_valid {
+        return Ok(());
+    }
+    if client_jar_path.exists() {
+        let _ = tokio::fs::remove_file(&client_jar_path).await;
+    }
+
+    // Ensure launcher_profiles.json exists in root
+    let profiles_json = root.join("launcher_profiles.json");
+    if !profiles_json.exists() {
+        let _ = tokio::fs::write(&profiles_json, b"{\"profiles\":{}}").await;
+    }
+
+    // Ensure versions/<clean_mc>/<clean_mc>.jar and .json exist
+    let vanilla_ver_dir = root.join("versions").join(clean_mc);
+    let vanilla_jar = vanilla_ver_dir.join(format!("{clean_mc}.jar"));
+    let vanilla_json = vanilla_ver_dir.join(format!("{clean_mc}.json"));
+    let _ = tokio::fs::create_dir_all(&vanilla_ver_dir).await;
+
+    if !vanilla_jar.is_file() {
+        // Search versions/ for any matching jar
+        let versions_dir = root.join("versions");
+        let mut found_jar = None;
+        if let Ok(mut entries) = tokio::fs::read_dir(&versions_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let p = entry.path();
+                if p.is_dir() {
+                    let candidate = p.join(format!(
+                        "{}.jar",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                    if candidate.is_file() {
+                        if let Ok(m) = candidate.metadata() {
+                            if m.len() > 10 * 1024 * 1024 {
+                                found_jar = Some(candidate);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(src) = found_jar {
+            let _ = tokio::fs::copy(&src, &vanilla_jar).await;
+        }
+    }
+
+    if !vanilla_json.is_file() {
+        let flat_meta_json = root
+            .join("meta")
+            .join("versions")
+            .join(format!("{clean_mc}.json"));
+        let nested_meta_json = root
+            .join("meta")
+            .join("versions")
+            .join(clean_mc)
+            .join(format!("{clean_mc}.json"));
+        if flat_meta_json.is_file() {
+            let _ = tokio::fs::copy(&flat_meta_json, &vanilla_json).await;
+        } else if nested_meta_json.is_file() {
+            let _ = tokio::fs::copy(&nested_meta_json, &vanilla_json).await;
+        }
+    }
+
+    // Ensure installer jar exists
+    let installers_dir = root.join("meta").join("installers");
+    let _ = tokio::fs::create_dir_all(&installers_dir).await;
+    let (installer_urls, _, file_name) = get_installer_info(clean_mc, loader_type, loader_version);
+    let installer_path = installers_dir.join(&file_name);
+
+    if !net::looks_complete(&installer_path, None) {
+        let mut ok = false;
+        let mut last_err = String::new();
+        for url in &installer_urls {
+            match net::download_file_multithreaded(url, &installer_path, None, None, 4, None, None)
+                .await
+            {
+                Ok(_) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        if !ok {
+            return Err(format!("下载 {loader_type} 安装器失败: {last_err}"));
+        }
+    }
+
+    // Backup any existing full version JSON at the Forge/NeoForge default version ID so --installClient doesn't overwrite a merged profile with a thin stub
+    let default_target_id = if loader_type == "neoforge" {
+        format!("neoforge-{loader_version}")
+    } else {
+        format!("{clean_mc}-forge-{loader_version}")
+    };
+    let default_target_json = root
+        .join("versions")
+        .join(&default_target_id)
+        .join(format!("{default_target_id}.json"));
+    let backup_target_json = tokio::fs::read(&default_target_json).await.ok();
+
+    // Java binary
+    let java_bin = if let Some(j) = java_override {
+        j.to_path_buf()
+    } else {
+        let major = if parts.len() >= 2 && parts[1] >= 21 {
+            21
+        } else if parts.len() >= 2 && parts[1] >= 18 {
+            17
+        } else if parts.len() >= 2 && parts[1] >= 17 {
+            16
+        } else {
+            8
+        };
+        crate::java::ensure_java(root, major, None, None).await?
+    };
+
+    // Run java -jar <installer> --installClient <root>
+    let mut cmd = tokio::process::Command::new(&java_bin);
+    cmd.arg("-jar")
+        .arg(&installer_path)
+        .arg("--installClient")
+        .arg(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("启动加载器处理器失败: {e}"))?;
+
+    if let Some(prev_bytes) = backup_target_json {
+        if prev_bytes.len() > 20_000 {
+            let _ = tokio::fs::write(&default_target_json, prev_bytes).await;
+        }
+    }
+
+    let check_path = client_jar_path.clone();
+    let valid_after = tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+        .await
+        .unwrap_or(false);
+    if valid_after {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tail_out = if stdout.len() > 1000 { &stdout[stdout.len() - 1000..] } else { &stdout };
+    Err(format!(
+        "构建 {loader_type} 客户端核心失败 (exit code: {:?}):\n{stderr}\n{tail_out}",
+        output.status.code()
+    ))
+}
+
 async fn apply_forge_or_neoforge(
     root: &Path,
     base: &mut VersionDetail,
@@ -839,33 +1093,8 @@ async fn apply_forge_or_neoforge(
         .await
         .map_err(|e| format!("无法创建安装器缓存目录: {e}"))?;
 
-    let (installer_urls, default_maven, file_name) = if loader_type == "neoforge" {
-        let fname = format!("neoforge-{loader_version}-installer.jar");
-        let urls = vec![
-            // Official Cloudflare Anycast CDN (Asia-Pacific edge POPs, non-mainland China)
-            format!(
-                "https://maven.neoforged.net/releases/net/neoforged/neoforge/{loader_version}/{fname}"
-            ),
-            // Mainland fallback
-            format!(
-                "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/{loader_version}/{fname}"
-            ),
-        ];
-        (urls, "https://maven.neoforged.net/releases/", fname)
-    } else {
-        let fname = format!("forge-{mc_version}-{loader_version}-installer.jar");
-        let urls = vec![
-            // Official Cloudflare Anycast CDN (Asia-Pacific edge POPs, non-mainland China)
-            format!(
-                "https://maven.minecraftforge.net/net/minecraftforge/forge/{mc_version}-{loader_version}/{fname}"
-            ),
-            // Mainland fallback
-            format!(
-                "https://bmclapi2.bangbang93.com/forge/download?mcversion={mc_version}&version={loader_version}&category=installer&format=jar"
-            ),
-        ];
-        (urls, "https://maven.minecraftforge.net/", fname)
-    };
+    let (installer_urls, default_maven, file_name) =
+        get_installer_info(mc_version, loader_type, loader_version);
 
     let installer_path = installers_dir.join(&file_name);
     if !net::looks_complete(&installer_path, None) {

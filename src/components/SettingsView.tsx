@@ -11,16 +11,23 @@ import {
   FolderOpen,
   Gauge,
   Globe,
+  Image as ImageIcon,
   Info,
+  Monitor,
+  Moon,
+  Palette,
   RefreshCw,
   SlidersHorizontal,
   Sparkles,
+  Sun,
+  Type,
   Upload,
   UserRound,
 } from "lucide-react";
 import { cn } from "cn";
 import { isDesktop } from "../lib/backend";
 import { joinPath, shortPath } from "../lib/format";
+import { THEME_COLOR_PRESETS } from "../lib/theme";
 import type {
   JavaInstall,
   LauncherSettings,
@@ -65,7 +72,7 @@ interface SettingsViewProps {
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
 }
 
-type SettingsTab = "account" | "launch" | "download" | "about";
+type SettingsTab = "account" | "launch" | "download" | "personalization" | "about";
 
 function SettingsSection({
   title,
@@ -278,6 +285,35 @@ export function SettingsView({
     }
   };
 
+  const handlePickWallpaper = async () => {
+    if (!isDesktop) {
+      onNotify("info", "Web 预览模式", "Web 预览环境请直接在输入框中填入图片 URL。");
+      return;
+    }
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        filters: [
+          {
+            name: "图片文件 (*.png, *.jpg, *.jpeg, *.webp)",
+            extensions: ["png", "jpg", "jpeg", "webp"],
+          },
+        ],
+        title: "选择启动器背景壁纸图片",
+      });
+      if (typeof picked === "string" && picked.trim()) {
+        onChange({
+          backgroundType: "custom",
+          customBackgroundPath: picked.trim(),
+        });
+        onNotify("success", "已设置背景壁纸", picked.trim());
+      }
+    } catch (error) {
+      onNotify("error", "无法选择壁纸文件", String(error));
+    }
+  };
+
   const manualJava =
     settings.javaPath && !javaInstalls.some((java) => java.path === settings.javaPath);
   const selectedJava = settings.javaPath || "auto";
@@ -321,6 +357,13 @@ export function SettingsView({
             >
               <Cpu className="size-3.5 text-primary" />
               下载与网络
+            </TabsTrigger>
+            <TabsTrigger
+              value="personalization"
+              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+            >
+              <Sparkles className="size-3.5 text-primary" />
+              个性化
             </TabsTrigger>
             <TabsTrigger
               value="about"
@@ -1312,6 +1355,378 @@ export function SettingsView({
                   ))}
                 </div>
               </div>
+            </SettingsSection>
+          </div>
+        </TabsContent>
+
+        {/* 个性化设置 Tab */}
+        <TabsContent value="personalization" className="mt-0 space-y-4 focus-visible:outline-none">
+          <div className="max-w-2xl space-y-4">
+            {/* 主题配色与外观 */}
+            <SettingsSection
+              title="主题与配色方案"
+              icon={<Palette className="size-4" />}
+            >
+              {/* 明暗外观模式 */}
+              <Field label="外观模式">
+                <RadioGroup
+                  value={settings.themeMode}
+                  onValueChange={(val) => onChange({ themeMode: val as any })}
+                  className="grid grid-cols-3 gap-2"
+                >
+                  <Label
+                    htmlFor="theme-dark"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.themeMode === "dark"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="dark" id="theme-dark" className="sr-only" />
+                    <Moon className="size-4" />
+                    <span className="text-[11.5px] font-medium">深色模式</span>
+                  </Label>
+                  <Label
+                    htmlFor="theme-light"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.themeMode === "light"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="light" id="theme-light" className="sr-only" />
+                    <Sun className="size-4" />
+                    <span className="text-[11.5px] font-medium">浅色模式</span>
+                  </Label>
+                  <Label
+                    htmlFor="theme-system"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.themeMode === "system"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="system" id="theme-system" className="sr-only" />
+                    <Monitor className="size-4" />
+                    <span className="text-[11.5px] font-medium">跟随系统</span>
+                  </Label>
+                </RadioGroup>
+              </Field>
+
+              {/* 主题强调色 */}
+              <Field label="主界面强调色 (Minecraft 矿物与元素主题)">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {THEME_COLOR_PRESETS.map((preset) => {
+                    const isSelected = settings.themeColor === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => onChange({ themeColor: preset.id })}
+                        className={cn(
+                          "group relative flex flex-col items-start gap-1 rounded-lg border p-2.5 text-left transition-all",
+                          isSelected
+                            ? "border-primary bg-primary/10 shadow-xs ring-1 ring-primary/40"
+                            : "border-border/70 bg-background/40 hover:border-border hover:bg-muted/30",
+                        )}
+                        title={preset.description}
+                      >
+                        <div className="flex w-full items-center justify-between">
+                          <span
+                            className="size-4 rounded-full border border-black/20 shadow-xs transition-transform group-hover:scale-110"
+                            style={{ backgroundColor: preset.color }}
+                          />
+                          {isSelected ? (
+                            <Check className="size-3.5 text-primary" />
+                          ) : null}
+                        </div>
+                        <span className="mt-1 text-[11.5px] font-medium leading-none text-foreground">
+                          {preset.label}
+                        </span>
+                        <span className="text-[9.5px] text-muted-foreground leading-tight">
+                          {preset.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {/* 自定义颜色 */}
+                  <button
+                    type="button"
+                    onClick={() => onChange({ themeColor: "custom" })}
+                    className={cn(
+                      "group relative flex flex-col items-start gap-1 rounded-lg border p-2.5 text-left transition-all",
+                      settings.themeColor === "custom"
+                        ? "border-primary bg-primary/10 shadow-xs ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:border-border hover:bg-muted/30",
+                    )}
+                  >
+                    <div className="flex w-full items-center justify-between">
+                      <span
+                        className="size-4 rounded-full border border-black/20 shadow-xs transition-transform group-hover:scale-110"
+                        style={{ backgroundColor: settings.customThemeColor || "#9bdd6b" }}
+                      />
+                      {settings.themeColor === "custom" ? (
+                        <Check className="size-3.5 text-primary" />
+                      ) : null}
+                    </div>
+                    <span className="mt-1 text-[11.5px] font-medium leading-none text-foreground">
+                      自定义颜色
+                    </span>
+                    <span className="font-mono text-[9.5px] text-muted-foreground leading-tight">
+                      {settings.customThemeColor || "#9bdd6b"}
+                    </span>
+                  </button>
+                </div>
+              </Field>
+
+              {/* 自定义颜色拾取器 */}
+              {settings.themeColor === "custom" && (
+                <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/30 p-3">
+                  <input
+                    type="color"
+                    value={settings.customThemeColor || "#9bdd6b"}
+                    onChange={(e) => onChange({ customThemeColor: e.target.value })}
+                    className="size-8 cursor-pointer rounded border border-border/80 bg-transparent p-0.5"
+                    title="点击打开调色板"
+                  />
+                  <div className="flex-1 space-y-1">
+                    <Label className="text-[11px] text-muted-foreground">自定义 HEX 颜色代码</Label>
+                    <Input
+                      value={settings.customThemeColor || "#9bdd6b"}
+                      onChange={(e) => onChange({ customThemeColor: e.target.value })}
+                      placeholder="#9bdd6b"
+                      className="h-8 max-w-[160px] font-mono text-[11px]"
+                    />
+                  </div>
+                </div>
+              )}
+            </SettingsSection>
+
+            {/* 壁纸与背景设置 */}
+            <SettingsSection
+              title="界面背景与壁纸"
+              icon={<ImageIcon className="size-4" />}
+            >
+              <Field label="背景风格">
+                <RadioGroup
+                  value={settings.backgroundType}
+                  onValueChange={(val) => onChange({ backgroundType: val as any })}
+                  className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+                >
+                  <Label
+                    htmlFor="bg-default"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.backgroundType === "default"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="default" id="bg-default" className="sr-only" />
+                    <Sparkles className="size-4" />
+                    <span className="text-[11.5px] font-medium">默认纯净</span>
+                  </Label>
+                  <Label
+                    htmlFor="bg-dirt"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.backgroundType === "dirt"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="dirt" id="bg-dirt" className="sr-only" />
+                    <Boxes className="size-4" />
+                    <span className="text-[11.5px] font-medium">经典泥土</span>
+                  </Label>
+                  <Label
+                    htmlFor="bg-stone"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.backgroundType === "stone"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="stone" id="bg-stone" className="sr-only" />
+                    <Boxes className="size-4" />
+                    <span className="text-[11.5px] font-medium">经典圆石</span>
+                  </Label>
+                  <Label
+                    htmlFor="bg-custom"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                      settings.backgroundType === "custom"
+                        ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                        : "border-border/70 bg-background/40 hover:bg-muted/30 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <RadioGroupItem value="custom" id="bg-custom" className="sr-only" />
+                    <ImageIcon className="size-4" />
+                    <span className="text-[11.5px] font-medium">自定义壁纸</span>
+                  </Label>
+                </RadioGroup>
+              </Field>
+
+              {/* 自定义壁纸路径选择 */}
+              {settings.backgroundType === "custom" && (
+                <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">
+                  <Label className="text-[11px] text-muted-foreground">自定义背景图片文件或链接</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={settings.customBackgroundPath || ""}
+                      onChange={(e) => onChange({ customBackgroundPath: e.target.value })}
+                      placeholder="本地图片路径 (如 D:\wallpaper.jpg) 或网络 URL"
+                      className="h-8 flex-1 font-mono text-[11px]"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-[11px]"
+                      onClick={() => void handlePickWallpaper()}
+                    >
+                      <FolderOpen className="size-3.5" />
+                      浏览
+                    </Button>
+                    {settings.customBackgroundPath && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-[11px] text-muted-foreground hover:text-destructive"
+                        onClick={() => onChange({ customBackgroundPath: "" })}
+                      >
+                        清空
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 模糊度与遮罩透明度 */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 pt-1">
+                <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3">
+                  <div className="flex items-center justify-between text-[11.5px]">
+                    <span className="text-muted-foreground">背景模糊度</span>
+                    <span className="font-mono text-primary font-medium">{settings.backgroundBlur} px</span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={24}
+                    step={1}
+                    value={[settings.backgroundBlur]}
+                    onValueChange={([val]) => onChange({ backgroundBlur: val })}
+                  />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/60">
+                    <span>清晰 (0px)</span>
+                    <span>强虚化 (24px)</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3">
+                  <div className="flex items-center justify-between text-[11.5px]">
+                    <span className="text-muted-foreground">背景不透明度</span>
+                    <span className="font-mono text-primary font-medium">{settings.backgroundOpacity}%</span>
+                  </div>
+                  <Slider
+                    min={10}
+                    max={100}
+                    step={5}
+                    value={[settings.backgroundOpacity]}
+                    onValueChange={([val]) => onChange({ backgroundOpacity: val })}
+                  />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/60">
+                    <span>微透 (10%)</span>
+                    <span>浓厚 (100%)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 网格线与毛玻璃开关 */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-[12px] font-medium text-foreground">3D 方块网格经纬线</Label>
+                    <p className="text-[10px] text-muted-foreground">在主视图背景上展现 Minecraft 空间坐标网格微光效果</p>
+                  </div>
+                  <Switch
+                    checked={settings.showWorldGrid}
+                    onCheckedChange={(val) => onChange({ showWorldGrid: val })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-[12px] font-medium text-foreground">亚克力磨砂半透明质感</Label>
+                    <p className="text-[10px] text-muted-foreground">窗口卡片与背景之间采用高斯磨砂毛玻璃透光混合</p>
+                  </div>
+                  <Switch
+                    checked={settings.enableMica}
+                    onCheckedChange={(val) => onChange({ enableMica: val })}
+                  />
+                </div>
+              </div>
+            </SettingsSection>
+
+            {/* 界面排版与视觉定制 */}
+            <SettingsSection
+              title="文本排版与文案定制"
+              icon={<Type className="size-4" />}
+            >
+              <Field label="界面字体风格">
+                <SettingsSelect
+                  value={settings.fontFamily}
+                  onChange={(val) => onChange({ fontFamily: val as any })}
+                  options={[
+                    {
+                      value: "default",
+                      label: "现代极简 (Geist Sans)",
+                      description: "专为代码与设计优化的现代极简无衬线字体（推荐）",
+                    },
+                    {
+                      value: "pixel",
+                      label: "复古像素 (Silkscreen)",
+                      description: "经典的 8-bit Minecraft 像素风格字体",
+                    },
+                    {
+                      value: "system",
+                      label: "系统原生字体 (System UI)",
+                      description: "跟随当前操作系统原生 UI 字体配置",
+                    },
+                  ]}
+                />
+              </Field>
+
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
+                <div className="space-y-0.5">
+                  <Label className="text-[12px] font-medium text-foreground">平滑过渡动效</Label>
+                  <p className="text-[10px] text-muted-foreground">开启界面切换、按钮悬浮与展开列表的流畅弹簧动效</p>
+                </div>
+                <Switch
+                  checked={settings.enableAnimation}
+                  onCheckedChange={(val) => onChange({ enableAnimation: val })}
+                />
+              </div>
+
+              <Field label="自定义启动器窗口标题 (留空使用默认名称)">
+                <Input
+                  value={settings.windowTitle || ""}
+                  onChange={(e) => onChange({ windowTitle: e.target.value })}
+                  placeholder="OPEN-SOURCE MINECRAFT LAUNCHER"
+                  className="h-8 font-mono text-[11px]"
+                />
+              </Field>
+
+              <Field label="启动器个性标语 / 座右铭签名">
+                <Input
+                  value={settings.customSlogan || ""}
+                  onChange={(e) => onChange({ customSlogan: e.target.value })}
+                  placeholder="自由探索，无限创造。"
+                  className="h-8 text-[11px]"
+                />
+              </Field>
             </SettingsSection>
           </div>
         </TabsContent>

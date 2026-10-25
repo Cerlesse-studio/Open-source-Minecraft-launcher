@@ -24,6 +24,18 @@ export const defaultSettings: LauncherSettings = {
   launcherVisibility: "keep",
   processPriority: "normal",
   windowSize: "default",
+  themeColor: "emerald",
+  customThemeColor: "#9bdd6b",
+  themeMode: "dark",
+  backgroundType: "default",
+  customBackgroundPath: "",
+  backgroundBlur: 0,
+  backgroundOpacity: 60,
+  enableMica: true,
+  enableAnimation: true,
+  showWorldGrid: true,
+  customSlogan: "",
+  fontFamily: "default",
 };
 
 export function loadSettings(): LauncherSettings {
@@ -95,6 +107,49 @@ export function loadSettings(): LauncherSettings {
       windowSize:
         parsed.windowSize === "fullscreen" || parsed.windowSize === "custom"
           ? parsed.windowSize
+          : "default",
+      themeColor:
+        parsed.themeColor === "sapphire" ||
+        parsed.themeColor === "amethyst" ||
+        parsed.themeColor === "blaze" ||
+        parsed.themeColor === "ruby" ||
+        parsed.themeColor === "gold" ||
+        parsed.themeColor === "prismarine" ||
+        parsed.themeColor === "custom"
+          ? parsed.themeColor
+          : "emerald",
+      customThemeColor:
+        typeof parsed.customThemeColor === "string" && parsed.customThemeColor.startsWith("#")
+          ? parsed.customThemeColor
+          : defaultSettings.customThemeColor,
+      themeMode:
+        parsed.themeMode === "light" || parsed.themeMode === "system"
+          ? parsed.themeMode
+          : "dark",
+      backgroundType:
+        parsed.backgroundType === "dirt" ||
+        parsed.backgroundType === "stone" ||
+        parsed.backgroundType === "custom"
+          ? parsed.backgroundType
+          : "default",
+      customBackgroundPath:
+        typeof parsed.customBackgroundPath === "string" ? parsed.customBackgroundPath : "",
+      backgroundBlur:
+        typeof parsed.backgroundBlur === "number"
+          ? Math.min(30, Math.max(0, Math.round(parsed.backgroundBlur)))
+          : defaultSettings.backgroundBlur,
+      backgroundOpacity:
+        typeof parsed.backgroundOpacity === "number"
+          ? Math.min(100, Math.max(10, Math.round(parsed.backgroundOpacity)))
+          : defaultSettings.backgroundOpacity,
+      enableMica: parsed.enableMica !== false,
+      enableAnimation: parsed.enableAnimation !== false,
+      showWorldGrid: parsed.showWorldGrid !== false,
+      customSlogan:
+        typeof parsed.customSlogan === "string" ? parsed.customSlogan : "",
+      fontFamily:
+        parsed.fontFamily === "pixel" || parsed.fontFamily === "system"
+          ? parsed.fontFamily
           : "default",
     };
   } catch {

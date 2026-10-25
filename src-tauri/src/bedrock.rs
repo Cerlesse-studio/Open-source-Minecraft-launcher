@@ -143,31 +143,245 @@ pub fn get_uwp_mojang_dir() -> Option<PathBuf> {
     None
 }
 
+static UWP_CACHE: std::sync::Mutex<Option<(Instant, bool)>> = std::sync::Mutex::new(None);
+
 pub fn is_uwp_installed() -> bool {
     #[cfg(target_os = "windows")]
     {
-        // 1. Check if package directory exists (Standard or Preview)
-        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-            let packages_dir = PathBuf::from(&local_appdata).join("Packages");
-            if packages_dir.join("Microsoft.MinecraftUWP_8wekyb3d8bbwe").is_dir()
-                || packages_dir.join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe").is_dir()
-            {
-                return true;
+        if let Ok(guard) = UWP_CACHE.lock() {
+            if let Some((timestamp, cached_val)) = *guard {
+                if timestamp.elapsed() < std::time::Duration::from_secs(30) {
+                    return cached_val;
+                }
             }
         }
-        // 2. Fast check registry for protocol registration (minecraft: or minecraft-preview:)
-        for proto in ["HKCR\\minecraft", "HKCR\\minecraft-preview"] {
-            if let Ok(output) = Command::new("reg")
-                .args(["query", proto, "/ve"])
-                .output()
-            {
-                if output.status.success() {
+
+        let installed = (|| {
+            // 1. Check if package directory exists (Standard or Preview)
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                let packages_dir = PathBuf::from(&local_appdata).join("Packages");
+                if packages_dir.join("Microsoft.MinecraftUWP_8wekyb3d8bbwe").is_dir()
+                    || packages_dir.join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe").is_dir()
+                {
                     return true;
+                }
+            }
+            // 2. Fast check registry for protocol registration (minecraft: or minecraft-preview:)
+            use std::os::windows::process::CommandExt;
+            for proto in ["HKCR\\minecraft", "HKCR\\minecraft-preview"] {
+                let mut cmd = Command::new("reg");
+                cmd.args(["query", proto, "/ve"]);
+                cmd.creation_flags(0x0800_0000);
+                if let Ok(output) = cmd.output() {
+                    if output.status.success() {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+
+        if let Ok(mut guard) = UWP_CACHE.lock() {
+            *guard = Some((Instant::now(), installed));
+        }
+        installed
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BedrockVersionInspection {
+    pub is_valid: bool,
+    pub folder_name: String,
+    pub version_id: String,
+    pub display_name: String,
+    pub main_executable: Option<PathBuf>,
+    pub manifest_path: Option<PathBuf>,
+    pub is_server: bool,
+    pub package_file: Option<PathBuf>,
+}
+
+pub fn resolve_bedrock_version_dir(root: &Path, version_id: &str) -> PathBuf {
+    let clean = version_id
+        .trim()
+        .trim_start_matches("bedrock:")
+        .trim_start_matches("Minecraft 基岩版:")
+        .trim_start_matches("Minecraft 基岩版 ")
+        .trim_start_matches("基岩版 ")
+        .trim();
+    let base = root.join("bedrock").join("versions");
+    if base.join(clean).is_dir() {
+        return base.join(clean);
+    }
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == clean || name.starts_with(clean) || clean.starts_with(&name) {
+                    return p;
+                }
+                let vjson = p.join("version.json");
+                if vjson.is_file() {
+                    if let Ok(text) = std::fs::read_to_string(&vjson) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                                if id == clean || id.starts_with(clean) || clean.starts_with(id) {
+                                    return p;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    false
+    base.join(clean)
+}
+
+pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
+    let mut insp = BedrockVersionInspection::default();
+    if !dir.is_dir() {
+        return insp;
+    }
+
+    let folder_name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    insp.folder_name = folder_name.clone();
+    insp.version_id = folder_name.clone();
+    insp.display_name = format!("Minecraft 基岩版 {folder_name}");
+
+    // 1. Check version.json if present
+    let version_json_path = dir.join("version.json");
+    if version_json_path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&version_json_path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                    if !id.is_empty() {
+                        insp.version_id = id.to_string();
+                    }
+                }
+                if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+                    if !name.is_empty() {
+                        insp.display_name = name.to_string();
+                    }
+                }
+                if let Some(pkg) = val.get("packageFile").and_then(|v| v.as_str()) {
+                    let p = dir.join(pkg);
+                    if p.is_file() {
+                        insp.package_file = Some(p);
+                    }
+                }
+                insp.is_valid = true;
+            }
+        }
+    }
+
+    // 2. Scan root of dir for standard executables and manifests
+    let root_client = dir.join("Minecraft.Windows.exe");
+    let root_mc_exe = dir.join("Minecraft.exe");
+    let root_server = dir.join("bedrock_server.exe");
+    let root_manifest = dir.join("AppxManifest.xml");
+    let root_bundle_manifest = dir.join("AppxBundleManifest.xml");
+
+    if root_manifest.is_file() {
+        insp.manifest_path = Some(root_manifest);
+        insp.is_valid = true;
+    } else if root_bundle_manifest.is_file() {
+        insp.manifest_path = Some(root_bundle_manifest);
+        insp.is_valid = true;
+    }
+
+    if root_client.is_file() {
+        insp.main_executable = Some(root_client);
+        insp.is_server = false;
+        insp.is_valid = true;
+    } else if root_mc_exe.is_file() {
+        insp.main_executable = Some(root_mc_exe);
+        insp.is_server = false;
+        insp.is_valid = true;
+    } else if root_server.is_file() {
+        insp.main_executable = Some(root_server);
+        insp.is_server = true;
+        insp.is_valid = true;
+    }
+
+    // 3. Scan subdirectories (depth 1 to 2) if not found in root
+    if insp.main_executable.is_none() || insp.manifest_path.is_none() {
+        if let Ok(sub_entries) = std::fs::read_dir(dir) {
+            for sub_entry in sub_entries.flatten() {
+                if sub_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let sub_path = sub_entry.path();
+                    let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                    if sub_name == "mods" || sub_name == "worlds" || sub_name == "cache" {
+                        continue;
+                    }
+
+                    let sub_client = sub_path.join("Minecraft.Windows.exe");
+                    let sub_mc_exe = sub_path.join("Minecraft.exe");
+                    let sub_server = sub_path.join("bedrock_server.exe");
+                    let sub_manifest = sub_path.join("AppxManifest.xml");
+
+                    if insp.manifest_path.is_none() && sub_manifest.is_file() {
+                        insp.manifest_path = Some(sub_manifest);
+                        insp.is_valid = true;
+                    }
+                    if insp.main_executable.is_none() {
+                        if sub_client.is_file() {
+                            insp.main_executable = Some(sub_client);
+                            insp.is_server = false;
+                            insp.is_valid = true;
+                        } else if sub_mc_exe.is_file() {
+                            insp.main_executable = Some(sub_mc_exe);
+                            insp.is_server = false;
+                            insp.is_valid = true;
+                        } else if sub_server.is_file() {
+                            insp.main_executable = Some(sub_server);
+                            insp.is_server = true;
+                            insp.is_valid = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Look for packages in root or subdirectories: *.appx, *.msix, *.msixvc, *.insPack
+    if !insp.is_valid || insp.package_file.is_none() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if ext == "appx"
+                        || ext == "msix"
+                        || ext == "msixvc"
+                        || ext == "inspack"
+                        || ext == "zip"
+                    {
+                        if insp.package_file.is_none() {
+                            insp.package_file = Some(p);
+                        }
+                        insp.is_valid = true;
+                    } else if ext == "exe" && insp.main_executable.is_none() {
+                        insp.main_executable = Some(p);
+                        insp.is_valid = true;
+                    }
+                }
+            }
+        }
+    }
+
+    insp
 }
 
 pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
@@ -208,12 +422,18 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let dir = entry.path();
-                if dir.join("bedrock_server.exe").is_file()
-                    || dir.join("Minecraft.Windows.exe").is_file()
-                    || dir.join("AppxManifest.xml").is_file()
-                {
+                let insp = inspect_bedrock_version_dir(&dir);
+                if insp.is_valid {
                     standalone_installed = true;
-                    installed_versions.push(name);
+                    if !installed_versions.contains(&name) {
+                        installed_versions.push(name.clone());
+                    }
+                    if !insp.version_id.is_empty()
+                        && insp.version_id != name
+                        && !installed_versions.contains(&insp.version_id)
+                    {
+                        installed_versions.push(insp.version_id);
+                    }
                 }
             }
         }
@@ -994,12 +1214,14 @@ pub fn launch_bedrock_edition(
                     if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
                         for entry in entries.flatten() {
                             let dir = entry.path();
-                            let srv = dir.join("bedrock_server.exe");
-                            if srv.is_file() {
-                                let ver_name = entry.file_name().to_string_lossy().to_string();
-                                spawn_bedrock_exe(&srv, &dir, true)?;
+                            let insp = inspect_bedrock_version_dir(&dir);
+                            if let Some(exe) = insp.main_executable {
+                                let work_dir = exe.parent().unwrap_or(&dir);
+                                spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
+                                let type_desc = if insp.is_server { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
                                 return Ok(format!(
-                                    "未检测到 Windows 原生 UWP 客户端，已为您启动本地基岩版核心 ({ver_name})，并开启独立控制台窗口"
+                                    "未检测到 Windows 原生 UWP 客户端，已为您启动本地基岩版{type_desc} ({})",
+                                    insp.folder_name
                                 ));
                             }
                         }
@@ -1011,72 +1233,53 @@ pub fn launch_bedrock_edition(
             }
 
             // 2. Specific standalone version requested (e.g. 1.26.52 or unpacked AppX instance)
-            let ver_dir = bedrock_versions_dir.join(clean_vid);
+            let target_dir = resolve_bedrock_version_dir(game_root, clean_vid);
+            if target_dir.is_dir() {
+                let insp = inspect_bedrock_version_dir(&target_dir);
 
-            // BedrockBoot-style AppxManifest package registration
-            let manifest = ver_dir.join("AppxManifest.xml");
-            if manifest.is_file() {
-                let _ = Command::new("powershell")
-                    .args([
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        &format!(
-                            "Add-AppxPackage -Register '{}' -DisableDevelopmentMode",
-                            manifest.to_string_lossy()
-                        ),
-                    ])
-                    .output();
-                return launch_uwp();
-            }
+                // BedrockBoot-style AppxManifest package registration
+                if let Some(manifest) = insp.manifest_path {
+                    let _ = Command::new("powershell")
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            &format!(
+                                "Add-AppxPackage -Register '{}' -DisableDevelopmentMode",
+                                manifest.to_string_lossy()
+                            ),
+                        ])
+                        .output();
+                    return launch_uwp();
+                }
 
-            let exe_candidates = [
-                (ver_dir.join("Minecraft.Windows.exe"), false),
-                (ver_dir.join("Minecraft.exe"), false),
-                (ver_dir.join("bedrock_server.exe"), true),
-            ];
-            for (exe, is_console) in &exe_candidates {
-                if exe.is_file() {
-                    spawn_bedrock_exe(exe, &ver_dir, *is_console)?;
-                    let type_desc = if *is_console { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
+                if let Some(exe) = insp.main_executable {
+                    let work_dir = exe.parent().unwrap_or(&target_dir);
+                    spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
+                    let type_desc = if insp.is_server { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
                     return Ok(format!("已启动基岩版{type_desc} ({clean_vid})"));
                 }
-            }
 
-            // Also check prefix / sub-version match in bedrock_versions_dir (e.g. 1.26.52 -> 1.26.52.3)
-            if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name == clean_vid || name.starts_with(clean_vid) || clean_vid.starts_with(&name) {
-                        let dir = entry.path();
-                        let dir_manifest = dir.join("AppxManifest.xml");
-                        if dir_manifest.is_file() {
-                            let _ = Command::new("powershell")
-                                .args([
-                                    "-NoProfile",
-                                    "-NonInteractive",
-                                    "-Command",
-                                    &format!(
-                                        "Add-AppxPackage -Register '{}' -DisableDevelopmentMode",
-                                        dir_manifest.to_string_lossy()
-                                    ),
-                                ])
-                                .output();
-                            return launch_uwp();
-                        }
-
-                        for (exe_name, is_console) in [
-                            ("Minecraft.Windows.exe", false),
-                            ("Minecraft.exe", false),
-                            ("bedrock_server.exe", true),
-                        ] {
-                            let exe = dir.join(exe_name);
-                            if exe.is_file() {
-                                spawn_bedrock_exe(&exe, &dir, is_console)?;
-                                let type_desc = if is_console { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
-                                return Ok(format!("已启动基岩版{type_desc} ({name})"));
-                            }
-                        }
+                if let Some(pkg) = insp.package_file {
+                    let ext = pkg
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if ext == "appx" || ext == "msix" {
+                        let _ = Command::new("powershell")
+                            .args([
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-Command",
+                                &format!("Add-AppxPackage -Path '{}'", pkg.to_string_lossy()),
+                            ])
+                            .output();
+                        return launch_uwp();
+                    } else if ext == "msixvc" {
+                        return Err(format!(
+                            "当前基岩版版本 ({clean_vid}) 为 Xbox GDK 加密包 (.msixvc)。\n请确保已在系统安装“Xbox 应用”与“游戏服务”，或前往应用商店启动；若需要直接运行，建议在下载页选择 AppX / BDS 核心。"
+                        ));
                     }
                 }
             }
@@ -1087,7 +1290,7 @@ pub fn launch_bedrock_edition(
             }
 
             return Err(format!(
-                "未找到基岩版版本 {clean_vid} 的核心文件 (bedrock_server.exe 或 Minecraft.Windows.exe)。请前往“下载”页面下载对应版本核心。"
+                "未找到基岩版版本 {clean_vid} 的核心执行文件。请前往“下载”页面下载对应版本核心。"
             ));
         }
 
@@ -1103,12 +1306,15 @@ pub fn launch_bedrock_edition(
             for entry in entries.flatten() {
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     let dir = entry.path();
-                    let srv = dir.join("bedrock_server.exe");
-                    let client = dir.join("Minecraft.Windows.exe");
-                    if client.is_file() {
-                        candidates.push((client, dir.clone(), false, entry.file_name().to_string_lossy().to_string()));
-                    } else if srv.is_file() {
-                        candidates.push((srv, dir.clone(), true, entry.file_name().to_string_lossy().to_string()));
+                    let insp = inspect_bedrock_version_dir(&dir);
+                    if let Some(exe) = insp.main_executable {
+                        let work_dir = exe.parent().unwrap_or(&dir).to_path_buf();
+                        candidates.push((
+                            exe,
+                            work_dir,
+                            insp.is_server,
+                            insp.folder_name,
+                        ));
                     }
                 }
             }
@@ -1559,6 +1765,55 @@ pub async fn install_bedrock_version(
         // Release file lock
         drop(archive);
 
+        // If an inner .appx is unpacked inside dest_dir (typical in .appxbundle packages),
+        // unpack the x64 .appx directly into dest_dir so executables & manifests are available.
+        if let Ok(entries) = std::fs::read_dir(&dest_dir) {
+            let mut inner_appx = None;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if ext == "appx" {
+                        let name = p
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        if name.contains("x64") || inner_appx.is_none() {
+                            inner_appx = Some(p);
+                        }
+                    }
+                }
+            }
+            if let Some(appx_path) = inner_appx {
+                if let Ok(file) = File::open(&appx_path) {
+                    if let Ok(mut inner_archive) = zip::ZipArchive::new(file) {
+                        for j in 0..inner_archive.len() {
+                            if let Ok(mut entry) = inner_archive.by_index(j) {
+                                if let Some(path) = entry.enclosed_name() {
+                                    let outpath = dest_dir.join(path);
+                                    if entry.is_dir() {
+                                        let _ = std::fs::create_dir_all(&outpath);
+                                    } else {
+                                        if let Some(p) = outpath.parent() {
+                                            let _ = std::fs::create_dir_all(p);
+                                        }
+                                        if let Ok(mut outfile) = File::create(&outpath) {
+                                            let _ = std::io::copy(&mut entry, &mut outfile);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Delete AppxSignature.p7x if present (BedrockBoot standard step to allow development mode registration)
         let sig_p7x = dest_dir.join("AppxSignature.p7x");
         if sig_p7x.exists() {
@@ -1687,14 +1942,7 @@ pub async fn delete_bedrock_version(game_root: &Path, version_id: &str) -> Resul
         .trim_start_matches("bedrock:")
         .trim();
 
-    let versions_dir = root.join("bedrock").join("versions");
-    let target = if versions_dir.join(clean_id).is_dir() {
-        versions_dir.join(clean_id)
-    } else if versions_dir.join(version_id.trim()).is_dir() {
-        versions_dir.join(version_id.trim())
-    } else {
-        PathBuf::new()
-    };
+    let target = resolve_bedrock_version_dir(&root, version_id);
 
     let mut deleted = false;
     if target.is_dir() {
@@ -2115,7 +2363,7 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
 
 pub fn get_bedrock_loader_config(game_root: &Path, version_id: &str) -> BedrockInstanceLoaderConfig {
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
     let cfg_file = ver_dir.join("loader.json");
     if cfg_file.is_file() {
         if let Ok(content) = std::fs::read_to_string(&cfg_file) {
@@ -2134,7 +2382,7 @@ pub async fn install_bedrock_loader(
     loader_version: &str,
 ) -> Result<String, String> {
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
     if !ver_dir.is_dir() {
         return Err(format!("未找到基岩版版本目录: {}", ver_dir.display()));
     }
@@ -2226,7 +2474,7 @@ pub async fn install_bedrock_loader(
 
 pub fn get_bedrock_mods(game_root: &Path, version_id: &str) -> Result<Vec<BedrockModItem>, String> {
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
     let mut items = Vec::new();
 
     let scan_dirs = [
@@ -2299,7 +2547,7 @@ pub fn toggle_bedrock_mod(
     enabled: bool,
 ) -> Result<(), String> {
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
 
     let candidates = [
         ver_dir.join("mods").join(mod_id),
@@ -2334,7 +2582,7 @@ pub fn toggle_bedrock_mod(
 
 pub fn delete_bedrock_mod(game_root: &Path, version_id: &str, mod_id: &str) -> Result<(), String> {
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
 
     let candidates = [
         ver_dir.join("mods").join(mod_id),
@@ -2367,7 +2615,7 @@ pub fn install_bedrock_mod_file(
     }
 
     let root = net::absolute_path(game_root);
-    let ver_dir = root.join("bedrock").join("versions").join(version_id);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
     let fname = src.file_name().ok_or("无效的文件名")?.to_string_lossy().to_string();
 
     let dest_dir = if fname.ends_with(".dll") {
@@ -2515,6 +2763,48 @@ mod tests {
         assert_eq!(mods.len(), 1);
         assert_eq!(mods[0].name, "test_mod");
         assert_eq!(mods[0].mod_type, "dll_mod");
+
+        let _ = force_remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_inspect_and_get_bedrock_status() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cobble_bds_insp_{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+        ));
+
+        // 1. Version with version.json and msixvc
+        let v1_dir = temp_dir.join("bedrock").join("versions").join("1.21.60.25");
+        std::fs::create_dir_all(&v1_dir).unwrap();
+        std::fs::write(
+            v1_dir.join("version.json"),
+            r#"{"id":"1.21.60.25","name":"Minecraft 基岩版 1.21.60.25","packageFile":"1.21.60.25.msixvc"}"#,
+        ).unwrap();
+        std::fs::write(v1_dir.join("1.21.60.25.msixvc"), b"dummy msixvc").unwrap();
+
+        // 2. Version with nested subfolder (e.g. bedrock-server-1.21.50/bedrock_server.exe)
+        let v2_dir = temp_dir.join("bedrock").join("versions").join("1.21.50");
+        let v2_sub = v2_dir.join("bedrock-server-1.21.50");
+        std::fs::create_dir_all(&v2_sub).unwrap();
+        std::fs::write(v2_sub.join("bedrock_server.exe"), b"dummy bds").unwrap();
+
+        // Check inspection directly
+        let insp1 = inspect_bedrock_version_dir(&v1_dir);
+        assert!(insp1.is_valid);
+        assert_eq!(insp1.version_id, "1.21.60.25");
+        assert!(insp1.package_file.is_some());
+
+        let insp2 = inspect_bedrock_version_dir(&v2_dir);
+        assert!(insp2.is_valid);
+        assert!(insp2.main_executable.is_some());
+        assert!(insp2.is_server);
+
+        // Check get_bedrock_status
+        let status = get_bedrock_status(&temp_dir);
+        assert!(status.standalone_installed);
+        assert!(status.installed_versions.contains(&"1.21.60.25".to_string()));
+        assert!(status.installed_versions.contains(&"1.21.50".to_string()));
 
         let _ = force_remove_dir_all(&temp_dir);
     }

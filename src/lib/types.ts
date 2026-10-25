@@ -294,6 +294,20 @@ export interface LaunchRequest {
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
 
+export type ThemeColorPreset =
+  | "emerald"
+  | "sapphire"
+  | "amethyst"
+  | "blaze"
+  | "ruby"
+  | "gold"
+  | "prismarine"
+  | "custom";
+
+export type ThemeMode = "dark" | "light" | "system";
+export type BackgroundType = "default" | "dirt" | "stone" | "custom";
+export type LauncherFont = "default" | "pixel" | "system";
+
 export interface LauncherSettings {
   playerName: string;
   gameRoot: string;
@@ -316,6 +330,18 @@ export interface LauncherSettings {
   launcherVisibility: LauncherVisibility;
   processPriority: ProcessPriority;
   windowSize: WindowSizeMode;
+  themeColor: ThemeColorPreset;
+  customThemeColor: string;
+  themeMode: ThemeMode;
+  backgroundType: BackgroundType;
+  customBackgroundPath: string;
+  backgroundBlur: number;
+  backgroundOpacity: number;
+  enableMica: boolean;
+  enableAnimation: boolean;
+  showWorldGrid: boolean;
+  customSlogan: string;
+  fontFamily: LauncherFont;
 }
 
 export type ViewId =

@@ -3,13 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+static JAVA_CACHE: Mutex<Option<(Instant, PathBuf, Vec<JavaInstall>)>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,19 +276,47 @@ fn find_all_java(dir: &Path, depth: u8) -> Vec<(PathBuf, &'static str)> {
 
 pub fn detect_java_installations(root: &Path) -> Vec<JavaInstall> {
     let root = net::absolute_path(root);
-    let mut seen_paths = HashSet::new();
-    let mut installs: Vec<JavaInstall> = Vec::new();
-    for (path, source) in candidate_paths(&root) {
-        let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if !seen_paths.insert(key) {
-            continue;
-        }
-        if let Some(install) = probe_java(&path, source) {
-            installs.push(install);
+
+    if let Ok(guard) = JAVA_CACHE.lock() {
+        if let Some((timestamp, ref cached_root, ref cached_installs)) = *guard {
+            if cached_root == &root && timestamp.elapsed() < Duration::from_secs(15) {
+                return cached_installs.clone();
+            }
         }
     }
-    installs.sort_by(|a, b| b.major.cmp(&a.major).then_with(|| a.path.cmp(&b.path)));
-    installs
+
+    let candidates = candidate_paths(&root);
+    let mut seen_paths = HashSet::new();
+    let mut unique_candidates: Vec<(PathBuf, &'static str)> = Vec::new();
+    for (path, source) in candidates {
+        let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen_paths.insert(key) {
+            unique_candidates.push((path, source));
+        }
+    }
+
+    let installs = std::thread::scope(|s| {
+        let handles: Vec<_> = unique_candidates
+            .into_iter()
+            .map(|(path, source)| s.spawn(move || probe_java(&path, source)))
+            .collect();
+        let mut results = Vec::new();
+        for h in handles {
+            if let Ok(Some(install)) = h.join() {
+                results.push(install);
+            }
+        }
+        results
+    });
+
+    let mut sorted = installs;
+    sorted.sort_by(|a, b| b.major.cmp(&a.major).then_with(|| a.path.cmp(&b.path)));
+
+    if let Ok(mut guard) = JAVA_CACHE.lock() {
+        *guard = Some((Instant::now(), root, sorted.clone()));
+    }
+
+    sorted
 }
 
 pub fn find_managed_java(root: &Path, major: u32) -> Option<PathBuf> {
@@ -513,6 +543,9 @@ pub async fn ensure_java(
         total,
         format!("Java {display_version} 已就绪"),
     );
+    if let Ok(mut guard) = JAVA_CACHE.lock() {
+        *guard = None;
+    }
     Ok(java)
 }
 

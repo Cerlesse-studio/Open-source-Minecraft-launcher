@@ -413,7 +413,10 @@ export function DownloadCatalogView({
 
   useEffect(() => {
     void loadBedrock();
-  }, [gameRoot]);
+    const onFocus = () => void loadBedrock();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [gameRoot, bedrockApiSource]);
 
   const handleInstallBedrock = async (ver: BedrockVersionItem) => {
     if (onInstallBedrock) {
@@ -1196,8 +1199,11 @@ export function DownloadCatalogView({
                                     bedrockStatus?.installedVersions.some(
                                       (installedId) =>
                                         installedId === ver.id ||
+                                        installedId === ver.version ||
                                         installedId.startsWith(ver.id) ||
-                                        ver.id.startsWith(installedId),
+                                        ver.id.startsWith(installedId) ||
+                                        installedId.startsWith(ver.version) ||
+                                        ver.version.startsWith(installedId),
                                     ),
                                   );
                                   const isBusy = installingBedrockId === ver.id;

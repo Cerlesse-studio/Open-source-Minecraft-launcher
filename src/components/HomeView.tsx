@@ -287,7 +287,10 @@ export function HomeView({
 
   useEffect(() => {
     void refreshBedrockStatus();
-  }, [refreshBedrockStatus]);
+    const onFocus = () => void refreshBedrockStatus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshBedrockStatus, selectedBedrockVersion, edition]);
 
   const handleLaunchBedrock = async () => {
     setBedrockLaunching(true);
@@ -659,7 +662,7 @@ export function HomeView({
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
                 <span className="size-1.5 rounded-[1px] bg-primary/80" />
-                本地玩家档案 · Java 与基岩版混用共存
+                {settings?.customSlogan?.trim() || "本地玩家档案 · Java 与基岩版混用共存"}
               </p>
             </div>
           </div>
