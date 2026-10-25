@@ -220,6 +220,9 @@ export interface GameExitPayload {
   versionId?: string | null;
 }
 
+export type OfflineSkinType = "random" | "steve" | "alex" | "mojang" | "custom";
+export type OfflineSkinModel = "default" | "slim";
+
 export interface LaunchRequest {
   versionId: string;
   root: string;
@@ -228,6 +231,10 @@ export interface LaunchRequest {
   javaPath?: string | null;
   width?: number | null;
   height?: number | null;
+  skinType?: OfflineSkinType;
+  customSkinPath?: string | null;
+  customSkinModel?: OfflineSkinModel | null;
+  mojangSkinName?: string | null;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
@@ -243,6 +250,11 @@ export interface LauncherSettings {
   downloadThreads: number;
   downloadSource: DownloadSourceId;
   customSourceUrl?: string;
+  offlineSkinType: OfflineSkinType;
+  offlineSkinModel: OfflineSkinModel;
+  customSkinPath?: string;
+  mojangSkinName?: string;
+  bedrockApiSource?: "endstone" | "mcserverjars" | "azure_mirror";
 }
 
 export type ViewId =
@@ -253,3 +265,52 @@ export type ViewId =
   | "download-progress"
   | "version-settings"
   | "settings";
+
+export type GameEdition = "java" | "bedrock";
+
+export interface BedrockStatus {
+  uwpInstalled: boolean;
+  standaloneInstalled: boolean;
+  comMojangPath: string;
+  portablePath: string;
+  resourcePacksCount: number;
+  behaviorPacksCount: number;
+  worldsCount: number;
+  installedVersions: string[];
+}
+
+export interface BedrockVersionItem {
+  id: string;
+  name: string;
+  version: string;
+  releaseType: string;
+  downloadUrl: string;
+  storeUrl?: string | null;
+  date: string;
+  size: number;
+  apiSource?: string | null;
+  sha256?: string | null;
+}
+
+export interface BedrockContentItem {
+  id: string;
+  title: string;
+  author: string;
+  description: string;
+  contentType: "shader" | "mod" | "resourcepack";
+  downloadUrl: string;
+  fileName: string;
+  iconUrl?: string | null;
+  tags: string[];
+  downloads: number;
+  version: string;
+}
+
+export interface InstallPackResult {
+  success: boolean;
+  packName: string;
+  packType: string;
+  targetPath: string;
+  message: string;
+}
+

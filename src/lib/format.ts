@@ -4,6 +4,8 @@ export function typeLabel(type: string): string {
       return "正式版";
     case "snapshot":
       return "快照";
+    case "april_fools":
+      return "愚人节限定";
     case "old_beta":
       return "Beta";
     case "old_alpha":

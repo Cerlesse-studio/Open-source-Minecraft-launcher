@@ -4,7 +4,7 @@
 
 # Open-source-Minecraft-launcher
 
-一个轻量、现代的开源 Minecraft Java 版启动器
+一个轻量、现代的开源 Minecraft 启动器（支持 Java 版与基岩版双架构）
 
 基于 **Tauri 2 · Rust · React 19** 构建
 
@@ -71,6 +71,14 @@
 
 启动前会根据版本要求的 Java 主版本，在本机已安装的运行时中自动匹配；没有合适的版本时会自动下载 Eclipse Temurin JRE。也支持手动指定 `java` 可执行文件。
 
+### ❖ 基岩版支持 (Bedrock Edition)
+
+原生集成 Minecraft 基岩版环境管理：
+- **版本下载与商店直连**：可一键下载 Bedrock 核心与服务包，或快速跳转 Windows Microsoft Store 原生正版安装。
+- **一键启动**：支持原生协议激活 Windows UWP 正版基岩版，或启动本地独立运行核心。
+- **光影与模组自动安装**：精选并提供 **Deferred Lighting PBR (延迟着色管线光影)**、**Kelly's RTX (光追光影)**、**YSS Shader** 以及 **Actions & Stuff (动作物理行为包)**、**Essentials Add-on** 等。支持解析 `.mcpack` 与 `.mcaddon`，自动区分资源包与行为包解压部署至 `com.mojang` 目录并唤起系统安装。
+- **本地包导入**：支持一键导入外部 `.mcpack` / `.mcaddon` / `.zip`，快速完成安装配置。
+
 ## 快速开始
 
 ### 环境要求
@@ -115,6 +123,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
         ├── minecraft.rs     # 版本清单、下载、启动参数
         ├── loaders.rs       # 模组加载器安装
         ├── content.rs       # Modrinth 资源搜索与下载
+        ├── bedrock.rs       # 基岩版检测、启动、光影与模组解压安装
         ├── java.rs          # Java 检测与自动安装
         ├── net.rs           # 多线程下载器
         └── lib.rs           # Tauri 命令与事件

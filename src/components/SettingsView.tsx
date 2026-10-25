@@ -2,7 +2,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   AlertCircle,
+  Boxes,
   Check,
+  ChevronDown,
+  ChevronUp,
   Coffee,
   Cpu,
   FolderOpen,
@@ -10,12 +13,20 @@ import {
   Globe,
   Info,
   RefreshCw,
+  Sparkles,
+  Upload,
   UserRound,
 } from "lucide-react";
 import { cn } from "cn";
 import { isDesktop } from "../lib/backend";
 import { joinPath, shortPath } from "../lib/format";
-import type { JavaInstall, LauncherSettings, SystemInfo } from "../lib/types";
+import type {
+  JavaInstall,
+  LauncherSettings,
+  OfflineSkinModel,
+  OfflineSkinType,
+  SystemInfo,
+} from "../lib/types";
 import { Avatar, PageHeader } from "./ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,6 +125,7 @@ export function SettingsView({
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
   const [scanning, setScanning] = useState(false);
   const [rootDraft, setRootDraft] = useState(settings.gameRoot);
+  const [skinCollapsed, setSkinCollapsed] = useState(false);
   const cleanName = /^[A-Za-z0-9_]{1,16}$/.test(settings.playerName);
 
   useEffect(() => {
@@ -187,6 +199,27 @@ export function SettingsView({
     }
   };
 
+  const browseCustomSkin = async () => {
+    if (!isDesktop) {
+      onNotify("info", "浏览器预览模式", "文件选择在桌面应用中可用。");
+      return;
+    }
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Minecraft 皮肤 (*.png)", extensions: ["png"] }],
+        title: "选择离线皮肤文件",
+      });
+      if (typeof picked === "string" && picked.trim()) {
+        onChange({ customSkinPath: picked.trim() });
+        onNotify("success", "已设置自定义皮肤", picked.trim());
+      }
+    } catch (error) {
+      onNotify("error", "无法选择皮肤文件", String(error));
+    }
+  };
+
   const manualJava =
     settings.javaPath && !javaInstalls.some((java) => java.path === settings.javaPath);
   const selectedJava = settings.javaPath || "auto";
@@ -243,7 +276,7 @@ export function SettingsView({
 
         {/* 账户设置 Tab */}
         <TabsContent value="account" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-xl">
+          <div className="max-w-2xl space-y-4">
             <SettingsSection
               title="账户信息"
               icon={<UserRound className="size-4" />}
@@ -281,8 +314,28 @@ export function SettingsView({
               </Field>
 
               <div className="flex items-center gap-3.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
-                <div className="overflow-hidden rounded-md border border-border/60 bg-background">
-                  <Avatar name={settings.playerName} size={40} />
+                <div className="size-10 overflow-hidden rounded-md border border-border/60 bg-background flex items-center justify-center shrink-0">
+                  {settings.offlineSkinType === "mojang" ? (
+                    <img
+                      src={`https://minotar.net/helm/${settings.mojangSkinName?.trim() || settings.playerName || "Steve"}/40.png`}
+                      alt="Avatar"
+                      className="size-full object-contain pixelated"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <Avatar
+                      name={
+                        settings.offlineSkinType === "steve"
+                          ? "Steve"
+                          : settings.offlineSkinType === "alex"
+                            ? "Alex"
+                            : settings.playerName
+                      }
+                      size={40}
+                    />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -296,9 +349,242 @@ export function SettingsView({
                       离线账户
                     </Badge>
                   </div>
+                  <p className="text-[10.5px] text-muted-foreground truncate pt-0.5">
+                    离线皮肤状态：
+                    <span className="text-foreground/90 font-medium">
+                      {settings.offlineSkinType === "random"
+                        ? "随机 (默认)"
+                        : settings.offlineSkinType === "steve"
+                          ? "Steve 粗手臂"
+                          : settings.offlineSkinType === "alex"
+                            ? "Alex 细手臂"
+                            : settings.offlineSkinType === "mojang"
+                              ? `正版皮肤 (${settings.mojangSkinName?.trim() || settings.playerName})`
+                              : "自定义本地皮肤"}
+                    </span>
+                  </p>
                 </div>
               </div>
             </SettingsSection>
+
+            {/* 离线皮肤 Card */}
+            <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-sm">
+              <CardHeader className="border-b border-border/60 px-5 py-3.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/30 text-primary">
+                      <Sparkles className="size-4" />
+                    </span>
+                    <CardTitle className="text-[13px] font-medium">离线皮肤</CardTitle>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="size-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => setSkinCollapsed((prev) => !prev)}
+                    title={skinCollapsed ? "展开" : "收起"}
+                    aria-label={skinCollapsed ? "展开" : "收起"}
+                  >
+                    {skinCollapsed ? (
+                      <ChevronDown className="size-4" />
+                    ) : (
+                      <ChevronUp className="size-4" />
+                    )}
+                  </Button>
+                </div>
+              </CardHeader>
+
+              {!skinCollapsed && (
+                <CardContent className="space-y-4 p-5">
+                  {/* Warning banner matching user screenshot */}
+                  <div className="rounded-md border-l-4 border-amber-500 bg-amber-500/10 px-4 py-2.5 text-[12px] font-medium text-amber-600 dark:text-amber-400">
+                    由于技术问题，此功能只保证对 1.19.2 以前的版本有效！
+                  </div>
+
+                  {/* Radio Group matching user screenshot */}
+                  <RadioGroup
+                    value={settings.offlineSkinType}
+                    onValueChange={(val) =>
+                      onChange({ offlineSkinType: val as OfflineSkinType })
+                    }
+                    className="flex flex-wrap items-center gap-6 pt-1"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="random" id="skin-random" />
+                      <Label htmlFor="skin-random" className="cursor-pointer text-xs font-normal">
+                        随机
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="steve" id="skin-steve" />
+                      <Label htmlFor="skin-steve" className="cursor-pointer text-xs font-normal">
+                        Steve
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="alex" id="skin-alex" />
+                      <Label htmlFor="skin-alex" className="cursor-pointer text-xs font-normal">
+                        Alex
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="mojang" id="skin-mojang" />
+                      <Label htmlFor="skin-mojang" className="cursor-pointer text-xs font-normal">
+                        正版皮肤
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="custom" id="skin-custom" />
+                      <Label htmlFor="skin-custom" className="cursor-pointer text-xs font-normal">
+                        自定义
+                      </Label>
+                    </div>
+                  </RadioGroup>
+
+                  {/* Contextual Options */}
+                  {settings.offlineSkinType === "random" && (
+                    <div className="rounded-lg border border-border/50 bg-muted/15 p-3 text-[11.5px] leading-relaxed text-muted-foreground">
+                      💡 由 Minecraft 客户端根据玩家离线 UUID 自动随机决定默认皮肤（Steve 或 Alex）。
+                    </div>
+                  )}
+
+                  {settings.offlineSkinType === "steve" && (
+                    <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/15 p-3">
+                      <div className="size-9 shrink-0 overflow-hidden rounded border border-border/60 bg-muted/30">
+                        <img
+                          src="https://minotar.net/helm/Steve/36.png"
+                          alt="Steve"
+                          className="size-full object-contain pixelated"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
+                      </div>
+                      <div className="text-[11.5px] text-muted-foreground leading-relaxed">
+                        💡 强制将离线 UUID 校验为偶数哈希，固定使用经典的史蒂夫（Steve）4px 粗手臂模型与外观。
+                      </div>
+                    </div>
+                  )}
+
+                  {settings.offlineSkinType === "alex" && (
+                    <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/15 p-3">
+                      <div className="size-9 shrink-0 overflow-hidden rounded border border-border/60 bg-muted/30">
+                        <img
+                          src="https://minotar.net/helm/Alex/36.png"
+                          alt="Alex"
+                          className="size-full object-contain pixelated"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
+                      </div>
+                      <div className="text-[11.5px] text-muted-foreground leading-relaxed">
+                        💡 强制将离线 UUID 校验为奇数哈希，固定使用爱丽克丝（Alex）3px 细手臂纤细外观。
+                      </div>
+                    </div>
+                  )}
+
+                  {settings.offlineSkinType === "mojang" && (
+                    <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-3.5">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="mojang-skin-name" className="text-[11px] text-muted-foreground">
+                          正版玩家游戏 ID（留空则默认使用当前游戏昵称）
+                        </Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="mojang-skin-name"
+                            value={settings.mojangSkinName || ""}
+                            placeholder={settings.playerName || "例如 Notch"}
+                            spellCheck={false}
+                            className="h-8 text-xs font-mono bg-background/50"
+                            onChange={(e) => onChange({ mojangSkinName: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 pt-1">
+                        <div className="size-10 shrink-0 overflow-hidden rounded border border-border/60 bg-background flex items-center justify-center">
+                          <img
+                            src={`https://minotar.net/helm/${settings.mojangSkinName?.trim() || settings.playerName || "Steve"}/40.png`}
+                            alt="Mojang Skin"
+                            className="size-full object-contain pixelated"
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                            }}
+                          />
+                        </div>
+                        <div className="text-[11px] text-muted-foreground leading-relaxed">
+                          启动时启动器将通过 Mojang 官方 API 读取正版皮肤与带签名的 textures 数据。在 1.19.2 及以前版本离线进入游戏时即可完美显示。
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {settings.offlineSkinType === "custom" && (
+                    <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-3.5">
+                      <div className="space-y-1.5">
+                        <Label className="text-[11px] text-muted-foreground">选择本地皮肤文件 (.png)</Label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={settings.customSkinPath || ""}
+                            placeholder="请选择 .png 格式的 Minecraft 皮肤文件…"
+                            readOnly
+                            className="h-8 text-xs font-mono bg-background/50 flex-1 truncate"
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1.5 px-3 text-xs shrink-0"
+                            onClick={browseCustomSkin}
+                          >
+                            <Upload className="size-3.5 text-primary" />
+                            <span>浏览选择</span>
+                          </Button>
+                          {settings.customSkinPath && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                              onClick={() => onChange({ customSkinPath: "" })}
+                            >
+                              清除
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Arm Model Selection */}
+                      <div className="space-y-1.5">
+                        <Label className="text-[11px] text-muted-foreground">皮肤模型手臂类型</Label>
+                        <RadioGroup
+                          value={settings.offlineSkinModel}
+                          onValueChange={(val) =>
+                            onChange({ offlineSkinModel: val as OfflineSkinModel })
+                          }
+                          className="flex items-center gap-6"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="default" id="model-default" />
+                            <Label htmlFor="model-default" className="cursor-pointer text-xs font-normal">
+                              经典 (4px 粗手臂 / Steve)
+                            </Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="slim" id="model-slim" />
+                            <Label htmlFor="model-slim" className="cursor-pointer text-xs font-normal">
+                              纤细 (3px 细手臂 / Alex)
+                            </Label>
+                          </div>
+                        </RadioGroup>
+                      </div>
+
+                      <div className="text-[11px] text-muted-foreground leading-relaxed pt-0.5">
+                        💡 启动器会在游戏启动时自动将皮肤封装为专用离线材质包（OfflineSkinPack）并自动注入激活，支持各版本单人与离线服务器环境。
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              )}
+            </Card>
           </div>
         </TabsContent>
 
@@ -748,6 +1034,83 @@ export function SettingsView({
                   />
                 </Field>
               ) : null}
+            </SettingsSection>
+
+            <SettingsSection
+              title="基岩版第三方 API 下载源"
+              icon={<Boxes className="size-4 text-emerald-400" />}
+            >
+              <RadioGroup
+                value={settings.bedrockApiSource || "endstone"}
+                onValueChange={(val) => onChange({ bedrockApiSource: val as any })}
+                className="gap-2"
+              >
+                <label
+                  htmlFor="bedrock-src-endstone"
+                  className={cn(
+                    "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
+                    (!settings.bedrockApiSource || settings.bedrockApiSource === "endstone")
+                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      : "border-border/60",
+                  )}
+                >
+                  <RadioGroupItem value="endstone" id="bedrock-src-endstone" className="mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <div className="flex items-center gap-1.5 font-medium text-foreground">
+                      <span>EndstoneMC 全版本 API (推荐)</span>
+                      <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                        智能多 CDN 镜像
+                      </Badge>
+                    </div>
+                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                      由 Endstone 社区维护的基岩版完整版本数据库，支持所有正式版与测试版预览核心，并经由全球 CDN 加速。
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  htmlFor="bedrock-src-mcserverjars"
+                  className={cn(
+                    "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
+                    settings.bedrockApiSource === "mcserverjars"
+                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      : "border-border/60",
+                  )}
+                >
+                  <RadioGroupItem value="mcserverjars" id="bedrock-src-mcserverjars" className="mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <div className="flex items-center gap-1.5 font-medium text-foreground">
+                      <span>MCServerJars API</span>
+                      <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                        第三方直连 API
+                      </Badge>
+                    </div>
+                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                      提供标准化 RESTful 下载端点，直接解析并分发最新与指定基岩版独立运行组件。
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  htmlFor="bedrock-src-azure"
+                  className={cn(
+                    "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
+                    settings.bedrockApiSource === "azure_mirror"
+                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      : "border-border/60",
+                  )}
+                >
+                  <RadioGroupItem value="azure_mirror" id="bedrock-src-azure" className="mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <div className="flex items-center gap-1.5 font-medium text-foreground">
+                      <span>Azure CDN 官方边缘镜像</span>
+                    </div>
+                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                      由微软 Azure 全球 CDN 分发加速节点提供的基岩版核心分发地址。
+                    </span>
+                  </div>
+                </label>
+              </RadioGroup>
             </SettingsSection>
 
             <SettingsSection

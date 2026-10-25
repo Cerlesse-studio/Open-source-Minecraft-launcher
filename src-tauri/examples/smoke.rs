@@ -76,6 +76,10 @@ async fn main() -> Result<(), String> {
         java_path: None,
         width: Some(854),
         height: Some(480),
+        skin_type: None,
+        custom_skin_path: None,
+        custom_skin_model: None,
+        mojang_skin_name: None,
     };
 
     println!("Preparing Java and launch arguments…");

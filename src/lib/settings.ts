@@ -13,6 +13,11 @@ export const defaultSettings: LauncherSettings = {
   downloadThreads: 16,
   downloadSource: "official_ap",
   customSourceUrl: "",
+  offlineSkinType: "random",
+  offlineSkinModel: "default",
+  customSkinPath: "",
+  mojangSkinName: "",
+  bedrockApiSource: "endstone",
 };
 
 export function loadSettings(): LauncherSettings {
@@ -42,6 +47,23 @@ export function loadSettings(): LauncherSettings {
           : "official_ap",
       customSourceUrl:
         typeof parsed.customSourceUrl === "string" ? parsed.customSourceUrl : "",
+      offlineSkinType:
+        parsed.offlineSkinType === "steve" ||
+        parsed.offlineSkinType === "alex" ||
+        parsed.offlineSkinType === "mojang" ||
+        parsed.offlineSkinType === "custom"
+          ? parsed.offlineSkinType
+          : "random",
+      offlineSkinModel:
+        parsed.offlineSkinModel === "slim" ? "slim" : "default",
+      customSkinPath:
+        typeof parsed.customSkinPath === "string" ? parsed.customSkinPath : "",
+      mojangSkinName:
+        typeof parsed.mojangSkinName === "string" ? parsed.mojangSkinName : "",
+      bedrockApiSource:
+        parsed.bedrockApiSource === "mcserverjars" || parsed.bedrockApiSource === "azure_mirror"
+          ? parsed.bedrockApiSource
+          : "endstone",
     };
   } catch {
     return { ...defaultSettings };

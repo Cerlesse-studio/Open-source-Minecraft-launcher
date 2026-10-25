@@ -10,7 +10,8 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-pub const USER_AGENT: &str = "CobbleLauncher/0.1.0";
+pub const USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.1.0";
 
 /// Files at or above 1 MB are eligible for multi-segment HTTP Range downloading.
 const MIN_MULTITHREAD_SIZE: u64 = 1_048_576;
@@ -88,8 +89,9 @@ pub async fn download_file_multithreaded<'a>(
     let threads = threads.clamp(1, 16);
 
     // Try segmented multi-threaded download for large files when multiple threads are allowed.
+    // When expected_size is unknown (None), still probe HTTP Range so large downloads (Bedrock cores, etc.) auto-accelerate.
     let should_try_segmented =
-        threads > 1 && expected_size.map(|s| s >= MIN_MULTITHREAD_SIZE).unwrap_or(false);
+        threads > 1 && expected_size.map(|s| s >= MIN_MULTITHREAD_SIZE).unwrap_or(true);
 
     if should_try_segmented {
         match try_segmented_download(

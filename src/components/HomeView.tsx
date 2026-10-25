@@ -33,7 +33,13 @@ import {
   isRelease,
   type PatchNote,
 } from "../lib/news";
+import {
+  getBedrockStatus,
+  launchBedrock,
+} from "../lib/backend";
 import type {
+  BedrockStatus,
+  GameEdition,
   GameStateName,
   InstallProgress,
   InstalledVersion,
@@ -58,6 +64,12 @@ interface HomeViewProps {
   onStop: () => void;
   onOpenVersionSelect: () => void;
   onOpenVersionSettings: () => void;
+  gameRoot?: string;
+  onOpenDownloadBedrock?: () => void;
+  onNotify?: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
+  edition?: GameEdition;
+  onEditionChange?: (edition: GameEdition) => void;
+  selectedBedrockVersion?: string;
 }
 
 function NewsFallback({ size = 28 }: { size?: number }) {
@@ -145,11 +157,48 @@ export function HomeView({
   onStop,
   onOpenVersionSelect,
   onOpenVersionSettings,
+  gameRoot,
+  onOpenDownloadBedrock,
+  onNotify,
+  edition: _controlledEdition,
+  onEditionChange: _onEditionChange,
+  selectedBedrockVersion = "uwp",
 }: HomeViewProps) {
+  const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
+  const [bedrockLaunching, setBedrockLaunching] = useState(false);
   const [news, setNews] = useState<PatchNote[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  const refreshBedrockStatus = useCallback(async () => {
+    try {
+      const s = await getBedrockStatus(gameRoot);
+      setBedrockStatus(s);
+    } catch {
+      // ignore
+    }
+  }, [gameRoot]);
+
+  useEffect(() => {
+    void refreshBedrockStatus();
+  }, [refreshBedrockStatus]);
+
+  const handleLaunchBedrock = async () => {
+    setBedrockLaunching(true);
+    try {
+      const target =
+        selectedBedrockVersion === "uwp" || !selectedBedrockVersion
+          ? undefined
+          : selectedBedrockVersion;
+      const msg = await launchBedrock(target, gameRoot);
+      onNotify?.("success", "已唤起 Minecraft 基岩版", msg);
+    } catch (e) {
+      onNotify?.("error", "启动基岩版失败", String(e));
+    } finally {
+      setBedrockLaunching(false);
+    }
+  };
 
   const loadNews = useCallback(async (force = false) => {
     setNewsLoading(true);
@@ -408,6 +457,7 @@ export function HomeView({
         </section>
 
         <aside className="flex min-h-[560px] flex-col overflow-y-auto rounded-xl border border-border/70 bg-card/45 p-5 min-[900px]:min-h-0">
+          {/* Unified Player Profile */}
           <div>
             <div className="relative size-[168px] overflow-hidden rounded-xl border border-border/80 bg-[#0a0f0b] grass-glow">
               <Avatar name={playerName} size={168} className="size-full" />
@@ -421,7 +471,7 @@ export function HomeView({
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
                 <span className="size-1.5 rounded-[1px] bg-primary/80" />
-                本地玩家档案
+                本地玩家档案 · Java 与基岩版混用共存
               </p>
             </div>
           </div>
@@ -451,6 +501,7 @@ export function HomeView({
               </span>
             </div>
 
+            {/* Login Mode dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -499,6 +550,7 @@ export function HomeView({
               </DropdownMenuContent>
             </DropdownMenu>
 
+            {/* Player name input */}
             <div className="space-y-1.5">
               <label className="sr-only" htmlFor="home-player-name">
                 名称
@@ -525,43 +577,82 @@ export function HomeView({
               ) : null}
             </div>
 
-            <div className="relative">
-              <Button
-                type="button"
-                size="lg"
-                variant={isRunning ? "outline" : "default"}
-                onClick={isRunning ? onStop : onLaunch}
-                disabled={isLaunching || nameInvalid}
-                className={cn(
-                  "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
-                  isRunning
-                    ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-                    : "shadow-[0_18px_44px_-24px_var(--primary)]",
-                  isLaunching && "disabled:opacity-100",
-                )}
-              >
-                {isLaunching ? (
-                  <LoaderCircle className="size-5 animate-spin" />
-                ) : isRunning ? (
-                  <Square className="size-4 fill-current" />
-                ) : (
-                  <Play className="size-5 fill-current" />
-                )}
-                {launchLabel}
-              </Button>
-              {isLaunching ? (
-                <Progress
-                  value={percent ?? 30}
-                  aria-label="启动进度"
-                  className={cn(
-                    "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 bg-primary-foreground/20",
-                    "[&_[data-slot=progress-indicator]]:bg-primary-foreground",
-                    percent === null && "animate-pulse",
-                  )}
-                />
-              ) : null}
-            </div>
+            {/* Unified Big Play Button */}
+            {(() => {
+              const isBedrock =
+                selectedVersion === "uwp" ||
+                selectedVersion === "bedrock-uwp" ||
+                selectedVersion.startsWith("bedrock:") ||
+                selectedVersion.startsWith("bedrock-") ||
+                (bedrockStatus?.installedVersions.includes(selectedVersion) ?? false);
 
+              const handleUnifiedPlay = () => {
+                if (isBedrock) {
+                  if (bedrockStatus?.uwpInstalled || bedrockStatus?.standaloneInstalled) {
+                    void handleLaunchBedrock();
+                  } else {
+                    onOpenDownloadBedrock?.();
+                  }
+                } else {
+                  if (isRunning) {
+                    onStop();
+                  } else {
+                    onLaunch();
+                  }
+                }
+              };
+
+              return (
+                <div className="relative">
+                  <Button
+                    type="button"
+                    size="lg"
+                    variant={isRunning ? "outline" : "default"}
+                    onClick={handleUnifiedPlay}
+                    disabled={(isLaunching || bedrockLaunching || nameInvalid) && !isRunning}
+                    className={cn(
+                      "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
+                      isRunning
+                        ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+                        : isBedrock
+                          ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_18px_44px_-24px_rgba(16,185,129,0.5)]"
+                          : "shadow-[0_18px_44px_-24px_var(--primary)]",
+                      (isLaunching || bedrockLaunching) && "disabled:opacity-100",
+                    )}
+                  >
+                    {isLaunching || bedrockLaunching ? (
+                      <LoaderCircle className="size-5 animate-spin" />
+                    ) : isRunning ? (
+                      <Square className="size-4 fill-current" />
+                    ) : (
+                      <Play className="size-5 fill-current" />
+                    )}
+                    {isRunning
+                      ? "停止运行"
+                      : isLaunching || bedrockLaunching
+                        ? "正在启动…"
+                        : isBedrock
+                          ? bedrockStatus?.uwpInstalled || bedrockStatus?.standaloneInstalled
+                            ? "启动基岩版"
+                            : "获取并下载基岩版"
+                          : launchLabel}
+                  </Button>
+                  {isLaunching ? (
+                    <Progress
+                      value={percent ?? 30}
+                      aria-label="启动进度"
+                      className={cn(
+                        "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 bg-primary-foreground/20",
+                        "[&_[data-slot=progress-indicator]]:bg-primary-foreground",
+                        percent === null && "animate-pulse",
+                      )}
+                    />
+                  ) : null}
+                </div>
+              );
+            })()}
+
+            {/* Quick action buttons */}
             <div className="grid grid-cols-2 gap-2.5">
               <Button
                 variant="outline"
@@ -580,6 +671,13 @@ export function HomeView({
                 <SlidersHorizontal className="size-3.5 text-muted-foreground" />
                 版本设置
               </Button>
+            </div>
+
+            {/* Unified Stats Footer */}
+            <div className="mt-2 rounded-lg border border-border/60 bg-background/30 p-2.5 text-[11px] text-muted-foreground flex items-center justify-between">
+              <span>Java 版本: <strong className="text-foreground">{installed.length}</strong></span>
+              <span>基岩版: <strong className="text-foreground">{bedrockStatus?.uwpInstalled ? "UWP 已就绪" : `${bedrockStatus?.installedVersions.length ?? 0} 个核心`}</strong></span>
+              <span>附加包: <strong className="text-foreground">{(bedrockStatus?.resourcePacksCount ?? 0) + (bedrockStatus?.behaviorPacksCount ?? 0)}</strong></span>
             </div>
           </div>
         </aside>

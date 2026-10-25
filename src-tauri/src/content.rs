@@ -109,6 +109,47 @@ struct ModrinthRawHit {
     project_type: String,
 }
 
+fn get_bedrock_hits(query: &str, project_type: &str) -> Vec<ContentHit> {
+    let all = crate::bedrock::get_curated_bedrock_content();
+    let q = query.trim().to_lowercase();
+    all.into_iter()
+        .filter(|item| {
+            if item.content_type != project_type {
+                return false;
+            }
+            if !q.is_empty() {
+                if !item.title.to_lowercase().contains(&q)
+                    && !item.description.to_lowercase().contains(&q)
+                    && !item.author.to_lowercase().contains(&q)
+                {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|item| ContentHit {
+            project_id: item.id.clone(),
+            slug: item.id,
+            author: item.author,
+            title: item.title,
+            description: item.description,
+            categories: {
+                let mut cats = vec!["bedrock".to_string(), "基岩版".to_string()];
+                cats.extend(item.tags);
+                cats
+            },
+            versions: vec!["1.21+".to_string(), "基岩版".to_string()],
+            downloads: item.downloads,
+            follows: item.downloads / 10,
+            icon_url: item.icon_url,
+            date_created: Some("2024-01-01T00:00:00Z".to_string()),
+            date_modified: Some("2024-12-01T00:00:00Z".to_string()),
+            latest_version: Some(item.version),
+            project_type: item.content_type,
+        })
+        .collect()
+}
+
 pub async fn search_content(
     query: String,
     project_type: String,
@@ -119,6 +160,21 @@ pub async fn search_content(
     limit: u32,
 ) -> Result<SearchContentResult, String> {
     let limit = limit.clamp(1, 50);
+
+    // If explicitly searching bedrock
+    let is_bedrock = loader.as_deref() == Some("bedrock")
+        || game_version.as_deref() == Some("bedrock");
+    if is_bedrock {
+        let hits = get_bedrock_hits(&query, &project_type);
+        let total = hits.len() as u32;
+        return Ok(SearchContentResult {
+            hits,
+            offset: 0,
+            limit,
+            total_hits: total,
+        });
+    }
+
     let index = match sort.as_deref() {
         Some("relevance") => "relevance",
         Some("newest") => "newest",
@@ -166,7 +222,7 @@ pub async fn search_content(
         .await
         .map_err(|e| format!("解析 Modrinth 响应失败: {e}"))?;
 
-    let hits = raw
+    let mut hits: Vec<ContentHit> = raw
         .hits
         .into_iter()
         .map(|h| ContentHit {
@@ -186,6 +242,16 @@ pub async fn search_content(
             project_type: h.project_type,
         })
         .collect();
+
+    // Include Bedrock hits in first page if no specific loader or all loaders
+    if offset == 0 && (loader.is_none() || loader.as_deref() == Some("all")) {
+        let bedrock_hits = get_bedrock_hits(&query, &project_type);
+        if !bedrock_hits.is_empty() {
+            let mut combined = bedrock_hits;
+            combined.extend(hits);
+            hits = combined;
+        }
+    }
 
     Ok(SearchContentResult {
         hits,
@@ -231,6 +297,26 @@ pub async fn get_content_versions(
     game_version: Option<String>,
     loader: Option<String>,
 ) -> Result<Vec<ContentVersionItem>, String> {
+    // Check if it's a bedrock curated project
+    let bedrock_items = crate::bedrock::get_curated_bedrock_content();
+    if let Some(item) = bedrock_items.into_iter().find(|i| i.id == project_id_or_slug) {
+        return Ok(vec![ContentVersionItem {
+            id: format!("{}-v1", item.id),
+            name: format!("{} (基岩版推荐)", item.version),
+            version_number: item.version,
+            game_versions: vec!["1.21+".to_string(), "基岩版".to_string()],
+            loaders: vec!["bedrock".to_string()],
+            date_published: Some("2024-12-01T00:00:00Z".to_string()),
+            downloads: item.downloads,
+            files: vec![ContentFile {
+                url: item.download_url,
+                filename: item.file_name,
+                primary: true,
+                size: 2_500_000,
+                sha1: None,
+            }],
+        }]);
+    }
     let mut url = format!("https://api.modrinth.com/v2/project/{project_id_or_slug}/version");
     let mut query_params = Vec::new();
 
@@ -318,6 +404,19 @@ pub async fn download_content_file(
         .ok_or_else(|| "文件名无效".to_string())?
         .to_string_lossy()
         .to_string();
+
+    // Check if it's a bedrock pack or targeted for bedrock
+    if request.instance_id.as_deref() == Some("bedrock")
+        || filename.ends_with(".mcpack")
+        || filename.ends_with(".mcaddon")
+    {
+        let res = crate::bedrock::install_bedrock_pack(&root, &request.url, &filename).await?;
+        return Ok(DownloadContentResult {
+            success: true,
+            file_path: res.target_path,
+            bytes: request.size.unwrap_or(0),
+        });
+    }
 
     let target_dir: PathBuf = match request.project_type.as_str() {
         "mod" => {

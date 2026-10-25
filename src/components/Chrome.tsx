@@ -17,7 +17,7 @@ import { isDesktop } from "../lib/backend";
 import type { GameStateName, ViewId } from "../lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, GrassBlock, StatusDot } from "./ui";
+import { Avatar, StatusDot } from "./ui";
 
 async function withWindow(action: (window: ReturnType<typeof getCurrentWindow>) => Promise<void>) {
   if (!isDesktop) return;
@@ -53,7 +53,7 @@ export function TitleBar({ demo }: { demo: boolean }) {
   return (
     <header className="flex h-11 shrink-0 items-center border-b border-border/70 bg-[#070a08] pl-4">
       <div className="flex items-center gap-2.5" data-tauri-drag-region>
-        <GrassBlock size={18} />
+        <img src="/logo.png" alt="" className="size-5 shrink-0 rounded-[4px] object-contain shadow-xs" />
         <span className="font-pixel text-[11px] tracking-[0.16em] text-foreground">
           OPEN-SOURCE MINECRAFT LAUNCHER
         </span>
@@ -328,7 +328,7 @@ export function Sidebar({
         )}
         title={collapsed ? `Open-source-Minecraft-launcher ${launcherVersion} · ${runtimeStatus === "running" ? "运行中" : "空闲"}` : undefined}
       >
-        <GrassBlock size={12} />
+        <img src="/logo.png" alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
         {!collapsed ? (
           <>
             <span className="font-mono">Open-source-Minecraft-launcher {launcherVersion}</span>

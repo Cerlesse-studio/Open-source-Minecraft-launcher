@@ -1,4 +1,7 @@
 import type {
+  BedrockContentItem,
+  BedrockStatus,
+  BedrockVersionItem,
   ContentHit,
   ContentProjectType,
   ContentVersionItem,
@@ -7,6 +10,7 @@ import type {
   GameExitPayload,
   GameLogPayload,
   GameStatus,
+  InstallPackResult,
   InstallProgress,
   InstallResult,
   InstalledVersion,
@@ -583,6 +587,11 @@ export async function demoInstall(
   }
 }
 
+export async function demoDeleteVersion(versionId: string): Promise<void> {
+  await sleep(300);
+  installed = installed.filter((v) => v.id !== versionId);
+}
+
 export async function demoLaunch(request: LaunchRequest): Promise<number> {
   if (gameRunning) throw new Error("游戏已经在运行");
   gameRunning = true;
@@ -732,6 +741,32 @@ const DEMO_MODS: ContentHit[] = [
     iconUrl: "https://cdn.modrinth.com/data/codex/icon.png",
     projectType: "mod",
   },
+  {
+    projectId: "actions-and-stuff",
+    slug: "actions-and-stuff",
+    author: "Traxe",
+    title: "Actions & Stuff (基岩版动作物理交互模组)",
+    description: "基岩版超高清动作行为包，全面重构肢体动作、战斗挥舞、拔刀与游泳物理动作。",
+    categories: ["bedrock", "animation", "behavior"],
+    versions: ["1.21+", "基岩版"],
+    downloads: 890_000,
+    follows: 42_000,
+    iconUrl: "https://cdn.modrinth.com/data/mOgUt4GM/icon.png",
+    projectType: "mod",
+  },
+  {
+    projectId: "essentials-bedrock-addon",
+    slug: "essentials-bedrock-addon",
+    author: "BedrockTools",
+    title: "Essentials Bedrock Add-On (基岩版实用辅助模组)",
+    description: "为基岩版带来家园快速传送、背包快捷整理、死亡坐标标记、一键砍树等功能。",
+    categories: ["bedrock", "utility", "behavior"],
+    versions: ["1.21+", "基岩版"],
+    downloads: 512_000,
+    follows: 29_000,
+    iconUrl: "https://cdn.modrinth.com/data/N3y5K0fK/icon.png",
+    projectType: "mod",
+  },
 ];
 
 const DEMO_MODPACKS: ContentHit[] = [
@@ -816,6 +851,45 @@ const DEMO_SHADERS: ContentHit[] = [
     iconUrl: "https://cdn.modrinth.com/data/solas/icon.png",
     projectType: "shader",
   },
+  {
+    projectId: "bedrock-deferred-pbr",
+    slug: "bedrock-deferred-pbr",
+    author: "RenderDragon",
+    title: "Deferred Lighting PBR (基岩版延迟光影)",
+    description: "原生 Render Dragon 延迟着色管线光影，具备体积分光、PBR 粗糙度反射与点光源阴影。",
+    categories: ["bedrock", "pbr", "renderdragon"],
+    versions: ["1.21+", "基岩版"],
+    downloads: 248_900,
+    follows: 16_000,
+    iconUrl: "https://cdn.modrinth.com/data/b9YQO8q3/icon.png",
+    projectType: "shader",
+  },
+  {
+    projectId: "kellys-rtx-conversion",
+    slug: "kellys-rtx-conversion",
+    author: "Kelly",
+    title: "Kelly's RTX Conversion (基岩版光追全特效光影)",
+    description: "全特效基岩版 RTX 光线追踪增强光影材质包，具备拟真法线视差凹凸与真实方块反射。",
+    categories: ["bedrock", "rtx", "raytracing"],
+    versions: ["1.21+", "基岩版"],
+    downloads: 680_400,
+    follows: 35_000,
+    iconUrl: "https://cdn.modrinth.com/data/u6Djgvyi/icon.png",
+    projectType: "shader",
+  },
+  {
+    projectId: "yss-shader-bedrock",
+    slug: "yss-shader-bedrock",
+    author: "YSS Project",
+    title: "YSS Shader for Bedrock (基岩版经典软光影)",
+    description: "基岩版轻量柔和光影，具备动态水波、摇晃树叶、暖阳漫反射与优美晨昏天空。",
+    categories: ["bedrock", "soft", "water"],
+    versions: ["1.21+", "基岩版"],
+    downloads: 320_100,
+    follows: 18_000,
+    iconUrl: "https://cdn.modrinth.com/data/lhGA9TYQ/icon.png",
+    projectType: "shader",
+  },
 ];
 
 const DEMO_DATAPACKS: ContentHit[] = [
@@ -891,7 +965,14 @@ export async function demoSearchContent(options: {
 
   if (options.gameVersion && options.gameVersion !== "all") {
     pool = pool.filter((item) =>
-      item.versions.some((v) => v.startsWith(options.gameVersion!)),
+      item.versions.some((v) => v.toLowerCase().includes(options.gameVersion!.toLowerCase())),
+    );
+  }
+
+  if (options.loader && options.loader !== "all") {
+    const l = options.loader.toLowerCase();
+    pool = pool.filter((item) =>
+      item.categories.some((c) => c.toLowerCase().includes(l)),
     );
   }
 
@@ -909,6 +990,30 @@ export async function demoGetContentVersions(
   loader?: string,
 ): Promise<ContentVersionItem[]> {
   await sleep(150);
+  const bedrockItems = await demoGetBedrockContent();
+  const bItem = bedrockItems.find((i) => i.id === projectId);
+  if (bItem) {
+    return [
+      {
+        id: `${bItem.id}-v1`,
+        name: `[基岩版适用] ${bItem.version}`,
+        versionNumber: bItem.version,
+        gameVersions: ["1.21+", "基岩版"],
+        loaders: ["bedrock"],
+        datePublished: "2024-12-01T00:00:00Z",
+        downloads: bItem.downloads,
+        files: [
+          {
+            url: bItem.downloadUrl,
+            filename: bItem.fileName,
+            primary: true,
+            size: 2_500_000,
+          },
+        ],
+      },
+    ];
+  }
+
   const gv = gameVersion && gameVersion !== "all" ? gameVersion : "1.21.4";
   return [
     {
@@ -958,3 +1063,205 @@ export async function demoDownloadContentFile(
     bytes: request.size ?? 2_048_000,
   };
 }
+
+export async function demoGetBedrockStatus(): Promise<BedrockStatus> {
+  await sleep(100);
+  return {
+    uwpInstalled: true,
+    standaloneInstalled: true,
+    comMojangPath: "C:\\Users\\you\\AppData\\Local\\Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\LocalState\\games\\com.mojang",
+    portablePath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+    resourcePacksCount: 4,
+    behaviorPacksCount: 2,
+    worldsCount: 3,
+    installedVersions: ["1.21.50.07", "1.21.44.01"],
+  };
+}
+
+export async function demoGetBedrockVersions(apiSource?: string): Promise<BedrockVersionItem[]> {
+  await sleep(150);
+  const src = apiSource || "endstone";
+  const srcLabel = src === "mcserverjars" ? "MCServerJars API" : src === "azure_mirror" ? "Azure CDN 镜像" : "EndstoneMC API";
+
+  const rawReleases = [
+    { v: "1.21.60.10", n: "Minecraft 基岩版 1.21.60 (最新正式版)", d: "2025-02-18", sz: 83_886_080 },
+    { v: "1.21.51.02", n: "Minecraft 基岩版 1.21.51", d: "2025-01-14", sz: 81_788_928 },
+    { v: "1.21.50.07", n: "Minecraft 基岩版 1.21.50", d: "2024-12-10", sz: 81_264_640 },
+    { v: "1.21.44.01", n: "Minecraft 基岩版 1.21.44", d: "2024-11-20", sz: 79_691_776 },
+    { v: "1.21.43.01", n: "Minecraft 基岩版 1.21.43", d: "2024-11-12", sz: 79_691_776 },
+    { v: "1.21.40.04", n: "Minecraft 基岩版 1.21.40", d: "2024-10-22", sz: 78_643_200 },
+    { v: "1.21.31.04", n: "Minecraft 基岩版 1.21.31", d: "2024-09-24", sz: 77_594_624 },
+    { v: "1.21.30.03", n: "Minecraft 基岩版 1.21.30", d: "2024-09-17", sz: 77_070_336 },
+    { v: "1.21.20.03", n: "Minecraft 基岩版 1.21.20", d: "2024-08-06", sz: 76_021_760 },
+    { v: "1.21.0.03",  n: "Minecraft 基岩版 1.21.0",  d: "2024-06-13", sz: 74_973_184 },
+    { v: "1.20.81.01", n: "Minecraft 基岩版 1.20.81", d: "2024-04-29", sz: 74_448_896 },
+    { v: "1.20.73.01", n: "Minecraft 基岩版 1.20.73", d: "2024-03-26", sz: 73_400_320 },
+    { v: "1.20.62.02", n: "Minecraft 基岩版 1.20.62", d: "2024-02-20", sz: 72_351_744 },
+    { v: "1.20.51.01", n: "Minecraft 基岩版 1.20.51", d: "2023-12-19", sz: 71_303_168 },
+    { v: "1.20.41.02", n: "Minecraft 基岩版 1.20.41", d: "2023-11-02", sz: 70_254_592 },
+    { v: "1.20.32.03", n: "Minecraft 基岩版 1.20.32", d: "2023-10-05", sz: 69_206_016 },
+    { v: "1.20.15.01", n: "Minecraft 基岩版 1.20.15", d: "2023-08-16", sz: 67_633_152 },
+    { v: "1.20.0.01",  n: "Minecraft 基岩版 1.20.0",  d: "2023-06-07", sz: 65_536_000 },
+    { v: "1.19.83.01", n: "Minecraft 基岩版 1.19.83", d: "2023-05-10", sz: 64_487_424 },
+    { v: "1.19.73.02", n: "Minecraft 基岩版 1.19.73", d: "2023-03-29", sz: 63_438_848 },
+    { v: "1.19.63.01", n: "Minecraft 基岩版 1.19.63", d: "2023-02-14", sz: 62_914_560 },
+    { v: "1.19.51.01", n: "Minecraft 基岩版 1.19.51", d: "2022-12-06", sz: 61_341_696 },
+    { v: "1.19.41.01", n: "Minecraft 基岩版 1.19.41", d: "2022-11-03", sz: 60_817_408 },
+    { v: "1.19.22.01", n: "Minecraft 基岩版 1.19.22", d: "2022-08-11", sz: 59_768_832 },
+    { v: "1.18.33.02", n: "Minecraft 基岩版 1.18.33", d: "2022-05-10", sz: 57_671_680 },
+    { v: "1.18.12.01", n: "Minecraft 基岩版 1.18.12", d: "2022-02-16", sz: 56_098_816 },
+    { v: "1.17.41.01", n: "Minecraft 基岩版 1.17.41", d: "2021-10-27", sz: 54_525_952 },
+    { v: "1.16.221.01", n: "Minecraft 基岩版 1.16.221", d: "2021-04-22", sz: 51_380_224 },
+  ];
+
+  const rawPreviews = [
+    { v: "1.21.70.24", n: "Minecraft 基岩预览版 1.21.70.24", d: "2025-02-20", sz: 88_080_384 },
+    { v: "1.21.70.22", n: "Minecraft 基岩预览版 1.21.70.22", d: "2025-02-13", sz: 87_556_096 },
+    { v: "1.21.60.25", n: "Minecraft 基岩预览版 1.21.60.25", d: "2025-01-23", sz: 86_507_520 },
+    { v: "1.21.50.28", n: "Minecraft 基岩预览版 1.21.50.28", d: "2024-11-28", sz: 84_934_656 },
+    { v: "1.21.40.24", n: "Minecraft 基岩预览版 1.21.40.24", d: "2024-10-17", sz: 83_886_080 },
+  ];
+
+  const list: BedrockVersionItem[] = [];
+
+  for (const r of rawReleases) {
+    list.push({
+      id: r.v,
+      name: r.n,
+      version: r.v,
+      releaseType: "release",
+      downloadUrl: src === "mcserverjars"
+        ? `https://mcserverjars.com/api/download/bedrock/${r.v}`
+        : `https://minecraft.azureedge.net/bin-win/bedrock-server-${r.v}.zip`,
+      storeUrl: "ms-windows-store://pdp/?ProductId=9NBLGGH537BL",
+      date: r.d,
+      size: r.sz,
+      apiSource: srcLabel,
+    });
+  }
+
+  for (const p of rawPreviews) {
+    list.push({
+      id: p.v,
+      name: p.n,
+      version: p.v,
+      releaseType: "preview",
+      downloadUrl: src === "mcserverjars"
+        ? `https://mcserverjars.com/api/download/bedrock/${p.v}`
+        : `https://minecraft.azureedge.net/bin-win/bedrock-server-${p.v}.zip`,
+      storeUrl: "ms-windows-store://pdp/?ProductId=9P5X4QVLC2XR",
+      date: p.d,
+      size: p.sz,
+      apiSource: srcLabel,
+    });
+  }
+
+  return list;
+}
+
+export async function demoGetBedrockContent(category?: string): Promise<BedrockContentItem[]> {
+  await sleep(150);
+  const items: BedrockContentItem[] = [
+    {
+      id: "bedrock-deferred-pbr",
+      title: "Deferred Lighting PBR (基岩版延迟光影)",
+      author: "RenderDragon",
+      description: "原生 Render Dragon 延迟着色管线光影，具备体积分光、PBR 粗糙度反射与点光源实时阴影。",
+      contentType: "shader",
+      downloadUrl: "https://raw.githubusercontent.com/Pug-Dev/Deferred-PBR/main/DeferredPBR.mcpack",
+      fileName: "DeferredPBR.mcpack",
+      iconUrl: "https://cdn.modrinth.com/data/b9YQO8q3/icon.png",
+      tags: ["光影", "PBR", "RenderDragon", "1.21+"],
+      downloads: 248_900,
+      version: "v1.2.0",
+    },
+    {
+      id: "kellys-rtx-conversion",
+      title: "Kelly's RTX Conversion (光追全特效光影)",
+      author: "Kelly",
+      description: "全特效基岩版 RTX 光线追踪增强光影材质包，具备拟真法线视差凹凸与真实发光方块反射。",
+      contentType: "shader",
+      downloadUrl: "https://raw.githubusercontent.com/KellysRTX/Conversion/main/KellysRTX.mcpack",
+      fileName: "KellysRTX.mcpack",
+      iconUrl: "https://cdn.modrinth.com/data/u6Djgvyi/icon.png",
+      tags: ["光影", "RTX", "光线追踪", "拟真"],
+      downloads: 680_400,
+      version: "v2.1.0",
+    },
+    {
+      id: "yss-shader-bedrock",
+      title: "YSS Shader for Bedrock (经典软光影)",
+      author: "YSS Project",
+      description: "基岩版轻量柔和光影，具备动态水波、摇晃树叶、暖阳漫反射与优美晨昏天空。",
+      contentType: "shader",
+      downloadUrl: "https://raw.githubusercontent.com/yss-mc/releases/main/YSS_Bedrock.mcpack",
+      fileName: "YSS_Bedrock.mcpack",
+      iconUrl: "https://cdn.modrinth.com/data/lhGA9TYQ/icon.png",
+      tags: ["光影", "低配流畅", "水面波纹"],
+      downloads: 320_100,
+      version: "v3.0.2",
+    },
+    {
+      id: "actions-and-stuff",
+      title: "Actions & Stuff (动作物理交互模组)",
+      author: "Traxe",
+      description: "基岩版超高清动作行为包，全面重构玩家与生物全部肢体动作、战斗挥舞、拔刀与游泳物理动作。",
+      contentType: "mod",
+      downloadUrl: "https://raw.githubusercontent.com/Traxe-mc/ActionsStuff/main/ActionsAndStuff.mcaddon",
+      fileName: "ActionsAndStuff.mcaddon",
+      iconUrl: "https://cdn.modrinth.com/data/mOgUt4GM/icon.png",
+      tags: ["模组", "行为包", "物理动作", "生物交互"],
+      downloads: 890_000,
+      version: "v1.3.4",
+    },
+    {
+      id: "essentials-bedrock-addon",
+      title: "Essentials Bedrock Add-On (实用辅助模组)",
+      author: "BedrockTools",
+      description: "为基岩版带来家园快速传送、背包快捷整理、死亡坐标标记、一键砍树等丰富功能。",
+      contentType: "mod",
+      downloadUrl: "https://raw.githubusercontent.com/BedrockTools/Essentials/main/Essentials.mcaddon",
+      fileName: "Essentials.mcaddon",
+      iconUrl: "https://cdn.modrinth.com/data/N3y5K0fK/icon.png",
+      tags: ["模组", "辅助工具", "实用命令"],
+      downloads: 512_000,
+      version: "v2.0.1",
+    },
+  ];
+
+  if (category && category !== "all") {
+    return items.filter((i) => i.contentType === category);
+  }
+  return items;
+}
+
+export async function demoInstallBedrockVersion(versionId: string): Promise<string> {
+  await sleep(1000);
+  return `已成功安装 Minecraft 基岩版 ${versionId}`;
+}
+
+export async function demoDeleteBedrockVersion(_versionId: string): Promise<void> {
+  await sleep(300);
+}
+
+export async function demoInstallBedrockPack(
+  _source: string,
+  filename?: string,
+): Promise<InstallPackResult> {
+  await sleep(800);
+  const name = filename || "资源包";
+  const isMod = name.includes(".mcaddon") || name.toLowerCase().includes("mod");
+  return {
+    success: true,
+    packName: name,
+    packType: isMod ? "模组 / 行为包" : "光影 / 资源包",
+    targetPath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+    message: `已成功安装${isMod ? "模组" : "光影"}并部署至基岩版目录`,
+  };
+}
+
+export async function demoLaunchBedrock(): Promise<string> {
+  await sleep(400);
+  return "已成功启动 Minecraft 基岩版";
+}
+

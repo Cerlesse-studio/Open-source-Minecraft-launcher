@@ -11,12 +11,16 @@ import type { LogEntry } from "./components/Console";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
+  deleteBedrockVersion,
+  deleteVersion,
   detectJava,
   getInstalledVersions,
   getSystemInfo,
   getVersionManifest,
+  installBedrockVersion,
   installVersion,
   isDesktop,
+  launchBedrock,
   launchGame,
   openFolderPath,
   stopGame,
@@ -31,7 +35,9 @@ import {
   type VersionLaunchSettings,
 } from "./lib/versionSettings";
 import type {
+  BedrockVersionItem,
   DownloadHistoryRecord,
+  GameEdition,
   GameStateName,
   InstallProgress,
   InstalledVersion,
@@ -79,6 +85,9 @@ export default function App() {
   const [manifestLoading, setManifestLoading] = useState(true);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
+  const [installQueue, setInstallQueue] = useState<
+    Array<{ versionId: string; selection?: LoaderSelection }>
+  >([]);
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
   const [lastInstallProgress, setLastInstallProgress] = useState<InstallProgress | null>(
     null,
@@ -99,6 +108,35 @@ export default function App() {
       return false;
     }
   });
+
+  const [edition, setEdition] = useState<GameEdition>(() => {
+    try {
+      const saved = localStorage.getItem("cobble.selected-edition");
+      if (saved === "bedrock" || saved === "java") return saved;
+    } catch {}
+    return "java";
+  });
+
+  const [selectedBedrockVersion, setSelectedBedrockVersion] = useState<string>(() => {
+    try {
+      return localStorage.getItem("cobble.selected-bedrock") || "uwp";
+    } catch {}
+    return "uwp";
+  });
+
+  const handleEditionChange = (ed: GameEdition) => {
+    setEdition(ed);
+    try {
+      localStorage.setItem("cobble.selected-edition", ed);
+    } catch {}
+  };
+
+  const handleSelectBedrockVersion = (verId: string) => {
+    setSelectedBedrockVersion(verId);
+    try {
+      localStorage.setItem("cobble.selected-bedrock", verId);
+    } catch {}
+  };
 
   const settingsRef = useRef(settings);
   const versionSettingsRef = useRef(versionSettings);
@@ -404,10 +442,45 @@ export default function App() {
     setView("version-settings");
   }, []);
 
+  const handleDeleteVersion = useCallback(
+    async (versionId: string, edition: "java" | "bedrock") => {
+      try {
+        if (edition === "java") {
+          await deleteVersion(settings.gameRoot, versionId);
+          setVersionSettings((curr) => {
+            const next = { ...curr };
+            delete next[versionId];
+            return next;
+          });
+          pushToast("success", "已成功删除版本", `Java 版本 ${versionId} 目录已彻底移除。`);
+          await refreshInstalled(settings.gameRoot);
+          if (selectedVersion === versionId) {
+            setSelectedVersion("");
+          }
+        } else {
+          await deleteBedrockVersion(versionId, settings.gameRoot);
+          pushToast("success", "已成功删除基岩版核心", `基岩版核心 ${versionId} 目录已彻底移除。`);
+          if (selectedBedrockVersion === versionId) {
+            setSelectedBedrockVersion("uwp");
+          }
+        }
+      } catch (err) {
+        pushToast("error", "删除版本失败", String(err));
+      }
+    },
+    [settings.gameRoot, selectedVersion, selectedBedrockVersion, pushToast, refreshInstalled],
+  );
+
   const handleInstall = useCallback(
     async (versionId: string, selection?: LoaderSelection) => {
       if (installingVersion) {
-        pushToast("info", "已有安装任务", `正在安装 ${installingVersion}，请稍候。`);
+        setInstallQueue((prev) => [...prev, { versionId, selection }]);
+        const targetId = selection?.instanceName?.trim() || versionId;
+        pushToast(
+          "info",
+          "已加入安装队列",
+          `正在安装 ${installingVersion}，已将 ${targetId} 放入队列（排队第 ${installQueue.length + 1} 位）。`,
+        );
         return;
       }
       const root = settingsRef.current.gameRoot;
@@ -440,7 +513,7 @@ export default function App() {
       latestProgressRef.current = initialProgress;
       pushLog(
         "cobble",
-        `开始安装 Minecraft ${targetId}（基础版本 ${versionId}，${threads} 线程）…`,
+        `开始安装 Minecraft ${targetId}（基础版本 ${versionId}，${threads} 线程全组件并发下载）…`,
       );
       try {
         const res = await installVersion(root, versionId, threads, selection);
@@ -486,8 +559,106 @@ export default function App() {
         setInstallProgress(null);
       }
     },
-    [installingVersion, pushLog, pushToast, refreshInstalled],
+    [installingVersion, installQueue.length, pushLog, pushToast, refreshInstalled],
   );
+
+  const handleInstallBedrock = useCallback(
+    async (ver: BedrockVersionItem, apiSource?: string) => {
+      const targetLabel = `基岩版 ${ver.version}`;
+      if (installingVersion) {
+        pushToast(
+          "info",
+          "已有任务正在下载",
+          `正在下载 ${installingVersion}，请稍候。`,
+        );
+        return;
+      }
+      const root = settingsRef.current.gameRoot;
+      const threads = settingsRef.current.downloadThreads;
+      const startedAt = Date.now();
+      peakSpeedRef.current = 0;
+      setPeakSpeedBps(0);
+      setSpeedHistory([]);
+      setInstallingVersion(targetLabel);
+
+      const initialProgress: InstallProgress = {
+        versionId: `bedrock:${ver.id}`,
+        stage: "prepare",
+        done: 0,
+        total: 3,
+        detail: `准备多线程下载 ${targetLabel}`,
+        downloadedBytes: 0,
+        totalBytes: ver.size || 85_983_232,
+        speedBps: 0,
+        threads,
+        activeThreads: 1,
+      };
+      setInstallProgress(initialProgress);
+      setLastInstallProgress(initialProgress);
+      latestProgressRef.current = initialProgress;
+      pushLog(
+        "cobble",
+        `开始多线程下载 ${targetLabel}（${threads} 线程 Range 分片并发加速）…`,
+      );
+
+      try {
+        const res = await installBedrockVersion(
+          ver.id,
+          ver.downloadUrl,
+          root,
+          apiSource,
+          threads,
+        );
+        const lastSnap = latestProgressRef.current;
+        const record: DownloadHistoryRecord = {
+          id: `bedrock-${ver.id}-${Date.now()}`,
+          versionId: targetLabel,
+          status: "completed",
+          threads,
+          totalFiles: 1,
+          totalBytes:
+            lastSnap?.totalBytes ||
+            lastSnap?.downloadedBytes ||
+            ver.size ||
+            85_983_232,
+          peakSpeedBps: peakSpeedRef.current,
+          durationMs: Math.max(100, Date.now() - startedAt),
+          finishedAt: timeNow(),
+        };
+        setDownloadHistory((prev) => [record, ...prev].slice(0, 40));
+        pushToast("success", `${targetLabel} 安装完成`, res);
+        pushLog("cobble", `${targetLabel} 安装成功: ${res}`);
+      } catch (error) {
+        const record: DownloadHistoryRecord = {
+          id: `bedrock-${ver.id}-${Date.now()}`,
+          versionId: targetLabel,
+          status: "failed",
+          threads,
+          totalFiles: 0,
+          totalBytes: latestProgressRef.current?.downloadedBytes ?? 0,
+          peakSpeedBps: peakSpeedRef.current,
+          durationMs: Math.max(100, Date.now() - startedAt),
+          finishedAt: timeNow(),
+          error: String(error),
+        };
+        setDownloadHistory((prev) => [record, ...prev].slice(0, 40));
+        pushToast("error", `安装 ${targetLabel} 失败`, String(error));
+        pushLog("cobble", `安装 ${targetLabel} 失败: ${String(error)}`);
+      } finally {
+        setInstallingVersion(null);
+        setInstallProgress(null);
+      }
+    },
+    [installingVersion, pushLog, pushToast],
+  );
+
+  useEffect(() => {
+    if (!installingVersion && installQueue.length > 0) {
+      const [next, ...rest] = installQueue;
+      setInstallQueue(rest);
+      void handleInstall(next.versionId, next.selection);
+    }
+  }, [installingVersion, installQueue, handleInstall]);
 
   const handleLaunch = useCallback(
     async (versionOverride?: string, options?: { stay?: boolean }) => {
@@ -504,6 +675,34 @@ export default function App() {
         pushToast("info", "游戏正在运行", "结束当前游戏后再启动另一个实例。");
         return;
       }
+
+      const isBedrock =
+        versionId === "uwp" ||
+        versionId === "bedrock-uwp" ||
+        versionId.startsWith("bedrock:") ||
+        versionId.startsWith("bedrock-") ||
+        versionId.includes("基岩版");
+
+      if (isBedrock) {
+        try {
+          const target =
+            versionId === "uwp" || versionId === "bedrock-uwp"
+              ? undefined
+              : versionId
+                  .replace(/^bedrock:/, "")
+                  .replace(/^bedrock-/, "")
+                  .replace(/^(Minecraft\s*)?基岩版\s*/, "")
+                  .trim();
+          const msg = await launchBedrock(target, settingsRef.current.gameRoot);
+          pushToast("success", "已唤起 Minecraft 基岩版", msg);
+          pushLog("cobble", `成功启动 Minecraft 基岩版: ${msg}`);
+        } catch (err) {
+          pushToast("error", "启动基岩版失败", String(err));
+          pushLog("cobble", `启动基岩版失败: ${String(err)}`);
+        }
+        return;
+      }
+
       if (!installed.some((entry) => entry.id === versionId)) {
         pushToast("info", `${versionId} 尚未安装`, "请先前往下载页面下载游戏文件。");
         setView("download");
@@ -545,6 +744,10 @@ export default function App() {
           javaPath: settings.javaPath.trim() || null,
           width: launchSettings.resolutionEnabled ? launchSettings.width : null,
           height: launchSettings.resolutionEnabled ? launchSettings.height : null,
+          skinType: settings.offlineSkinType,
+          customSkinPath: settings.customSkinPath || null,
+          customSkinModel: settings.offlineSkinModel || null,
+          mojangSkinName: settings.mojangSkinName || null,
         });
         // Java may have been installed during launch; reflect it in the UI.
         void detectJavaForRoot(settingsRef.current.gameRoot);
@@ -645,6 +848,12 @@ export default function App() {
               onStop={() => void handleStop()}
               onOpenVersionSelect={() => setView("version-select")}
               onOpenVersionSettings={() => setView("version-settings")}
+              gameRoot={settings.gameRoot}
+              onOpenDownloadBedrock={() => setView("download")}
+              onNotify={pushToast}
+              edition={edition}
+              onEditionChange={handleEditionChange}
+              selectedBedrockVersion={selectedBedrockVersion}
             />
           ) : (
             <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
@@ -654,12 +863,29 @@ export default function App() {
                   installed={installed}
                   selectedVersion={selectedVersion}
                   gameRoot={settings.gameRoot}
+                  edition={edition}
+                  onEditionChange={handleEditionChange}
+                  selectedBedrockVersion={selectedBedrockVersion}
+                  onSelectBedrockVersion={handleSelectBedrockVersion}
                   onSelect={setSelectedVersion}
                   onPlay={(versionId) => void handleLaunch(versionId)}
+                  onPlayBedrock={(verId) => {
+                    void (async () => {
+                      try {
+                        const target = verId === "uwp" || !verId ? undefined : verId;
+                        const msg = await launchBedrock(target, settings.gameRoot);
+                        pushToast("success", "已唤起 Minecraft 基岩版", msg);
+                      } catch (err) {
+                        pushToast("error", "启动基岩版失败", String(err));
+                      }
+                    })();
+                  }}
                   onOpenVersionSettings={openVersionSettings}
                   onOpenFolder={(path) => void openFolder(path)}
                   onOpenLauncherSettings={() => setView("settings")}
                   onOpenDownloadPage={() => setView("download")}
+                  onDeleteVersion={handleDeleteVersion}
+                  onNotify={pushToast}
                 />
               ) : null}
 
@@ -683,6 +909,8 @@ export default function App() {
                   onOpenVersionSelect={() => setView("version-select")}
                   onOpenFolder={(path) => void openFolder(path)}
                   onRefresh={() => void refreshManifest(undefined, true)}
+                  onDeleteVersion={handleDeleteVersion}
+                  onInstallBedrock={handleInstallBedrock}
                   onNotify={pushToast}
                 />
               ) : null}
@@ -714,15 +942,21 @@ export default function App() {
                   speedHistory={speedHistory}
                   fileEvents={fileEvents}
                   history={downloadHistory}
+                  installQueue={installQueue}
                   gameRoot={settings.gameRoot}
                   onSelectVersion={setSelectedVersion}
                   onChangeThreads={(downloadThreads) =>
                     updateSettings({ downloadThreads })
                   }
                   onInstall={(versionId) => void handleInstall(versionId)}
+                  onLaunch={(versionId) => void handleLaunch(versionId)}
                   onClearHistory={() => setDownloadHistory([])}
+                  onDeleteHistoryItem={(id) =>
+                    setDownloadHistory((prev) => prev.filter((r) => r.id !== id))
+                  }
                   onOpenVersionSelect={() => setView("download")}
                   onOpenFolder={(path) => void openFolder(path)}
+                  onNotify={pushToast}
                 />
               ) : null}
 
@@ -753,6 +987,7 @@ export default function App() {
                   onOpenFolder={(path) => void openFolder(path)}
                   onRefreshJava={() => void refreshJava()}
                   onClearLogs={() => setLogs([])}
+                  onDeleteVersion={(verId) => handleDeleteVersion(verId, "java")}
                 />
               ) : null}
 

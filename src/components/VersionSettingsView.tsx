@@ -1,13 +1,16 @@
 import { useState } from "react";
 import {
+  AlertTriangle,
   CalendarDays,
   Check,
   LayoutDashboard,
   Layers3,
+  LoaderCircle,
   MemoryStick,
   FolderOpen,
   RotateCcw,
   SlidersHorizontal,
+  Trash2,
   Wrench,
 } from "lucide-react";
 import { cn } from "cn";
@@ -71,6 +74,7 @@ interface VersionSettingsViewProps {
   onOpenFolder: (path: string) => void;
   onRefreshJava: () => void;
   onClearLogs: () => void;
+  onDeleteVersion?: (versionId: string) => Promise<void> | void;
 }
 
 type Section = "overview" | "launch";
@@ -83,6 +87,7 @@ function LaunchSettingsPanel({
   onChange,
   onReset,
   onOpenFolder,
+  onDelete,
   gameRoot,
 }: {
   versionId: string;
@@ -92,8 +97,11 @@ function LaunchSettingsPanel({
   onChange: (patch: Partial<VersionLaunchSettings>) => void;
   onReset: () => void;
   onOpenFolder: (path: string) => void;
+  onDelete?: () => void;
   gameRoot: string;
 }) {
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   return (
     <div className="space-y-4">
       <Card className="gap-0 border-border/70 bg-card/55 py-0">
@@ -253,6 +261,89 @@ function LaunchSettingsPanel({
           </div>
         </CardContent>
       </Card>
+
+      {/* Danger Zone */}
+      {isInstalled && onDelete ? (
+        <Card className="gap-0 border-destructive/35 bg-destructive/5 py-0">
+          <CardHeader className="border-b border-destructive/20 px-5 py-3.5">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="size-4 text-destructive" />
+              <CardTitle className="text-xs font-medium text-destructive">危险操作区域</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+            <div className="min-w-0">
+              <span className="block text-xs font-medium text-foreground">删除此版本核心与文件</span>
+              <span className="block text-[11px] text-muted-foreground">
+                永久删除版本 {versionId} 的客户端文件与配置目录。此操作无法撤销。
+              </span>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setShowDeleteConfirm(true)}
+            >
+              <Trash2 className="size-3.5" />
+              删除版本
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in-0 duration-150">
+          <div className="w-full max-w-sm rounded-xl border border-border/80 bg-background/95 p-5 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-foreground">确认删除此版本？</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground truncate font-mono">
+                  {versionId}
+                </p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+              此操作将永久清理版本【<span className="font-mono text-foreground">{versionId}</span>】的文件目录，所有核心组件将被清除。
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isDeleting}
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isDeleting}
+                className="gap-1.5"
+                onClick={async () => {
+                  setIsDeleting(true);
+                  try {
+                    await onDelete?.();
+                    setShowDeleteConfirm(false);
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+              >
+                {isDeleting ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+                确认删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -283,6 +374,7 @@ export function VersionSettingsView({
   onOpenFolder,
   onRefreshJava,
   onClearLogs,
+  onDeleteVersion,
 }: VersionSettingsViewProps) {
   const [section, setSection] = useState<Section>("overview");
   const installedVersion = installed.find((version) => version.id === selectedVersion);
@@ -484,6 +576,14 @@ export function VersionSettingsView({
                 onChange={onChangeLaunchSettings}
                 onReset={onResetLaunchSettings}
                 onOpenFolder={onOpenFolder}
+                onDelete={
+                  onDeleteVersion
+                    ? async () => {
+                        await onDeleteVersion(selectedVersion);
+                        onOpenVersionSelect();
+                      }
+                    : undefined
+                }
                 gameRoot={gameRoot}
               />
             )}

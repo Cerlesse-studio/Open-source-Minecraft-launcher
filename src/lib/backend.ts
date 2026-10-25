@@ -3,10 +3,18 @@ import { listen } from "@tauri-apps/api/event";
 import {
   demoDetectJava,
   demoDownloadContentFile,
+  demoGetBedrockContent,
+  demoGetBedrockStatus,
+  demoGetBedrockVersions,
   demoGetContentVersions,
   demoInstall,
+  demoDeleteVersion,
+  demoDeleteBedrockVersion,
+  demoInstallBedrockPack,
+  demoInstallBedrockVersion,
   demoInstalledVersions,
   demoLaunch,
+  demoLaunchBedrock,
   demoManifest,
   demoSearchContent,
   demoStopGame,
@@ -15,6 +23,9 @@ import {
   demoVersionLoaders,
 } from "./demo";
 import type {
+  BedrockContentItem,
+  BedrockStatus,
+  BedrockVersionItem,
   ContentProjectType,
   ContentVersionItem,
   DownloadContentRequest,
@@ -22,6 +33,7 @@ import type {
   GameExitPayload,
   GameLogPayload,
   GameStatus,
+  InstallPackResult,
   InstallProgress,
   InstallResult,
   InstalledVersion,
@@ -126,6 +138,14 @@ export async function installVersion(
   });
 }
 
+export async function deleteVersion(
+  root: string,
+  versionId: string,
+): Promise<void> {
+  if (!isDesktop) return demoDeleteVersion(versionId);
+  return invoke<void>("delete_version", { root, versionId });
+}
+
 export async function getSystemInfo(): Promise<SystemInfo> {
   if (!isDesktop) return demoSystemInfo();
   return invoke<SystemInfo>("get_system_info");
@@ -153,3 +173,61 @@ export async function openFolderPath(path: string): Promise<void> {
   if (!isDesktop) return;
   await invoke("open_folder", { path });
 }
+
+export async function getBedrockStatus(root?: string): Promise<BedrockStatus> {
+  if (!isDesktop) return demoGetBedrockStatus();
+  return invoke<BedrockStatus>("get_bedrock_status", { root });
+}
+
+export async function getBedrockVersions(apiSource?: string): Promise<BedrockVersionItem[]> {
+  if (!isDesktop) return demoGetBedrockVersions(apiSource);
+  return invoke<BedrockVersionItem[]>("get_bedrock_versions", { apiSource });
+}
+
+export async function getBedrockContent(category?: string): Promise<BedrockContentItem[]> {
+  if (!isDesktop) return demoGetBedrockContent(category);
+  return invoke<BedrockContentItem[]>("get_bedrock_content", { category });
+}
+
+export async function installBedrockVersion(
+  versionId: string,
+  downloadUrl?: string,
+  root?: string,
+  apiSource?: string,
+  threads?: number,
+): Promise<string> {
+  if (!isDesktop) return demoInstallBedrockVersion(versionId);
+  return invoke<string>("install_bedrock_version", {
+    versionId,
+    downloadUrl,
+    root,
+    apiSource,
+    threads,
+  });
+}
+
+export async function deleteBedrockVersion(
+  versionId: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return demoDeleteBedrockVersion(versionId);
+  return invoke<void>("delete_bedrock_version", { versionId, root });
+}
+
+export async function installBedrockPack(
+  source: string,
+  filename?: string,
+  root?: string,
+): Promise<InstallPackResult> {
+  if (!isDesktop) return demoInstallBedrockPack(source, filename);
+  return invoke<InstallPackResult>("install_bedrock_pack", { source, filename, root });
+}
+
+export async function launchBedrock(
+  versionId?: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return demoLaunchBedrock();
+  return invoke<string>("launch_bedrock", { versionId, root });
+}
+

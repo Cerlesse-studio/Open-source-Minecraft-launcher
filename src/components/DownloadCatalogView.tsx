@@ -1,22 +1,30 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   Archive,
   ArrowRight,
+  Boxes,
   Check,
   ChevronDown,
   ChevronRight,
   Cpu,
+  Download,
+  ExternalLink,
   FlaskConical,
+  Globe,
   HardDriveDownload,
   Layers3,
   LoaderCircle,
   Package,
   PackageOpen,
+  Play,
   RefreshCw,
   Search,
   ShieldCheck,
+  Sparkles,
+  Store,
+  Trash2,
   X,
 } from "lucide-react";
 import { cn } from "cn";
@@ -29,8 +37,18 @@ import {
   typeLabel,
   typeTone,
 } from "../lib/format";
+import {
+  deleteBedrockVersion,
+  deleteVersion,
+  getBedrockStatus,
+  getBedrockVersions,
+  installBedrockVersion,
+  launchBedrock,
+} from "../lib/backend";
 import { ContentMarketplaceView } from "./ContentMarketplaceView";
 import type {
+  BedrockStatus,
+  BedrockVersionItem,
   ContentProjectType,
   InstallProgress,
   InstalledVersion,
@@ -51,8 +69,8 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader, ProgressBar, StatusDot, TypeBadge } from "./ui";
 
-type Filter = "all" | "release" | "snapshot" | "legacy";
-type GroupId = "release" | "snapshot" | "legacy";
+type Filter = "all" | "release" | "snapshot" | "april_fools" | "legacy" | "bedrock";
+type GroupId = "release" | "snapshot" | "april_fools" | "legacy" | "bedrock";
 
 const FILTERS: Array<{
   id: Filter;
@@ -60,9 +78,130 @@ const FILTERS: Array<{
   icon: typeof Layers3;
 }> = [
   { id: "all", label: "全部可下载", icon: Layers3 },
-  { id: "release", label: "正式版", icon: Package },
-  { id: "snapshot", label: "快照", icon: FlaskConical },
+  { id: "release", label: "Java 正式版", icon: Package },
+  { id: "snapshot", label: "Java 快照", icon: FlaskConical },
+  { id: "april_fools", label: "🎭 愚人节限定", icon: Sparkles },
   { id: "legacy", label: "远古版本", icon: Archive },
+  { id: "bedrock", label: "基岩版核心", icon: Boxes },
+];
+
+export interface AprilFoolsMeta {
+  year: number;
+  titleZh: string;
+  subtitle: string;
+  highlights: string[];
+  tag: string;
+}
+
+export const APRIL_FOOLS_REGISTRY: Record<string, AprilFoolsMeta> = {
+  "24w14potato": {
+    year: 2024,
+    titleZh: "毒马铃薯更新 (The Poisonous Potato Update)",
+    subtitle: "毒马铃薯专属维度、马铃薯权杖、飞天爪钩、炼药战车与五大马铃薯 Boss",
+    highlights: ["马铃薯传送门", "毒马铃薯维度", "爪钩物理", "五大专属 Boss"],
+    tag: "最新脑洞神作",
+  },
+  "23w13a_or_b": {
+    year: 2023,
+    titleZh: "投票更新 (The Vote Update)",
+    subtitle: "全员提案公投改变游戏底层规则、重力反转、月球维度、变身为任意生物",
+    highlights: ["全民提案公投", "月球低重力", "变形方块与实体", "颠倒世界"],
+    tag: "规则修改器",
+  },
+  "22w13oneblockatatime": {
+    year: 2022,
+    titleZh: "一次一个方块 (One Block at a Time)",
+    subtitle: "彻底移除物品栏与背包，玩家双手捧起方块放置，能徒手举起末影龙丢出去",
+    highlights: ["无背包机制", "双手捧方块", "手抛末影龙", "推箱子物理"],
+    tag: "硬核脑洞",
+  },
+  "20w14infinite": {
+    year: 2020,
+    titleZh: "无尽世界 / 终极内容更新 (Ultimate Content Update)",
+    subtitle: "写下文字的书扔入下界传送门，即可生成 21.4 亿个独一无二的随机神秘维度",
+    highlights: ["21.4 亿随机维度", "传送门写书", "色彩海洋", "无尽世界群系"],
+    tag: "传世神作",
+  },
+  "3D Shareware v1.34": {
+    year: 2019,
+    titleZh: "3D 软盘共享版 (3D Shareware v1.34)",
+    subtitle: "致敬 90 年代 MS-DOS 经典！全屏复古扫描线、像素血条与毁灭战士音效",
+    highlights: ["MS-DOS 画风", "复古 CRT 扫描线", "按级解密", "经典音效"],
+    tag: "复古 90 年代",
+  },
+  "1.RV-Pre1": {
+    year: 2016,
+    titleZh: "潮流科技更新 (Trendy Update)",
+    subtitle: "加入 USB 充电电缆、VR 虚拟现实护目镜、智能手表与踝部显示器",
+    highlights: ["USB 数据线", "智能眼镜", "VR 护目镜", "智能脚环"],
+    tag: "数码潮流",
+  },
+  "15w14a": {
+    year: 2015,
+    titleZh: "爱与拥抱更新 (The Love and Hugs Update)",
+    subtitle: "移除所有伤害机制，伤害变成治愈爱心，爱心进度槽与黑曜石爱心小艇",
+    highlights: ["充满爱心雨", "无伤治愈世界", "黑曜石小艇", "爱心指示器"],
+    tag: "充满爱心",
+  },
+};
+
+export const APRIL_FOOLS_FALLBACK_VERSIONS: VersionSummary[] = [
+  {
+    id: "24w14potato",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/e17ba5ae44e2665a2f2c1d40f520b34ce11a1057/24w14potato.json",
+    time: "2024-04-01T11:07:19+00:00",
+    releaseTime: "2024-04-01T11:07:19+00:00",
+    sha1: "e17ba5ae44e2665a2f2c1d40f520b34ce11a1057",
+  },
+  {
+    id: "23w13a_or_b",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/6d9b7b1f3fa890704ec5d3d4bfb0145f44437b22/23w13a_or_b.json",
+    time: "2023-04-01T12:52:18+00:00",
+    releaseTime: "2023-04-01T12:52:18+00:00",
+    sha1: "6d9b7b1f3fa890704ec5d3d4bfb0145f44437b22",
+  },
+  {
+    id: "22w13oneblockatatime",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/d70cef49b7606e8c37e49abad4ff542e2ce21d09/22w13oneblockatatime.json",
+    time: "2022-04-01T11:56:58+00:00",
+    releaseTime: "2022-04-01T11:56:58+00:00",
+    sha1: "d70cef49b7606e8c37e49abad4ff542e2ce21d09",
+  },
+  {
+    id: "20w14infinite",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/73eb2a736f0a7349fb5f73e685f847826e5321fd/20w14infinite.json",
+    time: "2020-04-01T12:47:08+00:00",
+    releaseTime: "2020-04-01T12:47:08+00:00",
+    sha1: "73eb2a736f0a7349fb5f73e685f847826e5321fd",
+  },
+  {
+    id: "3D Shareware v1.34",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/5b59564acaa4cc153b6f934e566226642ed978ab/3D%20Shareware%20v1.34.json",
+    time: "2019-04-01T11:18:08+00:00",
+    releaseTime: "2019-04-01T11:18:08+00:00",
+    sha1: "5b59564acaa4cc153b6f934e566226642ed978ab",
+  },
+  {
+    id: "1.RV-Pre1",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/23761c1cc8b5c7c72f6604e1e7322a056a6af2f8/1.RV-Pre1.json",
+    time: "2016-03-31T16:18:53+00:00",
+    releaseTime: "2016-03-31T16:18:53+00:00",
+    sha1: "23761c1cc8b5c7c72f6604e1e7322a056a6af2f8",
+  },
+  {
+    id: "15w14a",
+    type: "snapshot",
+    url: "https://piston-meta.mojang.com/v1/packages/e9349d236c0f4b8760f75621b3eaad538055c759/15w14a.json",
+    time: "2015-04-01T07:08:00+00:00",
+    releaseTime: "2015-04-01T07:08:00+00:00",
+    sha1: "e9349d236c0f4b8760f75621b3eaad538055c759",
+  },
 ];
 
 const GROUP_META: Record<
@@ -70,19 +209,29 @@ const GROUP_META: Record<
   { title: string; description: string; icon: typeof Layers3 }
 > = {
   release: {
-    title: "正式版",
+    title: "Java 正式版",
     description: "稳定版本，适合日常游玩",
     icon: Package,
   },
   snapshot: {
-    title: "快照",
+    title: "Java 快照",
     description: "抢先体验开发中的新内容",
     icon: FlaskConical,
+  },
+  april_fools: {
+    title: "愚人节特别版 (April Fools' Updates)",
+    description: "Mojang 历年愚人节脑洞神作：毒马铃薯维度、21.4亿随机维度、一次一个方块、3D软盘共享版等",
+    icon: Sparkles,
   },
   legacy: {
     title: "远古版本",
     description: "Beta 与 Alpha 历史版本",
     icon: Archive,
+  },
+  bedrock: {
+    title: "基岩版 (Bedrock Edition)",
+    description: "官方独立服务端核心、正式版与 Windows Store 渠道",
+    icon: Boxes,
   },
 };
 
@@ -102,6 +251,8 @@ interface DownloadCatalogViewProps {
   onOpenVersionSelect: () => void;
   onOpenFolder: (path: string) => void;
   onRefresh: () => void;
+  onDeleteVersion?: (versionId: string, edition: "java" | "bedrock") => Promise<void> | void;
+  onInstallBedrock?: (ver: BedrockVersionItem, apiSource?: string) => Promise<void>;
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
 }
 
@@ -110,8 +261,7 @@ type CatalogCategory =
   | "mod"
   | "modpack"
   | "shader"
-  | "datapack"
-  | "resourcepack";
+  | "datapack";
 
 const CATALOG_CATEGORIES: Array<{
   id: CatalogCategory;
@@ -119,14 +269,28 @@ const CATALOG_CATEGORIES: Array<{
   icon: typeof Package;
   desc: string;
 }> = [
-  { id: "versions", label: "游戏版本", icon: Package, desc: "原版核心与快照" },
-  { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "功能与玩法扩展" },
+  { id: "versions", label: "游戏版本", icon: Package, desc: "Java 与基岩版核心" },
+  { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "Java 模组与基岩版行为包" },
   { id: "modpack", label: "整合包", icon: Archive, desc: "精选整合包" },
-  { id: "shader", label: "光影包", icon: FlaskConical, desc: "画面与光影渲染" },
+  { id: "shader", label: "光影包", icon: FlaskConical, desc: "Java 光影与基岩版 RTX/PBR" },
   { id: "datapack", label: "数据包", icon: Cpu, desc: "原版世界与规则" },
 ];
 
 function VersionGlyph({ type }: { type: string }) {
+  if (type === "bedrock") {
+    return (
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+        <Boxes className="size-4" />
+      </span>
+    );
+  }
+  if (type === "april_fools") {
+    return (
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-purple-500/35 bg-purple-500/15 text-purple-400 shadow-xs">
+        <Sparkles className="size-4" />
+      </span>
+    );
+  }
   const Icon =
     type === "snapshot" ? FlaskConical : type === "release" ? Package : Archive;
   return (
@@ -161,61 +325,189 @@ export function DownloadCatalogView({
   onOpenVersionSelect,
   onOpenFolder,
   onRefresh,
+  onDeleteVersion,
+  onInstallBedrock,
   onNotify,
 }: DownloadCatalogViewProps) {
   const [activeCategory, setActiveCategory] = useState<CatalogCategory>("versions");
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [deletingItem, setDeletingItem] = useState<{ id: string; name: string; edition: "java" | "bedrock" } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<GroupId, boolean>>({
     release: true,
     snapshot: false,
+    april_fools: true,
     legacy: false,
+    bedrock: true,
   });
   const [limits, setLimits] = useState<Record<GroupId, number>>({
     release: 10,
     snapshot: 6,
+    april_fools: 15,
     legacy: 4,
+    bedrock: 25,
   });
+
+  const [bedrockVersions, setBedrockVersions] = useState<BedrockVersionItem[]>([]);
+  const [bedrockTypeFilter, setBedrockTypeFilter] = useState<"all" | "release" | "preview">("all");
+  const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
+  const [installingBedrockId, setInstallingBedrockId] = useState<string | null>(null);
+  const [bedrockApiSource, setBedrockApiSource] = useState<"endstone" | "mcserverjars" | "azure_mirror">("endstone");
+  const [bedrockLoading, setBedrockLoading] = useState(false);
+
+  const loadBedrock = async (source = bedrockApiSource) => {
+    setBedrockLoading(true);
+    try {
+      const [v, s] = await Promise.all([
+        getBedrockVersions(source),
+        getBedrockStatus(gameRoot),
+      ]);
+      setBedrockVersions(v);
+      setBedrockStatus(s);
+    } catch {
+      // ignore
+    } finally {
+      setBedrockLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadBedrock();
+  }, [gameRoot]);
+
+  const handleInstallBedrock = async (ver: BedrockVersionItem) => {
+    if (onInstallBedrock) {
+      onOpenProgress();
+      await onInstallBedrock(ver, bedrockApiSource);
+      await loadBedrock();
+      return;
+    }
+    setInstallingBedrockId(ver.id);
+    try {
+      const res = await installBedrockVersion(ver.id, ver.downloadUrl, gameRoot, bedrockApiSource, downloadThreads);
+      onNotify("success", `基岩版 ${ver.version} 安装成功`, res);
+      await loadBedrock();
+    } catch (e) {
+      onNotify("error", `安装基岩版 ${ver.version} 失败`, String(e));
+    } finally {
+      setInstallingBedrockId(null);
+    }
+  };
+
+  const handleLaunchBedrockInstance = async (versionId?: string) => {
+    try {
+      const res = await launchBedrock(versionId, gameRoot);
+      onNotify("success", "已唤起 Minecraft 基岩版", res);
+    } catch (e) {
+      onNotify("error", "启动基岩版失败", String(e));
+    }
+  };
 
   const installedMap = useMemo(
     () => new Map(installed.map((version) => [version.id, version])),
     [installed],
   );
 
-  const groups = useMemo<Array<{ id: GroupId; items: VersionSummary[] }>>(() => {
+  const groups = useMemo<
+    Array<{
+      id: GroupId;
+      items: VersionSummary[];
+      bedrockItems?: BedrockVersionItem[];
+    }>
+  >(() => {
     const needle = query.trim().toLowerCase();
     const matches = (version: VersionSummary) =>
       !needle || version.id.toLowerCase().includes(needle);
 
     const all = (manifest?.versions ?? []).filter(matches);
+    const filteredBedrock = bedrockVersions.filter(
+      (v) =>
+        !needle ||
+        v.name.toLowerCase().includes(needle) ||
+        v.version.toLowerCase().includes(needle),
+    );
+
+    const isAprilFools = (version: VersionSummary) => {
+      const vid = version.id.toLowerCase();
+      return (
+        APRIL_FOOLS_REGISTRY[version.id] !== undefined ||
+        vid.includes("potato") ||
+        vid.includes("shareware") ||
+        vid.includes("oneblock") ||
+        vid.includes("infinite") ||
+        vid === "23w13a_or_b" ||
+        vid === "1.rv-pre1" ||
+        vid === "15w14a"
+      );
+    };
+
+    const aprilFoolsFromManifest = all.filter(isAprilFools);
+    const manifestFoolsIds = new Set(aprilFoolsFromManifest.map((v) => v.id));
+    const aprilFoolsItems = [
+      ...aprilFoolsFromManifest,
+      ...APRIL_FOOLS_FALLBACK_VERSIONS.filter(
+        (fb) => !manifestFoolsIds.has(fb.id) && matches(fb),
+      ),
+    ];
 
     return [
       { id: "release", items: all.filter((version) => version.type === "release") },
       {
         id: "snapshot",
-        items: all.filter((version) => version.type === "snapshot"),
+        items: all.filter(
+          (version) => version.type === "snapshot" && !isAprilFools(version),
+        ),
+      },
+      {
+        id: "april_fools",
+        items: aprilFoolsItems,
       },
       {
         id: "legacy",
         items: all.filter(
-          (version) => version.type !== "release" && version.type !== "snapshot",
+          (version) =>
+            version.type !== "release" &&
+            version.type !== "snapshot" &&
+            !isAprilFools(version),
         ),
       },
+      {
+        id: "bedrock",
+        items: [],
+        bedrockItems: filteredBedrock,
+      },
     ];
-  }, [manifest, query]);
+  }, [manifest, bedrockVersions, query]);
 
   const counts = useMemo(() => {
     const byGroup = Object.fromEntries(
-      groups.map((group) => [group.id, group.items.length]),
+      groups.map((group) => [
+        group.id,
+        group.id === "bedrock"
+          ? (group.bedrockItems?.length ?? 0)
+          : group.items.length,
+      ]),
     ) as Record<GroupId, number>;
     return {
       ...byGroup,
-      all: groups.reduce((total, group) => total + group.items.length, 0),
+      all: groups.reduce(
+        (total, group) =>
+          total +
+          (group.id === "bedrock"
+            ? (group.bedrockItems?.length ?? 0)
+            : group.items.length),
+        0,
+      ),
     };
   }, [groups]);
 
   const visibleGroups = groups.filter((group) => {
-    if (filter === "all") return group.items.length > 0;
+    if (filter === "all") {
+      return (
+        group.items.length > 0 || (group.bedrockItems && group.bedrockItems.length > 0)
+      );
+    }
     return group.id === filter;
   });
 
@@ -273,19 +565,33 @@ export function DownloadCatalogView({
     return (
       <div className="flex items-center gap-2">
         {local ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-[10.5px] text-primary hover:bg-primary/10 hover:text-primary"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenVersionSelect();
-            }}
-            title="查看本地已安装版本"
-          >
-            <Check className="size-3" />
-            已装原版
-          </Button>
+          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[10.5px] text-primary hover:bg-primary/10 hover:text-primary"
+              onClick={onOpenVersionSelect}
+              title="查看本地已安装版本"
+            >
+              <Check className="size-3" />
+              已安装
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="size-7 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+              onClick={() =>
+                setDeletingItem({
+                  id: version.id,
+                  name: version.id,
+                  edition: "java",
+                })
+              }
+              title="删除此版本"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          </div>
         ) : null}
         <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground group-hover:text-foreground">
           <span>配置并安装</span>
@@ -298,7 +604,11 @@ export function DownloadCatalogView({
   const activeFilterLabel =
     FILTERS.find((entry) => entry.id === filter)?.label ?? "全部可下载";
   const activeCount = filter === "all" ? counts.all : counts[filter];
-  const hasAnyResults = visibleGroups.some((group) => group.items.length > 0);
+  const hasAnyResults = visibleGroups.some((group) =>
+    group.id === "bedrock"
+      ? (group.bedrockItems?.length ?? 0) > 0
+      : group.items.length > 0,
+  );
 
   return (
     <div className="space-y-5">
@@ -347,7 +657,7 @@ export function DownloadCatalogView({
                 value={query}
                 onChange={(event) => {
                   setQuery(event.target.value);
-                  setLimits({ release: 10, snapshot: 6, legacy: 4 });
+                  setLimits({ release: 10, snapshot: 6, april_fools: 15, legacy: 4, bedrock: 25 });
                 }}
                 placeholder="搜索版本号"
                 aria-label="搜索版本号"
@@ -578,7 +888,10 @@ export function DownloadCatalogView({
             visibleGroups.map((group) => {
               const meta = GROUP_META[group.id];
               const Icon = meta.icon;
-              const open = openGroups[group.id] || Boolean(query.trim());
+              const open =
+                openGroups[group.id] ||
+                Boolean(query.trim()) ||
+                (filter !== "all" && filter === group.id);
               const visible = group.items.slice(0, limits[group.id]);
               return (
                 <Card
@@ -606,7 +919,9 @@ export function DownloadCatalogView({
                           variant="outline"
                           className="h-4 min-w-5 justify-center border-border/80 px-1 font-mono text-[9px] font-normal text-muted-foreground"
                         >
-                          {group.items.length}
+                          {group.id === "bedrock"
+                            ? (group.bedrockItems?.length ?? 0)
+                            : group.items.length}
                         </Badge>
                       </span>
                       <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
@@ -623,62 +938,378 @@ export function DownloadCatalogView({
 
                   {open ? (
                     <div className="divide-y divide-border/40">
-                      {visible.map((version) => {
-                        const local = installedMap.get(version.id);
-                        const latest = manifest?.latest.release === version.id;
-                        return (
-                          <div
-                            key={version.id}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => onSelectVersion(version)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                onSelectVersion(version);
-                              }
-                            }}
-                            className="group flex cursor-pointer items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/25"
-                          >
-                            <div className="flex min-w-0 flex-1 items-center gap-3">
-                              <VersionGlyph type={version.type} />
-                              <span className="min-w-0 flex-1">
-                                <span className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-mono text-[12px] font-medium text-foreground">
-                                    {version.id}
-                                  </span>
-                                  {latest ? (
-                                    <Badge className="h-4 rounded-[4px] border-0 bg-gold/15 px-1.5 text-[9px] font-normal text-gold">
-                                      最新
-                                    </Badge>
-                                  ) : null}
-                                  {local ? (
-                                    <Badge
-                                      variant="outline"
-                                      className="h-4 rounded-[4px] border-primary/25 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
-                                    >
-                                      已下载
-                                    </Badge>
-                                  ) : null}
-                                </span>
-                                <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-                                  <span>发布于 {formatDate(version.releaseTime)}</span>
-                                  <span className="text-border">/</span>
-                                  <TypeBadge
-                                    type={version.type}
-                                    tone={typeTone(version.type)}
-                                    label={typeLabel(version.type)}
-                                  />
-                                </span>
-                              </span>
+                      {group.id === "bedrock" ? (
+                        <>
+                          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-muted/20 px-3.5 py-2.5 text-xs">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex items-center gap-1.5 font-medium text-foreground">
+                                <Globe className="size-3.5 text-emerald-400" />
+                                <span>第三方下载 API 源：</span>
+                              </div>
+                              <div className="inline-flex items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("endstone");
+                                    void loadBedrock("endstone");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "endstone"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  EndstoneMC 全版本 API
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("mcserverjars");
+                                    void loadBedrock("mcserverjars");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "mcserverjars"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  MCServerJars API
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBedrockApiSource("azure_mirror");
+                                    void loadBedrock("azure_mirror");
+                                  }}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                    bedrockApiSource === "azure_mirror"
+                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  AzureCDN 镜像
+                                </button>
+                              </div>
+
+                              <div className="inline-flex items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setBedrockTypeFilter("all")}
+                                  className={cn(
+                                    "rounded-md px-2 py-0.5 text-[10.5px] transition-colors",
+                                    bedrockTypeFilter === "all"
+                                      ? "bg-muted text-foreground font-medium"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  全部 ({group.bedrockItems?.length ?? 0})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setBedrockTypeFilter("release")}
+                                  className={cn(
+                                    "rounded-md px-2 py-0.5 text-[10.5px] transition-colors",
+                                    bedrockTypeFilter === "release"
+                                      ? "bg-emerald-500/20 text-emerald-400 font-medium"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  正式版 ({group.bedrockItems?.filter((b) => b.releaseType === "release").length ?? 0})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setBedrockTypeFilter("preview")}
+                                  className={cn(
+                                    "rounded-md px-2 py-0.5 text-[10.5px] transition-colors",
+                                    bedrockTypeFilter === "preview"
+                                      ? "bg-amber-500/20 text-amber-400 font-medium"
+                                      : "text-muted-foreground hover:text-foreground",
+                                  )}
+                                >
+                                  预览测试版 ({group.bedrockItems?.filter((b) => b.releaseType === "preview").length ?? 0})
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex shrink-0 items-center">
-                              {renderActions(version)}
+
+                            <div className="flex items-center gap-2">
+                              {bedrockLoading ? (
+                                <span className="flex items-center gap-1 text-[11px] text-emerald-400">
+                                  <LoaderCircle className="size-3 animate-spin" />
+                                  正在通过第三方 API 同步…
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground">
+                                  已加载 {group.bedrockItems?.length ?? 0} 个版本
+                                </span>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 gap-1 px-2 text-[10.5px] text-muted-foreground hover:text-foreground"
+                                disabled={bedrockLoading}
+                                onClick={() => void loadBedrock(bedrockApiSource)}
+                              >
+                                <RefreshCw className={cn("size-2.5", bedrockLoading && "animate-spin")} />
+                                刷新
+                              </Button>
                             </div>
                           </div>
-                        );
-                      })}
-                      {group.items.length > visible.length ? (
+
+                          {(() => {
+                            const filteredBedrock = (group.bedrockItems ?? []).filter((v) => {
+                              if (bedrockTypeFilter === "release") return v.releaseType === "release";
+                              if (bedrockTypeFilter === "preview") return v.releaseType === "preview";
+                              return true;
+                            });
+                            const visibleBedrock = filteredBedrock.slice(0, limits.bedrock);
+
+                            return (
+                              <>
+                                {visibleBedrock.map((ver) => {
+                                  const isInstalled = Boolean(
+                                    bedrockStatus?.installedVersions.some(
+                                      (installedId) =>
+                                        installedId === ver.id ||
+                                        installedId.startsWith(ver.id) ||
+                                        ver.id.startsWith(installedId),
+                                    ),
+                                  );
+                                  const isBusy = installingBedrockId === ver.id;
+                                  return (
+                                    <div
+                                      key={ver.id}
+                                      className="group flex items-center justify-between gap-3 px-3.5 py-2.5 transition-colors hover:bg-muted/25"
+                                    >
+                                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                                        <VersionGlyph type="bedrock" />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="flex flex-wrap items-center gap-1.5">
+                                            <span className="font-mono text-[12px] font-medium text-foreground">
+                                              {ver.name}
+                                            </span>
+                                            <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                                              基岩版
+                                            </Badge>
+                                            {ver.apiSource ? (
+                                              <Badge
+                                                variant="outline"
+                                                className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/5 px-1.5 text-[9px] font-normal text-emerald-400"
+                                              >
+                                                {ver.apiSource}
+                                              </Badge>
+                                            ) : null}
+                                            {isInstalled ? (
+                                              <Badge
+                                                variant="outline"
+                                                className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/10 px-1.5 text-[9px] font-normal text-emerald-400"
+                                              >
+                                                已就绪
+                                              </Badge>
+                                            ) : null}
+                                          </span>
+                                          <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                                            <span>发布于 {ver.date}</span>
+                                            <span className="text-border">/</span>
+                                            <span>{formatBytes(ver.size)}</span>
+                                            <span className="text-border">/</span>
+                                            <span>
+                                              {ver.releaseType === "release"
+                                                ? "官方正式版"
+                                                : "预览测试版"}
+                                            </span>
+                                          </span>
+                                        </span>
+                                      </div>
+
+                                      <div className="flex shrink-0 items-center gap-2">
+                                        {ver.storeUrl ? (
+                                          <a
+                                            href={ver.storeUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                                          >
+                                            <Store className="size-3" />
+                                            应用商店
+                                            <ExternalLink className="size-2.5 opacity-60" />
+                                          </a>
+                                        ) : null}
+
+                                        {isInstalled ? (
+                                          <>
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              className="h-7 gap-1 border-emerald-500/30 text-xs text-emerald-400 hover:bg-emerald-500/10"
+                                              onClick={() => void handleLaunchBedrockInstance(ver.id)}
+                                            >
+                                              <Play className="size-3 fill-current" />
+                                              启动
+                                            </Button>
+                                            <Button
+                                              variant="ghost"
+                                              size="icon-sm"
+                                              className="size-7 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setDeletingItem({
+                                                  id: ver.id,
+                                                  name: ver.name,
+                                                  edition: "bedrock",
+                                                });
+                                              }}
+                                              title="删除此基岩版核心"
+                                            >
+                                              <Trash2 className="size-3.5" />
+                                            </Button>
+                                          </>
+                                        ) : null}
+
+                                        <Button
+                                          variant={isInstalled ? "ghost" : "default"}
+                                          size="sm"
+                                          className="h-7 gap-1 text-xs"
+                                          disabled={isBusy}
+                                          onClick={() => void handleInstallBedrock(ver)}
+                                        >
+                                          {isBusy ? (
+                                            <LoaderCircle className="size-3 animate-spin" />
+                                          ) : isInstalled ? (
+                                            <Check className="size-3" />
+                                          ) : (
+                                            <Download className="size-3" />
+                                          )}
+                                          {isInstalled ? "重新下载" : "第三方 API 下载"}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                {filteredBedrock.length > visibleBedrock.length ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 w-full rounded-none text-[10px] font-normal text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                                    onClick={() =>
+                                      setLimits((current) => ({
+                                        ...current,
+                                        bedrock: current.bedrock + 25,
+                                      }))
+                                    }
+                                  >
+                                    显示更多基岩版版本（剩余 {filteredBedrock.length - visibleBedrock.length}）
+                                  </Button>
+                                ) : null}
+                              </>
+                            );
+                          })()}
+                        </>
+                      ) : (
+                        visible.map((version) => {
+                          const local = installedMap.get(version.id);
+                          const latest = manifest?.latest.release === version.id;
+                          const foolsMeta = APRIL_FOOLS_REGISTRY[version.id];
+                          const isAprilFools = group.id === "april_fools" || Boolean(foolsMeta);
+                          const glyphType = isAprilFools ? "april_fools" : version.type;
+
+                          return (
+                            <div
+                              key={version.id}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => onSelectVersion(version)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  onSelectVersion(version);
+                                }
+                              }}
+                              className={cn(
+                                "group flex cursor-pointer items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/25",
+                                isAprilFools && "hover:bg-purple-500/[0.04]",
+                              )}
+                            >
+                              <div className="flex min-w-0 flex-1 items-center gap-3">
+                                <VersionGlyph type={glyphType} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-mono text-[12px] font-medium text-foreground">
+                                      {version.id}
+                                    </span>
+                                    {foolsMeta ? (
+                                      <span className="text-[12px] font-semibold text-purple-400">
+                                        · {foolsMeta.titleZh}
+                                      </span>
+                                    ) : null}
+                                    {foolsMeta ? (
+                                      <Badge className="h-4 rounded-[4px] border-0 bg-purple-500/20 px-1.5 text-[9px] font-medium text-purple-300">
+                                        {foolsMeta.tag}
+                                      </Badge>
+                                    ) : null}
+                                    {foolsMeta ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 rounded-[4px] border-purple-500/35 px-1 text-[9px] text-purple-300/80"
+                                      >
+                                        {foolsMeta.year} 愚人节
+                                      </Badge>
+                                    ) : null}
+                                    {latest ? (
+                                      <Badge className="h-4 rounded-[4px] border-0 bg-gold/15 px-1.5 text-[9px] font-normal text-gold">
+                                        最新
+                                      </Badge>
+                                    ) : null}
+                                    {local ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 rounded-[4px] border-primary/25 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
+                                      >
+                                        已下载
+                                      </Badge>
+                                    ) : null}
+                                  </span>
+
+                                  {foolsMeta?.subtitle ? (
+                                    <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground/90">
+                                      {foolsMeta.subtitle}
+                                    </p>
+                                  ) : null}
+
+                                  <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                                    {foolsMeta?.highlights && foolsMeta.highlights.length > 0 ? (
+                                      <span className="flex flex-wrap items-center gap-1 mr-1">
+                                        {foolsMeta.highlights.map((h) => (
+                                          <span
+                                            key={h}
+                                            className="rounded bg-muted/60 px-1.5 py-0.2 text-[9px] text-muted-foreground/90"
+                                          >
+                                            {h}
+                                          </span>
+                                        ))}
+                                      </span>
+                                    ) : null}
+                                    <span>发布于 {formatDate(version.releaseTime)}</span>
+                                    <span className="text-border">/</span>
+                                    <TypeBadge
+                                      type={glyphType}
+                                      tone={isAprilFools ? "gold" : typeTone(version.type)}
+                                      label={isAprilFools ? "愚人节限定" : typeLabel(version.type)}
+                                    />
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center">
+                                {renderActions(version)}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                      {group.id !== "bedrock" && group.items.length > visible.length ? (
                         <Button
                           variant="ghost"
                           size="sm"
@@ -703,6 +1334,77 @@ export function DownloadCatalogView({
       </div>
     </>
   )}
+
+  {/* Delete Confirmation Modal */}
+  {deletingItem ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in-0 duration-150">
+      <div className="w-full max-w-sm rounded-xl border border-border/80 bg-background/95 p-5 shadow-2xl">
+        <div className="flex items-center gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+            <Trash2 className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-foreground">确认删除此版本？</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground truncate font-mono">
+              {deletingItem.name}
+            </p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          此操作将从磁盘中永久清理该版本的所有已下载核心文件与依赖，删除后无法撤销。
+        </p>
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isDeleting}
+            onClick={() => setDeletingItem(null)}
+          >
+            取消
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={isDeleting}
+            className="gap-1.5"
+            onClick={async () => {
+              if (!deletingItem) return;
+              setIsDeleting(true);
+              try {
+                if (onDeleteVersion) {
+                  await onDeleteVersion(deletingItem.id, deletingItem.edition);
+                } else {
+                  if (deletingItem.edition === "java") {
+                    await deleteVersion(gameRoot, deletingItem.id);
+                  } else {
+                    await deleteBedrockVersion(deletingItem.id, gameRoot);
+                  }
+                  onNotify("success", "删除成功", `已成功删除版本 ${deletingItem.name}`);
+                }
+                if (deletingItem.edition === "bedrock") {
+                  await loadBedrock();
+                } else {
+                  onRefresh();
+                }
+                setDeletingItem(null);
+              } catch (e) {
+                onNotify("error", "删除失败", String(e));
+              } finally {
+                setIsDeleting(false);
+              }
+            }}
+          >
+            {isDeleting ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="size-3.5" />
+            )}
+            确认删除
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null}
 </div>
 );
 }

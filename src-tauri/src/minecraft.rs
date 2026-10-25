@@ -299,7 +299,7 @@ struct FileJob {
     verify_existing: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct LibraryPlan {
     jobs: Vec<FileJob>,
     classpath: Vec<PathBuf>,
@@ -559,6 +559,20 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
     }
     result.sort_by(|a, b| b.installed_at.cmp(&a.installed_at));
     Ok(result)
+}
+
+pub async fn delete_version(root: &Path, version_id: &str) -> Result<(), String> {
+    safe_version_id(version_id)?;
+    let root = net::absolute_path(root);
+    let target = versions_dir(&root).join(version_id);
+    if target.is_dir() {
+        tokio::fs::remove_dir_all(&target)
+            .await
+            .map_err(|e| format!("删除版本目录失败: {e}"))?;
+        Ok(())
+    } else {
+        Err(format!("版本目录不存在: {}", target.display()))
+    }
 }
 
 fn required_java_major(version: &VersionDetail) -> u32 {
@@ -988,7 +1002,7 @@ impl DownloadTracker {
         let downloaded_bytes: u64 = stages_snapshot.iter().map(|s| s.done_bytes).sum();
         let total_bytes: u64 = stages_snapshot.iter().map(|s| s.total_bytes).sum();
         let speed_bps = self.sample_speed();
-        active_list.truncate(16);
+        active_list.truncate(32);
 
         InstallProgress {
             version_id: self.version_id.clone(),
@@ -1039,6 +1053,7 @@ async fn download_jobs_with_tracker(
     stage: &str,
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
+    worker_offset: usize,
 ) -> Result<(u64, u64), String> {
     let total = jobs.len() as u64;
     tracker.set_stage_status(stage, "active");
@@ -1055,7 +1070,8 @@ async fn download_jobs_with_tracker(
     let worker_count = concurrency.clamp(1, 64).min(total as usize).max(1);
 
     let mut workers = Vec::with_capacity(worker_count);
-    for worker_id in 1..=worker_count {
+    for idx in 1..=worker_count {
+        let worker_id = worker_offset + idx;
         let queue = queue.clone();
         let tracker = tracker.clone();
         let done = done.clone();
@@ -1338,6 +1354,7 @@ async fn ensure_assets_with_tracker(
     instance_dir: &Path,
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
+    worker_offset: usize,
 ) -> Result<usize, String> {
     let Some(prepared) = prepared else {
         tracker.set_stage_status("assets", "done");
@@ -1346,7 +1363,14 @@ async fn ensure_assets_with_tracker(
     let count = prepared.jobs.len();
     let objects_dir = assets_dir(root).join("objects");
 
-    download_jobs_with_tracker(prepared.jobs, "assets", tracker, concurrency).await?;
+    download_jobs_with_tracker(
+        prepared.jobs,
+        "assets",
+        tracker,
+        concurrency,
+        worker_offset,
+    )
+    .await?;
 
     if prepared.index.is_virtual() {
         tracker.emit_now("assets", count as u64, count as u64, "整理旧版资源目录");
@@ -1372,6 +1396,7 @@ async fn download_client_with_tracker(
     version: &VersionDetail,
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
+    worker_offset: usize,
 ) -> Result<(), String> {
     let Some(client) = version.downloads.as_ref().and_then(|d| d.client.as_ref()) else {
         return Err("这个版本没有提供客户端文件".to_string());
@@ -1399,13 +1424,14 @@ async fn download_client_with_tracker(
         }
     }
 
+    let worker_id = worker_offset + 1;
     let client_threads = concurrency.clamp(1, 8);
     let segments = net::recommended_segments(client.size, client_threads);
     let jar_name = format!("{}.jar", version.id);
     tracker.set_worker_task(
-        1,
+        worker_id,
         Some(ActiveDownloadTask {
-            worker_id: 1,
+            worker_id,
             name: jar_name.clone(),
             stage: "client".to_string(),
             done_bytes: 0,
@@ -1423,7 +1449,7 @@ async fn download_client_with_tracker(
         } else {
             total
         };
-        tracker_for_bytes.update_worker_bytes(1, done, total, delta);
+        tracker_for_bytes.update_worker_bytes(worker_id, done, total, delta);
         tracker_for_bytes.emit_throttled(
             "client",
             done,
@@ -1447,7 +1473,7 @@ async fn download_client_with_tracker(
     )
     .await;
 
-    tracker.set_worker_task(1, None);
+    tracker.set_worker_task(worker_id, None);
     let downloaded = match res {
         Ok(b) => b,
         Err(err) => {
@@ -1656,39 +1682,122 @@ pub async fn install_version_with_options(
     tracker.add_stage_completed("prepare", 1, 0);
     tracker.set_stage_status("prepare", "done");
 
-    download_client_with_tracker(root, &version, &tracker, threads).await?;
-    let _ = download_log_config(root, &version).await?;
+    let client_threads = if threads <= 4 { 1 } else { 2.min(threads / 8).max(2) };
+    let available = threads.saturating_sub(1);
+    let (libs_threads, assets_threads, addons_threads) = if has_addons {
+        let addon = (available * 2 / 10).clamp(1, 8);
+        let rem = available.saturating_sub(addon);
+        let libs = (rem * 45 / 100).max(1);
+        let assets = rem.saturating_sub(libs).max(1);
+        (libs, assets, addon)
+    } else {
+        let libs = (available * 45 / 100).max(1);
+        let assets = available.saturating_sub(libs).max(1);
+        (libs, assets, 0)
+    };
 
-    tracker.emit_now(
-        "libraries",
-        0,
-        plan.jobs.len() as u64,
-        "准备依赖库",
-    );
+    let client_offset = 0;
+    let libs_offset = 1;
+    let assets_offset = libs_offset + libs_threads;
+    let addons_offset = assets_offset + assets_threads;
 
-    let (library_count, _) =
-        download_jobs_with_tracker(plan.jobs.clone(), "libraries", &tracker, threads).await?;
-
-    let natives_dir = instance_dir.join("natives");
-    let native_jars = plan.native_jars.clone();
-    tokio::task::spawn_blocking(move || extract_natives(&native_jars, &natives_dir))
-        .await
-        .map_err(|e| format!("解压 natives 任务失败: {e}"))??;
-
-    let assets =
-        ensure_assets_with_tracker(root, prepared_assets, &instance_dir, &tracker, threads).await?;
-
+    tracker.set_stage_status("client", "active");
+    tracker.set_stage_status("libraries", "active");
+    tracker.set_stage_status("assets", "active");
     if has_addons {
-        if extra_mod_jobs.is_empty() {
-            tracker.add_stage_completed("addons", 1, 0);
-            tracker.set_stage_status("addons", "done");
-            tracker.emit_now("addons", 1, 1, "模组加载器配置已完成");
-        } else {
-            let mods_dir = instance_dir.join("mods");
-            let _ = tokio::fs::create_dir_all(&mods_dir).await;
-            download_jobs_with_tracker(extra_mod_jobs, "addons", &tracker, threads).await?;
-        }
+        tracker.set_stage_status("addons", "active");
     }
+
+    let client_task = {
+        let tracker = tracker.clone();
+        let root = root.to_path_buf();
+        let version = version.clone();
+        async move {
+            download_client_with_tracker(&root, &version, &tracker, client_threads, client_offset).await?;
+            let _ = download_log_config(&root, &version).await?;
+            Ok::<(), String>(())
+        }
+    };
+
+    let libraries_task = {
+        let tracker = tracker.clone();
+        let plan = plan.clone();
+        let instance_dir = instance_dir.clone();
+        async move {
+            tracker.emit_now(
+                "libraries",
+                0,
+                plan.jobs.len() as u64,
+                "准备依赖库",
+            );
+            let (library_count, _) = download_jobs_with_tracker(
+                plan.jobs,
+                "libraries",
+                &tracker,
+                libs_threads,
+                libs_offset,
+            )
+            .await?;
+
+            let natives_dir = instance_dir.join("natives");
+            let native_jars = plan.native_jars;
+            tokio::task::spawn_blocking(move || extract_natives(&native_jars, &natives_dir))
+                .await
+                .map_err(|e| format!("解压 natives 任务失败: {e}"))??;
+
+            Ok::<usize, String>(library_count as usize)
+        }
+    };
+
+    let assets_task = {
+        let tracker = tracker.clone();
+        let root = root.to_path_buf();
+        let instance_dir = instance_dir.clone();
+        async move {
+            ensure_assets_with_tracker(
+                &root,
+                prepared_assets,
+                &instance_dir,
+                &tracker,
+                assets_threads,
+                assets_offset,
+            )
+            .await
+        }
+    };
+
+    let addons_task = {
+        let tracker = tracker.clone();
+        let instance_dir = instance_dir.clone();
+        async move {
+            if has_addons {
+                if extra_mod_jobs.is_empty() {
+                    tracker.add_stage_completed("addons", 1, 0);
+                    tracker.set_stage_status("addons", "done");
+                    tracker.emit_now("addons", 1, 1, "模组加载器配置已完成");
+                } else {
+                    let mods_dir = instance_dir.join("mods");
+                    let _ = tokio::fs::create_dir_all(&mods_dir).await;
+                    download_jobs_with_tracker(
+                        extra_mod_jobs,
+                        "addons",
+                        &tracker,
+                        addons_threads,
+                        addons_offset,
+                    )
+                    .await?;
+                }
+            }
+            Ok::<(), String>(())
+        }
+    };
+
+    let (_client_res, libs_res, assets_res, _addons_res) = tokio::try_join!(
+        client_task,
+        libraries_task,
+        assets_task,
+        addons_task
+    )?;
 
     tracker.emit_now("done", 1, 1, "游戏文件已就绪");
 
@@ -1698,8 +1807,8 @@ pub async fn install_version_with_options(
             .version_type
             .clone()
             .unwrap_or_else(|| summary.version_type.clone()),
-        libraries: library_count as usize,
-        assets,
+        libraries: libs_res,
+        assets: assets_res,
         java_major: required_java_major(&version),
     })
 }
@@ -1718,6 +1827,10 @@ pub struct LaunchRequest {
     pub java_path: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub skin_type: Option<String>,
+    pub custom_skin_path: Option<String>,
+    pub custom_skin_model: Option<String>,
+    pub mojang_skin_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1728,12 +1841,39 @@ pub struct LaunchSpec {
     pub java_major: u32,
 }
 
-fn offline_uuid(name: &str) -> String {
+fn is_alex_uuid(bytes: &[u8; 16]) -> bool {
+    let most_sig = u64::from_be_bytes(bytes[0..8].try_into().unwrap_or([0; 8]));
+    let least_sig = u64::from_be_bytes(bytes[8..16].try_into().unwrap_or([0; 8]));
+    let hilo = most_sig ^ least_sig;
+    let hash = ((hilo >> 32) ^ hilo) as i32;
+    (hash & 1) == 1
+}
+
+pub fn offline_uuid(name: &str) -> String {
+    offline_uuid_with_skin(name, None)
+}
+
+pub fn offline_uuid_with_skin(name: &str, skin_type: Option<&str>) -> String {
     let digest = Md5::digest(format!("OfflinePlayer:{name}").as_bytes());
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest);
     bytes[6] = (bytes[6] & 0x0f) | 0x30;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    match skin_type {
+        Some("steve") => {
+            if is_alex_uuid(&bytes) {
+                bytes[15] ^= 1;
+            }
+        }
+        Some("alex") => {
+            if !is_alex_uuid(&bytes) {
+                bytes[15] ^= 1;
+            }
+        }
+        _ => {}
+    }
+
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     format!(
         "{}-{}-{}-{}-{}",
@@ -1743,6 +1883,86 @@ fn offline_uuid(name: &str) -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
+    let profile_url = format!("https://api.mojang.com/users/profiles/minecraft/{name}");
+    let resp = tokio::time::timeout(
+        Duration::from_secs(3),
+        net::client().get(&profile_url).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let val: serde_json::Value = resp.json().await.ok()?;
+    let id = val.get("id")?.as_str()?;
+
+    let session_url = format!(
+        "https://sessionserver.mojang.com/session/minecraft/profile/{id}?unsigned=false"
+    );
+    let s_resp = tokio::time::timeout(
+        Duration::from_secs(3),
+        net::client().get(&session_url).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !s_resp.status().is_success() {
+        return None;
+    }
+    let s_val: serde_json::Value = s_resp.json().await.ok()?;
+    let properties = s_val.get("properties")?.as_array()?;
+    for prop in properties {
+        if prop.get("name")?.as_str()? == "textures" {
+            let val = prop.get("value")?.as_str()?.to_string();
+            let sig = prop.get("signature").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            return Some((val, sig, id.to_string()));
+        }
+    }
+    None
+}
+
+async fn setup_custom_skin_pack(root: &Path, version_id: &str, skin_path: &Path) {
+    let pack_dir = game_dir(root, version_id).join("resourcepacks").join("OfflineSkinPack");
+    let wide_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity").join("player").join("wide");
+    let slim_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity").join("player").join("slim");
+    let legacy_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity");
+
+    let _ = tokio::fs::create_dir_all(&wide_dir).await;
+    let _ = tokio::fs::create_dir_all(&slim_dir).await;
+    let _ = tokio::fs::create_dir_all(&legacy_dir).await;
+
+    let mcmeta = serde_json::json!({
+        "pack": {
+            "pack_format": 9,
+            "description": "离线皮肤材质包 (由启动器自动生成)"
+        }
+    });
+    let _ = tokio::fs::write(pack_dir.join("pack.mcmeta"), mcmeta.to_string()).await;
+
+    let _ = tokio::fs::copy(skin_path, legacy_dir.join("steve.png")).await;
+    let _ = tokio::fs::copy(skin_path, legacy_dir.join("alex.png")).await;
+    let _ = tokio::fs::copy(skin_path, wide_dir.join("steve.png")).await;
+    let _ = tokio::fs::copy(skin_path, slim_dir.join("alex.png")).await;
+
+    let options_txt = game_dir(root, version_id).join("options.txt");
+    if let Ok(content) = tokio::fs::read_to_string(&options_txt).await {
+        if content.contains("resourcePacks:") {
+            if !content.contains("OfflineSkinPack") {
+                let updated = content.replace("resourcePacks:[", "resourcePacks:[\"file/OfflineSkinPack\",");
+                let _ = tokio::fs::write(&options_txt, updated).await;
+            }
+        } else {
+            let updated = format!("{content}\nresourcePacks:[\"file/OfflineSkinPack\",\"vanilla\"]\n");
+            let _ = tokio::fs::write(&options_txt, updated).await;
+        }
+    } else {
+        let default_options = "resourcePacks:[\"file/OfflineSkinPack\",\"vanilla\"]\n";
+        let _ = tokio::fs::write(&options_txt, default_options).await;
+    }
 }
 
 fn valid_player_name(name: &str) -> bool {
@@ -1844,6 +2064,8 @@ pub fn build_launch_spec(
     java: PathBuf,
     java_major: u32,
     request: &LaunchRequest,
+    user_properties_override: Option<String>,
+    mojang_uuid_override: Option<String>,
 ) -> Result<LaunchSpec, String> {
     let player_name = request.player_name.trim();
     if !valid_player_name(player_name) {
@@ -1874,7 +2096,8 @@ pub fn build_launch_spec(
     features.insert("is_quick_play_realms".to_string(), false);
 
     let memory = request.memory_mb.unwrap_or(4096).clamp(512, 65536);
-    let uuid = offline_uuid(player_name);
+    let skin_type = request.skin_type.as_deref().unwrap_or("random");
+    let uuid = mojang_uuid_override.unwrap_or_else(|| offline_uuid_with_skin(player_name, Some(skin_type)));
     let assets_index_name = version
         .asset_index
         .as_ref()
@@ -1915,7 +2138,8 @@ pub fn build_launch_spec(
     insert(&mut vars, "auth_access_token", "0".to_string());
     insert(&mut vars, "auth_session", format!("token:0:{uuid}"));
     insert(&mut vars, "user_type", "legacy".to_string());
-    insert(&mut vars, "user_properties", "{}".to_string());
+    let user_props = user_properties_override.unwrap_or_else(|| "{}".to_string());
+    insert(&mut vars, "user_properties", user_props);
     insert(&mut vars, "clientid", String::new());
     insert(&mut vars, "auth_xuid", String::new());
     insert(
@@ -2133,7 +2357,55 @@ pub async fn prepare_launch(
         "正在启动游戏",
     ));
 
-    let spec = build_launch_spec(root, &version, java, java_major, request)?;
+    let skin_type = request.skin_type.as_deref().unwrap_or("random");
+    let mut user_properties_override = None;
+    let mut mojang_uuid_override = None;
+
+    if skin_type == "custom" {
+        if let Some(path_str) = &request.custom_skin_path {
+            let p = Path::new(path_str);
+            if p.is_file() {
+                setup_custom_skin_pack(root, &request.version_id, p).await;
+            }
+        }
+    } else if skin_type == "mojang" {
+        let target_name = request
+            .mojang_skin_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&request.player_name);
+        if let Some((val, sig, raw_uuid)) = fetch_mojang_textures(target_name).await {
+            user_properties_override = Some(
+                serde_json::json!({
+                    "textures": [{
+                        "value": val,
+                        "signature": sig
+                    }]
+                })
+                .to_string(),
+            );
+            if raw_uuid.len() == 32 {
+                mojang_uuid_override = Some(format!(
+                    "{}-{}-{}-{}-{}",
+                    &raw_uuid[0..8],
+                    &raw_uuid[8..12],
+                    &raw_uuid[12..16],
+                    &raw_uuid[16..20],
+                    &raw_uuid[20..32]
+                ));
+            }
+        }
+    }
+
+    let spec = build_launch_spec(
+        root,
+        &version,
+        java,
+        java_major,
+        request,
+        user_properties_override,
+        mojang_uuid_override,
+    )?;
     Ok(spec)
 }
 

@@ -1,3 +1,4 @@
+pub mod bedrock;
 pub mod content;
 pub mod java;
 pub mod loaders;
@@ -521,6 +522,92 @@ fn stop_game(state: State<'_, GameState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_bedrock_status(app: AppHandle, root: Option<String>) -> Result<bedrock::BedrockStatus, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    Ok(bedrock::get_bedrock_status(&p))
+}
+
+#[tauri::command]
+async fn get_bedrock_versions(api_source: Option<String>) -> Vec<bedrock::BedrockVersionItem> {
+    bedrock::get_bedrock_versions_async(api_source.as_deref()).await
+}
+
+#[tauri::command]
+fn get_bedrock_content(category: Option<String>) -> Vec<bedrock::BedrockContentItem> {
+    let all = bedrock::get_curated_bedrock_content();
+    match category {
+        Some(c) if !c.is_empty() && c != "all" => {
+            all.into_iter().filter(|i| i.content_type == c).collect()
+        }
+        _ => all,
+    }
+}
+
+#[tauri::command]
+async fn install_bedrock_version(
+    app: AppHandle,
+    version_id: String,
+    download_url: Option<String>,
+    root: Option<String>,
+    api_source: Option<String>,
+    threads: Option<usize>,
+) -> Result<String, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+
+    let url = download_url.unwrap_or_default();
+    bedrock::install_bedrock_version(
+        &app,
+        &p,
+        &version_id,
+        &url,
+        api_source.as_deref(),
+        threads.unwrap_or(8),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn install_bedrock_pack(
+    app: AppHandle,
+    source: String,
+    filename: Option<String>,
+    root: Option<String>,
+) -> Result<bedrock::InstallPackResult, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+
+    let final_filename = filename.unwrap_or_else(|| {
+        PathBuf::from(&source)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "pack.mcpack".to_string())
+    });
+
+    bedrock::install_bedrock_pack(&p, &source, &final_filename).await
+}
+
+#[tauri::command]
+fn launch_bedrock(
+    app: AppHandle,
+    version_id: Option<String>,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::launch_bedrock_edition(&p, version_id.as_deref())
+}
+
+#[tauri::command]
 fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -576,6 +663,32 @@ fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+async fn delete_version(
+    app: AppHandle,
+    version_id: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::delete_version(&p, &version_id).await
+}
+
+#[tauri::command]
+async fn delete_bedrock_version(
+    app: AppHandle,
+    version_id: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::delete_bedrock_version(&p, &version_id).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -591,11 +704,19 @@ pub fn run() {
             get_content_versions,
             download_content_file,
             install_version,
+            delete_version,
             detect_java,
             get_system_info,
             launch_game,
             stop_game,
             open_folder,
+            get_bedrock_status,
+            get_bedrock_versions,
+            get_bedrock_content,
+            install_bedrock_version,
+            delete_bedrock_version,
+            install_bedrock_pack,
+            launch_bedrock,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
