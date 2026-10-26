@@ -35,6 +35,98 @@ pub fn client() -> &'static reqwest::Client {
     })
 }
 
+/// Render an error together with its full source chain.
+///
+/// `reqwest` only prints its own wrapper message ("error decoding response
+/// body") through `Display`, which hides the real cause (a timeout, a reset,
+/// or a serde mismatch). Walk the chain so the UI can show what happened.
+fn describe_error(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        let detail = inner.to_string();
+        if !detail.is_empty() && !text.contains(&detail) {
+            text.push_str(&format!(" ({detail})"));
+        }
+        source = inner.source();
+    }
+    text
+}
+
+/// Trim a response body to a short, char-boundary-safe snippet for messages.
+fn body_snippet(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    let mut snippet: String = trimmed.chars().take(160).collect();
+    if trimmed.chars().count() > 160 {
+        snippet.push('…');
+    }
+    snippet
+}
+
+/// GET a JSON document, retrying transient failures.
+///
+/// `timeout` applies to the whole exchange including the body, so it must be
+/// generous: a Modrinth version list can be over a megabyte, and a body that
+/// is cut off mid-transfer only shows up as an opaque decode error otherwise.
+pub async fn fetch_json<T: serde::de::DeserializeOwned>(
+    url: &str,
+    timeout: Duration,
+    attempts: u32,
+) -> Result<T, String> {
+    let attempts = attempts.max(1);
+    let mut last_error = String::from("未知错误");
+
+    for attempt in 1..=attempts {
+        let response = match client().get(url).timeout(timeout).send().await {
+            Ok(response) => response,
+            Err(err) => {
+                last_error = describe_error(&err);
+                if attempt < attempts && (err.is_timeout() || err.is_connect() || err.is_request()) {
+                    tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+                    continue;
+                }
+                return Err(last_error);
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            last_error = format!("HTTP {status}");
+            let retryable = status.is_server_error()
+                || status.as_u16() == 408
+                || status.as_u16() == 429;
+            if attempt < attempts && retryable {
+                tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+                continue;
+            }
+            return Err(last_error);
+        }
+
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                last_error = describe_error(&err);
+                if attempt < attempts
+                    && (err.is_timeout() || err.is_body() || err.is_decode() || err.is_request())
+                {
+                    tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+                    continue;
+                }
+                return Err(last_error);
+            }
+        };
+
+        // A complete body that still fails to deserialize is a schema problem,
+        // not a network one, so surface it instead of burning retries.
+        return serde_json::from_slice::<T>(&bytes).map_err(|err| {
+            format!("响应格式不匹配: {err}；内容开头: {}", body_snippet(&bytes))
+        });
+    }
+
+    Err(last_error)
+}
+
 /// Download a file to `dest`, verifying its SHA-1 when provided.
 /// The write is atomic: data lands in a `.part` file first.
 pub async fn download_file(
@@ -98,9 +190,19 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
         mirrors.push(format!("https://maven.minecraftforge.net/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("http://libraries.minecraft.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://resources.betacraft.uk/") {
+        // Betacraft's legacy-asset mirror is the primary URL from its own index;
+        // fall back to Mojang and BMCLAPI when the mirror is unavailable.
+        mirrors.push(format!("https://resources.download.minecraft.net/{path}"));
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://resources.download.minecraft.net/") {
+        // Legacy objects (beta/alpha sound & music, pre-1.6 langs) were pruned
+        // from Mojang's CDN and now answer 404 mid-install. Betacraft keeps them
+        // under the same hash layout, so it is the first fallback there.
+        mirrors.push(format!("https://resources.betacraft.uk/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("http://resources.download.minecraft.net/") {
+        mirrors.push(format!("https://resources.betacraft.uk/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://piston-meta.mojang.com/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
@@ -298,6 +400,9 @@ async fn download_single_stream<'a>(
 ) -> Result<u64, String> {
     let response = client()
         .get(url)
+        // Binary payloads must stay byte-exact for checksum verification, so
+        // never let transparent decompression touch them.
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .send()
         .await
         .map_err(|e| format!("下载请求失败 ({url}): {e}"))?;
@@ -345,6 +450,7 @@ async fn try_segmented_download<'a>(
     // Probe with a 1-byte range request to verify 206 Partial Content support and total length.
     let probe = client()
         .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header(RANGE, "bytes=0-0")
         .send()
         .await
@@ -408,6 +514,7 @@ async fn try_segmented_download<'a>(
                     let res: Result<(), String> = async {
                         let response = client()
                             .get(&url)
+                            .header(reqwest::header::ACCEPT_ENCODING, "identity")
                             .header(RANGE, format!("bytes={start}-{end}"))
                             .send()
                             .await
@@ -632,6 +739,32 @@ mod tests {
         );
         assert_eq!(parse_content_range_total("bytes 0-1023/*"), None);
         assert_eq!(parse_content_range_total("invalid"), None);
+    }
+
+    #[test]
+    fn betacraft_asset_mirror_falls_back_to_mojang_and_bmclapi() {
+        let mirrors = get_mirror_urls(
+            "https://resources.betacraft.uk/02/022e48005197b37f0caa53e8051c8a266eeae15e",
+        );
+        assert!(mirrors.contains(
+            &"https://resources.download.minecraft.net/02/022e48005197b37f0caa53e8051c8a266eeae15e"
+                .to_string()
+        ));
+        assert!(mirrors.contains(
+            &"https://bmclapi2.bangbang93.com/assets/02/022e48005197b37f0caa53e8051c8a266eeae15e"
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn pruned_mojang_asset_falls_back_to_betacraft() {
+        let mirrors = get_mirror_urls(
+            "https://resources.download.minecraft.net/f1/f1b527e059bb4abe3aed3acf6b5eb96f40b07f67",
+        );
+        assert_eq!(
+            mirrors.first().map(String::as_str),
+            Some("https://resources.betacraft.uk/f1/f1b527e059bb4abe3aed3acf6b5eb96f40b07f67")
+        );
     }
 
     #[test]

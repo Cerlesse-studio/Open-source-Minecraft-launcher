@@ -25,6 +25,7 @@ import {
   Sparkles,
   Store,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { cn } from "cn";
@@ -38,6 +39,7 @@ import {
   typeTone,
 } from "../lib/format";
 import {
+  autoFixBedrockBootDependencies,
   deleteBedrockVersion,
   deleteVersion,
   getBedrockStatus,
@@ -266,10 +268,11 @@ interface DownloadCatalogViewProps {
 
 type CatalogCategory =
   | "versions"
-  | "mod"
-  | "modpack"
+  | "resourcepack"
   | "shader"
-  | "datapack";
+  | "mod"
+  | "datapack"
+  | "modpack";
 
 const CATALOG_CATEGORIES: Array<{
   id: CatalogCategory;
@@ -278,10 +281,11 @@ const CATALOG_CATEGORIES: Array<{
   desc: string;
 }> = [
   { id: "versions", label: "游戏版本", icon: Package, desc: "Java 与基岩版核心" },
-  { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "Java 模组与基岩版行为包" },
-  { id: "modpack", label: "整合包", icon: Archive, desc: "精选整合包" },
+  { id: "resourcepack", label: "材质与资源包", icon: Sparkles, desc: "基岩版与 Java 材质包" },
   { id: "shader", label: "光影包", icon: FlaskConical, desc: "Java 光影与基岩版 RTX/PBR" },
+  { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "Java 模组与基岩版行为包" },
   { id: "datapack", label: "数据包", icon: Cpu, desc: "原版世界与规则" },
+  { id: "modpack", label: "整合包", icon: Archive, desc: "精选整合包" },
 ];
 
 function VersionGlyph({ type, source }: { type: string; source?: string }) {
@@ -323,6 +327,9 @@ function VersionGlyph({ type, source }: { type: string; source?: string }) {
     </span>
   );
 }
+
+let globalBedrockVersionsCache: BedrockVersionItem[] | null = null;
+let globalBedrockStatusCache: BedrockStatus | null = null;
 
 export function DownloadCatalogView({
   manifest,
@@ -385,25 +392,39 @@ export function DownloadCatalogView({
     void loadBetacraft();
   }, [gameRoot]);
 
-  const [bedrockVersions, setBedrockVersions] = useState<BedrockVersionItem[]>([]);
+  const [bedrockVersions, setBedrockVersions] = useState<BedrockVersionItem[]>(
+    () => globalBedrockVersionsCache ?? [],
+  );
   const [bedrockTypeFilter, setBedrockTypeFilter] = useState<"all" | "release" | "preview">("all");
-  const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
+  const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(
+    () => globalBedrockStatusCache,
+  );
   const [installingBedrockId, setInstallingBedrockId] = useState<string | null>(null);
   const [bedrockApiSource, setBedrockApiSource] = useState<
     "mcappx" | "bedrockboot_gitee" | "bmcbl" | "endstone" | "azure_mirror"
   >("mcappx");
-  const [bedrockLoading, setBedrockLoading] = useState(false);
+  const [bedrockLoading, setBedrockLoading] = useState(
+    () => !globalBedrockVersionsCache || globalBedrockVersionsCache.length === 0,
+  );
   const [bedrockLoaderModalVer, setBedrockLoaderModalVer] = useState<BedrockVersionItem | null>(null);
 
-  const loadBedrock = async (source = bedrockApiSource) => {
-    setBedrockLoading(true);
+  const loadBedrock = async (source = bedrockApiSource, showSpinner = false) => {
+    if (showSpinner || !globalBedrockVersionsCache || globalBedrockVersionsCache.length === 0) {
+      setBedrockLoading(true);
+    }
     try {
       const [v, s] = await Promise.all([
         getBedrockVersions(source),
         getBedrockStatus(gameRoot),
       ]);
-      setBedrockVersions(v);
-      setBedrockStatus(s);
+      if (Array.isArray(v) && v.length > 0) {
+        globalBedrockVersionsCache = v;
+        setBedrockVersions(v);
+      }
+      if (s) {
+        globalBedrockStatusCache = s;
+        setBedrockStatus(s);
+      }
     } catch {
       // ignore
     } finally {
@@ -1295,6 +1316,31 @@ export function DownloadCatalogView({
                                               <Play className="size-3 fill-current" />
                                               启动
                                             </Button>
+                                            {ver.buildType === "GDK" || ver.downloadUrl?.includes(".msixvc") ? (
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-7 gap-1 border-emerald-500/40 text-xs text-emerald-300 hover:bg-emerald-500/10"
+                                                onClick={async () => {
+                                                  try {
+                                                    const s = await autoFixBedrockBootDependencies();
+                                                    onNotify(
+                                                      "success",
+                                                      "BedrockBoot 运行环境自检与修复已完成",
+                                                      s.allSatisfied
+                                                        ? "Xbox GDK 运行依赖已全部就绪"
+                                                        : "已自动开始配置组件并打开微软商店页面",
+                                                    );
+                                                  } catch (err) {
+                                                    onNotify("error", "自动配置失败", String(err));
+                                                  }
+                                                }}
+                                                title="自动配置 Xbox 应用与游戏服务运行环境"
+                                              >
+                                                <Wrench className="size-3 text-emerald-400" />
+                                                环境自检与修复
+                                              </Button>
+                                            ) : null}
                                             <Button
                                               variant="outline"
                                               size="sm"

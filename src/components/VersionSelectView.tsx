@@ -106,6 +106,8 @@ export interface MixedVersionItem {
   dateStr: string;
   pathDisplay: string;
   isUwp?: boolean;
+  isServerCore?: boolean;
+  isGdkCore?: boolean;
   javaVersion?: InstalledVersion;
 }
 
@@ -137,12 +139,8 @@ export function VersionSelectView({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const [s, bVers] = await Promise.all([
-        getBedrockStatus(gameRoot),
-        getBedrockVersions(),
-      ]);
+      const s = await getBedrockStatus(gameRoot);
       setBedrockStatus(s);
-      setCloudBedrockVersions(bVers.slice(0, 4));
     } catch {
       // ignore
     }
@@ -154,6 +152,19 @@ export function VersionSelectView({
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshStatus, selectedBedrockVersion, _edition]);
+
+  // Load cloud recommendations lazily in the background without blocking installed versions
+  useEffect(() => {
+    let active = true;
+    void getBedrockVersions().then((bVers) => {
+      if (active && Array.isArray(bVers)) {
+        setCloudBedrockVersions(bVers.slice(0, 4));
+      }
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Combine Java versions and Bedrock versions into a mixed list
   const mixedItems = useMemo<MixedVersionItem[]>(() => {
@@ -189,13 +200,24 @@ export function VersionSelectView({
     }
 
     for (const bdsVer of bedrockStatus?.installedVersions ?? []) {
+      const detail = bedrockStatus?.versionDetails?.find(
+        (item) => item.id === bdsVer || item.id.startsWith(`${bdsVer}.`) || bdsVer.startsWith(item.id),
+      );
+      const isServerCore = detail?.isServer ?? false;
+      const isGdkCore = detail?.isGdk ?? detail?.packageType === "msixvc";
       list.push({
         id: `bedrock:${bdsVer}`,
         name: `Minecraft 基岩版: ${bdsVer}`,
         edition: "bedrock",
         type: "bds",
-        dateStr: "独立核心已就绪",
+        dateStr: isServerCore
+          ? "独立核心已就绪"
+          : isGdkCore
+            ? "GDK 加密核心已下载"
+            : "UWP / AppX 核心已就绪",
         pathDisplay: `bedrock/versions/${bdsVer}/`,
+        isServerCore,
+        isGdkCore,
       });
     }
 
@@ -699,7 +721,13 @@ export function VersionSelectView({
                                 variant="outline"
                                 className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/5 px-1.5 text-[9px] font-normal text-emerald-400"
                               >
-                                {item.isUwp ? "Windows Store 正版" : "BDS 独立核心"}
+                                {item.isUwp
+                                  ? "Windows Store 正版"
+                                  : item.isServerCore
+                                    ? "BDS 独立核心"
+                                    : item.isGdkCore
+                                      ? "Xbox GDK 加密核心"
+                                      : "UWP / AppX 核心"}
                               </Badge>
                             )}
                           </span>

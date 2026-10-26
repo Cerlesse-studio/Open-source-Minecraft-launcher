@@ -21,7 +21,10 @@ export default defineConfig(() => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // Bind IPv4 loopback explicitly: with `host: false` Node may resolve
+    // "localhost" to IPv6 [::1] only, which Tauri's dev-server wait loop
+    // (http://localhost:1420) cannot reach on some Windows setups.
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",

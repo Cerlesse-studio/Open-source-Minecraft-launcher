@@ -592,14 +592,8 @@ async fn get_bedrock_versions(api_source: Option<String>) -> Vec<bedrock::Bedroc
 }
 
 #[tauri::command]
-fn get_bedrock_content(category: Option<String>) -> Vec<bedrock::BedrockContentItem> {
-    let all = bedrock::get_curated_bedrock_content();
-    match category {
-        Some(c) if !c.is_empty() && c != "all" => {
-            all.into_iter().filter(|i| i.content_type == c).collect()
-        }
-        _ => all,
-    }
+async fn get_bedrock_content(category: Option<String>) -> Vec<bedrock::BedrockContentItem> {
+    bedrock::get_bedrock_content_async(category.as_deref()).await
 }
 
 #[tauri::command]
@@ -736,12 +730,58 @@ fn launch_bedrock(
     app: AppHandle,
     version_id: Option<String>,
     root: Option<String>,
+    offline_account: Option<bool>,
 ) -> Result<String, String> {
     let p = match root.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
-    bedrock::launch_bedrock_edition(&p, version_id.as_deref())
+    // Offline accounts are the only supported login mode today, and they default to
+    // the BDS core so a fresh install boots something playable without a sign-in.
+    bedrock::launch_bedrock_edition(
+        &p,
+        version_id.as_deref(),
+        Some(&app),
+        offline_account.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+fn get_bedrock_runtime_status(force: Option<bool>) -> bedrock::BedrockRuntimeStatus {
+    bedrock::get_bedrock_runtime_status(force.unwrap_or(false))
+}
+
+#[tauri::command]
+fn auto_provision_bedrock_runtime(app: AppHandle) -> bedrock::BedrockRuntimeStatus {
+    bedrock::provision_bedrock_runtime(Some(&app))
+}
+
+#[tauri::command]
+fn check_bedrockboot_dependencies(force: Option<bool>) -> bedrock::BedrockFullDependencyReport {
+    bedrock::check_bedrockboot_dependencies(force.unwrap_or(false))
+}
+
+#[tauri::command]
+fn auto_fix_bedrockboot_dependencies(app: AppHandle) -> bedrock::BedrockFullDependencyReport {
+    bedrock::auto_fix_bedrockboot_dependencies(Some(&app))
+}
+
+#[tauri::command]
+fn enable_bedrock_developer_mode() -> Result<(), String> {
+    bedrock::enable_developer_mode()
+}
+
+#[tauri::command]
+async fn auto_install_bds_fallback(
+    app: AppHandle,
+    version_id: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root.filter(|s| !s.trim().is_empty()) {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::find_or_install_bds_fallback(&app, &p, &version_id).await
 }
 
 #[tauri::command]
@@ -914,6 +954,62 @@ fn install_bedrock_mod_file(
     bedrock::install_bedrock_mod_file(&p, &version_id, &file_path)
 }
 
+#[tauri::command]
+fn get_java_mods(
+    app: AppHandle,
+    version_id: String,
+    root: Option<String>,
+) -> Result<Vec<minecraft::JavaModItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::get_java_mods(&p, &version_id)
+}
+
+#[tauri::command]
+fn toggle_java_mod(
+    app: AppHandle,
+    version_id: String,
+    file_name: String,
+    enabled: bool,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::toggle_java_mod(&p, &version_id, &file_name, enabled)
+}
+
+#[tauri::command]
+fn delete_java_mod(
+    app: AppHandle,
+    version_id: String,
+    file_name: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::delete_java_mod(&p, &version_id, &file_name)
+}
+
+#[tauri::command]
+fn install_java_mod_file(
+    app: AppHandle,
+    version_id: String,
+    file_path: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::install_java_mod_file(&p, &version_id, std::path::Path::new(&file_path))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -944,6 +1040,12 @@ pub fn run() {
             delete_bedrock_version,
             install_bedrock_pack,
             launch_bedrock,
+            get_bedrock_runtime_status,
+            auto_provision_bedrock_runtime,
+            check_bedrockboot_dependencies,
+            auto_fix_bedrockboot_dependencies,
+            enable_bedrock_developer_mode,
+            auto_install_bds_fallback,
             clean_download_cache,
             cancel_install,
             get_bedrock_loaders,
@@ -952,6 +1054,10 @@ pub fn run() {
             toggle_bedrock_mod,
             delete_bedrock_mod,
             install_bedrock_mod_file,
+            get_java_mods,
+            toggle_java_mod,
+            delete_java_mod,
+            install_java_mod_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

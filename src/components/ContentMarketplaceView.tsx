@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "cn";
 import {
-  Archive,
   ArrowDownToLine,
   ArrowUpDown,
-  Boxes,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -15,11 +13,9 @@ import {
   FolderOpen,
   Heart,
   LoaderCircle,
-  Package,
   PackageOpen,
   RefreshCw,
   Search,
-  Sparkles,
   Upload,
   UserRound,
   X,
@@ -40,14 +36,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { ContentIcon } from "@/components/ui";
 
 export interface ContentMarketplaceViewProps {
   projectType: ContentProjectType;
-  installed: InstalledVersion[];
+  installed?: InstalledVersion[];
   selectedVersion: string;
   gameRoot: string;
   onOpenFolder: (path: string) => void;
@@ -60,6 +56,7 @@ export interface ContentMarketplaceViewProps {
 
 const COMMON_MC_VERSIONS = [
   "all",
+  "基岩版",
   "1.21.4",
   "1.21.1",
   "1.20.1",
@@ -67,7 +64,6 @@ const COMMON_MC_VERSIONS = [
   "1.18.2",
   "1.16.5",
   "1.12.2",
-  "基岩版",
 ];
 
 const LOADERS = ["all", "fabric", "forge", "neoforge", "quilt", "bedrock"];
@@ -89,27 +85,16 @@ function formatCount(num: number): string {
   return String(num);
 }
 
-function typeDestinationLabel(type: ContentProjectType, instanceId?: string): string {
-  if (instanceId === "bedrock") {
-    switch (type) {
-      case "shader":
-        return "bedrock/games/com.mojang/resource_packs/ (基岩版光影)";
-      case "mod":
-        return "bedrock/games/com.mojang/behavior_packs/ (基岩版模组)";
-      default:
-        return "bedrock/games/com.mojang/";
-    }
-  }
-  const target = instanceId ? `versions/${instanceId}/` : "";
+function typeDestinationLabel(type: ContentProjectType): string {
   switch (type) {
     case "mod":
-      return `${target}mods/`;
+      return "mods/";
     case "shader":
-      return `${target}shaderpacks/`;
+      return "shaderpacks/";
     case "datapack":
-      return `${target}datapacks/`;
+      return "datapacks/";
     case "resourcepack":
-      return `${target}resourcepacks/`;
+      return "resourcepacks/";
     case "modpack":
       return "modpacks/";
     default:
@@ -142,8 +127,6 @@ function getPaginationRange(current: number, total: number, maxVisible = 7): Arr
 
 export function ContentMarketplaceView({
   projectType,
-  installed,
-  selectedVersion,
   gameRoot,
   onOpenFolder,
   onNotify,
@@ -153,9 +136,6 @@ export function ContentMarketplaceView({
   const [gameVersion, setGameVersion] = useState("all");
   const [loader, setLoader] = useState("all");
   const [sort, setSort] = useState("downloads");
-  const [targetInstance, setTargetInstance] = useState(
-    selectedVersion || (installed[0]?.id ?? "bedrock"),
-  );
   const [importing, setImporting] = useState(false);
 
   const [hits, setHits] = useState<ContentHit[]>([]);
@@ -182,15 +162,6 @@ export function ContentMarketplaceView({
     }, 280);
     return () => clearTimeout(timer);
   }, [query]);
-
-  // Keep target instance aligned if selectedVersion changes
-  useEffect(() => {
-    if (selectedVersion && installed.some((v) => v.id === selectedVersion)) {
-      setTargetInstance(selectedVersion);
-    } else if (installed.length > 0 && !targetInstance) {
-      setTargetInstance(installed[0].id);
-    }
-  }, [selectedVersion, installed, targetInstance]);
 
   // Reset selected project when switching project type tab
   useEffect(() => {
@@ -280,9 +251,6 @@ export function ContentMarketplaceView({
       <ContentVersionSelectView
         project={selectedProject}
         projectType={projectType}
-        installed={installed}
-        targetInstance={targetInstance}
-        onChangeTargetInstance={setTargetInstance}
         gameRoot={gameRoot}
         initialGameVersion={gameVersion}
         initialLoader={loader}
@@ -360,61 +328,6 @@ export function ContentMarketplaceView({
         {/* Row 2: Filter Pills & Folder Path */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2.5">
           <div className="flex flex-wrap items-center gap-2">
-            {/* Target Instance Picker */}
-            {projectType !== "modpack" ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 rounded-lg border-border/70 bg-background/50 px-2.5 text-xs font-normal hover:bg-accent/60"
-                  >
-                    <span className="text-[11px] text-muted-foreground">安装到:</span>
-                    <span
-                      className={cn(
-                        "font-medium",
-                        targetInstance === "bedrock"
-                          ? "font-semibold text-emerald-400"
-                          : "font-mono text-foreground",
-                      )}
-                    >
-                      {targetInstance === "bedrock"
-                        ? "基岩版 (com.mojang)"
-                        : `Java: ${targetInstance}`}
-                    </span>
-                    <ChevronDown className="size-3 text-muted-foreground opacity-70" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuLabel className="text-[11px] text-muted-foreground">
-                    选择安装目标
-                  </DropdownMenuLabel>
-                  <DropdownMenuItem
-                    onClick={() => setTargetInstance("bedrock")}
-                    className="flex cursor-pointer items-center justify-between text-xs font-medium text-emerald-400"
-                  >
-                    <span>基岩版 (com.mojang)</span>
-                    {targetInstance === "bedrock" && (
-                      <Check className="size-3.5 text-emerald-400" />
-                    )}
-                  </DropdownMenuItem>
-                  {installed.length > 0 && <DropdownMenuSeparator />}
-                  {installed.map((inst) => (
-                    <DropdownMenuItem
-                      key={inst.id}
-                      onClick={() => setTargetInstance(inst.id)}
-                      className="flex cursor-pointer items-center justify-between font-mono text-xs"
-                    >
-                      <span>Java: {inst.id}</span>
-                      {targetInstance === inst.id && (
-                        <Check className="size-3.5 text-primary" />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-
             {/* Game Version Filter */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -530,7 +443,7 @@ export function ContentMarketplaceView({
             type="button"
             onClick={() =>
               onOpenFolder(
-                `${gameRoot}/${typeDestinationLabel(projectType, targetInstance)}`,
+                `${gameRoot}/${typeDestinationLabel(projectType)}`,
               )
             }
             title="点击打开对应存储文件夹"
@@ -539,7 +452,7 @@ export function ContentMarketplaceView({
             <FolderOpen className="size-3.5 text-primary/80 transition-transform group-hover:scale-110" />
             <span>目标:</span>
             <code className="font-mono text-[10.5px] text-foreground/85 transition-colors group-hover:text-primary">
-              {typeDestinationLabel(projectType, targetInstance)}
+              {typeDestinationLabel(projectType)}
             </code>
           </button>
         </div>
@@ -582,46 +495,23 @@ export function ContentMarketplaceView({
               role="button"
               tabIndex={0}
               onClick={() => {
-                if (isBedrock) {
-                  setTargetInstance("bedrock");
-                }
                 setSelectedProject(hit);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  if (isBedrock) {
-                    setTargetInstance("bedrock");
-                  }
                   setSelectedProject(hit);
                 }
               }}
               className="group flex cursor-pointer flex-col gap-3 border-border/70 bg-card/55 p-3.5 transition-all hover:border-primary/45 hover:bg-card/85 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-start gap-3.5">
-                {hit.iconUrl ? (
-                  <img
-                    src={hit.iconUrl}
-                    alt={hit.title}
-                    loading="lazy"
-                    className="size-12 shrink-0 rounded-lg border border-border/60 bg-muted/20 object-cover"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                ) : (
-                  <div className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/30 text-muted-foreground">
-                    {projectType === "mod" ? (
-                      <Boxes className="size-5" />
-                    ) : projectType === "shader" ? (
-                      <Sparkles className="size-5" />
-                    ) : projectType === "datapack" ? (
-                      <Archive className="size-5" />
-                    ) : (
-                      <Package className="size-5" />
-                    )}
-                  </div>
-                )}
+                <ContentIcon
+                  src={hit.iconUrl}
+                  alt={hit.title}
+                  projectType={projectType}
+                  className="size-12"
+                />
 
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -689,9 +579,6 @@ export function ContentMarketplaceView({
                   className="h-8 gap-1.5 border-border/80 px-3.5 text-[11px] text-muted-foreground transition-colors group-hover:border-primary/45 group-hover:bg-primary/10 group-hover:text-primary"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (isBedrock) {
-                      setTargetInstance("bedrock");
-                    }
                     setSelectedProject(hit);
                   }}
                 >

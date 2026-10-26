@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "cn";
 import {
-  Archive,
   ArrowDownToLine,
   ArrowLeft,
-  Boxes,
   Check,
   ChevronDown,
   Download,
@@ -14,7 +12,6 @@ import {
   Package,
   RefreshCw,
   Search,
-  Sparkles,
   UserRound,
   X,
 } from "lucide-react";
@@ -24,7 +21,6 @@ import type {
   ContentHit,
   ContentProjectType,
   ContentVersionItem,
-  InstalledVersion,
 } from "../lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,17 +30,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { ContentIcon } from "@/components/ui";
 
 export interface ContentVersionSelectViewProps {
   project: ContentHit;
   projectType: ContentProjectType;
-  installed: InstalledVersion[];
-  targetInstance: string;
-  onChangeTargetInstance: (instanceId: string) => void;
   gameRoot: string;
   initialGameVersion?: string;
   initialLoader?: string;
@@ -88,27 +81,16 @@ function projectTypeLabel(type: ContentProjectType): string {
   }
 }
 
-function typeDestinationPath(type: ContentProjectType, instanceId?: string): string {
-  if (instanceId === "bedrock") {
-    switch (type) {
-      case "shader":
-        return "bedrock/games/com.mojang/resource_packs/";
-      case "mod":
-        return "bedrock/games/com.mojang/behavior_packs/";
-      default:
-        return "bedrock/games/com.mojang/";
-    }
-  }
-  const target = instanceId ? `versions/${instanceId}/` : "";
+function typeDestinationPath(type: ContentProjectType): string {
   switch (type) {
     case "mod":
-      return `${target}mods/`;
+      return "mods/";
     case "shader":
-      return `${target}shaderpacks/`;
+      return "shaderpacks/";
     case "datapack":
-      return `${target}datapacks/`;
+      return "datapacks/";
     case "resourcepack":
-      return `${target}resourcepacks/`;
+      return "resourcepacks/";
     case "modpack":
       return "modpacks/";
     default:
@@ -129,9 +111,6 @@ function formatCount(num: number): string {
 export function ContentVersionSelectView({
   project,
   projectType,
-  installed,
-  targetInstance,
-  onChangeTargetInstance,
   gameRoot,
   initialGameVersion = "all",
   initialLoader = "all",
@@ -190,7 +169,7 @@ export function ContentVersionSelectView({
     try {
       const res = await downloadContentFile({
         root: gameRoot,
-        instanceId: projectType !== "modpack" ? targetInstance : undefined,
+        instanceId: undefined,
         projectType,
         url: file.url,
         filename: file.filename,
@@ -215,7 +194,7 @@ export function ContentVersionSelectView({
     }
   };
 
-  const destinationFolder = typeDestinationPath(projectType, targetInstance);
+  const destinationFolder = typeDestinationPath(projectType);
 
   return (
     <div className="space-y-4">
@@ -233,25 +212,13 @@ export function ContentVersionSelectView({
               <ArrowLeft className="size-4" />
             </Button>
 
-            {project.iconUrl ? (
-              <img
-                src={project.iconUrl}
-                alt={project.title}
-                className="size-14 shrink-0 rounded-xl border border-border/70 bg-muted/20 object-cover"
-              />
-            ) : (
-              <div className="flex size-14 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/30 text-muted-foreground">
-                {projectType === "mod" ? (
-                  <Boxes className="size-6" />
-                ) : projectType === "shader" ? (
-                  <Sparkles className="size-6" />
-                ) : projectType === "datapack" ? (
-                  <Archive className="size-6" />
-                ) : (
-                  <Package className="size-6" />
-                )}
-              </div>
-            )}
+            <ContentIcon
+              src={project.iconUrl}
+              alt={project.title}
+              projectType={projectType}
+              className="size-14 rounded-xl"
+              iconClassName="size-6"
+            />
 
             <div className="min-w-0 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
@@ -321,61 +288,6 @@ export function ContentVersionSelectView({
       <Card className="flex flex-col gap-3 border-border/70 bg-card/60 p-3.5 shadow-sm">
         <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            {/* Target Instance Picker */}
-            {projectType !== "modpack" ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 rounded-lg border-border/70 bg-background/50 px-2.5 text-xs font-normal hover:bg-accent/60"
-                  >
-                    <span className="text-[11px] text-muted-foreground">安装到:</span>
-                    <span
-                      className={cn(
-                        "font-medium",
-                        targetInstance === "bedrock"
-                          ? "font-semibold text-emerald-400"
-                          : "font-mono text-foreground",
-                      )}
-                    >
-                      {targetInstance === "bedrock"
-                        ? "基岩版 (com.mojang)"
-                        : `Java: ${targetInstance}`}
-                    </span>
-                    <ChevronDown className="size-3 text-muted-foreground opacity-70" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuLabel className="text-[11px] text-muted-foreground">
-                    选择安装目标
-                  </DropdownMenuLabel>
-                  <DropdownMenuItem
-                    onClick={() => onChangeTargetInstance("bedrock")}
-                    className="flex cursor-pointer items-center justify-between text-xs font-medium text-emerald-400"
-                  >
-                    <span>基岩版 (com.mojang)</span>
-                    {targetInstance === "bedrock" && (
-                      <Check className="size-3.5 text-emerald-400" />
-                    )}
-                  </DropdownMenuItem>
-                  {installed.length > 0 && <DropdownMenuSeparator />}
-                  {installed.map((inst) => (
-                    <DropdownMenuItem
-                      key={inst.id}
-                      onClick={() => onChangeTargetInstance(inst.id)}
-                      className="flex cursor-pointer items-center justify-between font-mono text-xs"
-                    >
-                      <span>Java: {inst.id}</span>
-                      {targetInstance === inst.id && (
-                        <Check className="size-3.5 text-primary" />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-
             {/* Game Version Filter */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -491,12 +403,8 @@ export function ContentVersionSelectView({
           <button
             type="button"
             onClick={() => {
-              if (targetInstance === "bedrock") {
-                onOpenFolder(`${gameRoot}/bedrock/games/com.mojang`);
-              } else {
                 onOpenFolder(`${gameRoot}/${destinationFolder}`);
-              }
-            }}
+              }}
             title="点击打开对应存储文件夹"
             className="group flex items-center gap-1.5 rounded-lg border border-border/50 bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:bg-primary/5 hover:text-foreground"
           >

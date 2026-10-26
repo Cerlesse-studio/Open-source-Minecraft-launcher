@@ -12,7 +12,10 @@ export type VersionLaunchSettings = Pick<
   | "launcherVisibility"
   | "processPriority"
   | "windowSize"
->;
+> & {
+  javaPath?: string;
+  jvmArgs?: string;
+};
 
 const STORAGE_KEY = "cobble.version-launch.v1";
 
@@ -33,6 +36,8 @@ export function resolveVersionLaunchSettings(
     launcherVisibility: override?.launcherVisibility ?? defaults.launcherVisibility,
     processPriority: override?.processPriority ?? defaults.processPriority,
     windowSize: override?.windowSize ?? defaults.windowSize,
+    javaPath: override?.javaPath ?? "",
+    jvmArgs: override?.jvmArgs ?? "",
   };
 }
 
@@ -72,6 +77,8 @@ function sanitize(value: Partial<VersionLaunchSettings>): VersionLaunchSettings 
       value.windowSize === "fullscreen" || value.windowSize === "custom"
         ? value.windowSize
         : "default",
+    javaPath: typeof value.javaPath === "string" ? value.javaPath.trim() : "",
+    jvmArgs: typeof value.jvmArgs === "string" ? value.jvmArgs.trim() : "",
   };
 }
 

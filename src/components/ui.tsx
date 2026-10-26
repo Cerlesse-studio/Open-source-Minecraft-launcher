@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Archive, Boxes, Package, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "cn";
 import { progressPercent, stageLabel } from "../lib/format";
-import type { InstallProgress, OfflineSkinType } from "../lib/types";
+import type {
+  ContentProjectType,
+  InstallProgress,
+  OfflineSkinType,
+} from "../lib/types";
 import { readSkinAsDataUrl } from "../lib/backend";
 
 export function GrassBlock({
@@ -21,6 +26,72 @@ export function GrassBlock({
       height={size}
       className={cn("shrink-0 object-contain [image-rendering:pixelated]", className)}
     />
+  );
+}
+
+const CONTENT_TYPE_ICONS: Record<
+  ContentProjectType,
+  typeof Boxes
+> = {
+  mod: Boxes,
+  modpack: Package,
+  shader: Sparkles,
+  datapack: Archive,
+  resourcepack: Package,
+};
+
+/**
+ * Icon tile for a marketplace project.
+ *
+ * Modrinth serves icons from several CDN paths (`icon.png` for older projects,
+ * hashed `_96.webp` / `.jpeg` files for newer ones), and a project may have no
+ * icon at all. Any of those cases must degrade to the type placeholder while
+ * keeping the tile's size: a hidden <img> used to leave an empty gap in the
+ * list, which read as a rendering bug rather than as "this project has no
+ * icon".
+ */
+export function ContentIcon({
+  src,
+  alt,
+  projectType,
+  className,
+  iconClassName,
+}: {
+  src?: string | null;
+  alt: string;
+  projectType: ContentProjectType;
+  className?: string;
+  iconClassName?: string;
+}) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const TypeIcon = CONTENT_TYPE_ICONS[projectType] ?? Package;
+  const url = src?.trim() ?? "";
+  const showImage = url.length > 0 && failedSrc !== url;
+
+  return (
+    <div
+      className={cn(
+        "flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-muted/20 text-muted-foreground",
+        className,
+      )}
+    >
+      {showImage ? (
+        <img
+          src={url}
+          alt={alt}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          className="size-full object-cover"
+          onError={() => setFailedSrc(url)}
+        />
+      ) : (
+        <TypeIcon
+          aria-hidden="true"
+          className={cn("size-5 shrink-0 opacity-70", iconClassName)}
+        />
+      )}
+    </div>
   );
 }
 

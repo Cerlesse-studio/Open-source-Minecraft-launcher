@@ -81,6 +81,21 @@ export interface BedrockModItem {
   modifiedTime: string;
 }
 
+export interface JavaModItem {
+  id: string;
+  name: string;
+  fileName: string;
+  path: string;
+  enabled: boolean;
+  size: number;
+  modifiedTime: string;
+  version?: string;
+  description?: string;
+  modLoader?: string;
+  /** Icon embedded in the jar, inlined as a `data:` URL by the backend. */
+  iconDataUrl?: string | null;
+}
+
 export interface LoaderSelection {
   instanceName?: string;
   loaderType?: "forge" | "neoforge" | "fabric" | "quilt";
@@ -290,6 +305,7 @@ export interface LaunchRequest {
   launcherVisibility?: LauncherVisibility;
   processPriority?: ProcessPriority;
   windowSize?: WindowSizeMode;
+  jvmArgs?: string | null;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
@@ -364,6 +380,46 @@ export interface BedrockStatus {
   behaviorPacksCount: number;
   worldsCount: number;
   installedVersions: string[];
+  versionDetails?: BedrockInstalledVersionDetail[];
+  runtimeStatus?: BedrockRuntimeStatus;
+  fullDependencyReport?: BedrockFullDependencyReport;
+}
+
+export interface BedrockInstalledVersionDetail {
+  id: string;
+  name: string;
+  isServer: boolean;
+  packageFile?: string | null;
+  packageType?: string | null; // "msixvc" | "appx" | "exe" | "bds"
+  isGdk: boolean;
+}
+
+export interface BedrockRuntimeStatus {
+  xboxAppInstalled: boolean;
+  gamingServicesInstalled: boolean;
+  minecraftUwpInstalled: boolean;
+  wingetAvailable: boolean;
+  ready: boolean;
+}
+
+export interface BedrockDependencyItem {
+  key: string;
+  name: string;
+  required: boolean;
+  installed: boolean;
+  version?: string | null;
+  minVersion?: string | null;
+  fixHint: string;
+}
+
+export interface BedrockFullDependencyReport {
+  allSatisfied: boolean;
+  developerMode: boolean;
+  vcRedistX64: boolean;
+  gamingServices: boolean;
+  xboxApp: boolean;
+  uwpClient: boolean;
+  items: BedrockDependencyItem[];
 }
 
 export interface BedrockVersionItem {

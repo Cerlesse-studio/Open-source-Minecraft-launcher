@@ -31,8 +31,10 @@ import {
 } from "./demo";
 import type {
   BedrockContentItem,
+  BedrockFullDependencyReport,
   BedrockLoadersCatalog,
   BedrockModItem,
+  BedrockRuntimeStatus,
   BedrockStatus,
   BedrockVersionItem,
   ContentProjectType,
@@ -47,6 +49,7 @@ import type {
   InstallResult,
   InstalledVersion,
   JavaInstall,
+  JavaModItem,
   LaunchRequest,
   LoaderSelection,
   SearchContentResult,
@@ -282,9 +285,78 @@ export async function cleanDownloadCache(root?: string): Promise<number> {
 export async function launchBedrock(
   versionId?: string,
   root?: string,
+  offlineAccount?: boolean,
 ): Promise<string> {
   if (!isDesktop) return demoLaunchBedrock();
-  return invoke<string>("launch_bedrock", { versionId, root });
+  return invoke<string>("launch_bedrock", { versionId, root, offlineAccount });
+}
+
+export async function getBedrockRuntimeStatus(force = false): Promise<BedrockRuntimeStatus> {
+  if (!isDesktop) {
+    return {
+      xboxAppInstalled: true,
+      gamingServicesInstalled: true,
+      minecraftUwpInstalled: true,
+      wingetAvailable: true,
+      ready: true,
+    };
+  }
+  return invoke<BedrockRuntimeStatus>("get_bedrock_runtime_status", { force });
+}
+
+export async function autoProvisionBedrockRuntime(): Promise<BedrockRuntimeStatus> {
+  if (!isDesktop) {
+    return {
+      xboxAppInstalled: true,
+      gamingServicesInstalled: true,
+      minecraftUwpInstalled: true,
+      wingetAvailable: true,
+      ready: true,
+    };
+  }
+  return invoke<BedrockRuntimeStatus>("auto_provision_bedrock_runtime");
+}
+
+export async function checkBedrockBootDependencies(
+  force?: boolean,
+): Promise<BedrockFullDependencyReport> {
+  if (!isDesktop) {
+    return {
+      allSatisfied: true,
+      developerMode: true,
+      vcRedistX64: true,
+      gamingServices: true,
+      xboxApp: true,
+      uwpClient: true,
+      items: [],
+    };
+  }
+  return invoke<BedrockFullDependencyReport>("check_bedrockboot_dependencies", { force });
+}
+
+export async function autoFixBedrockBootDependencies(): Promise<BedrockFullDependencyReport> {
+  if (!isDesktop) {
+    return {
+      allSatisfied: true,
+      developerMode: true,
+      vcRedistX64: true,
+      gamingServices: true,
+      xboxApp: true,
+      uwpClient: true,
+      items: [],
+    };
+  }
+  return invoke<BedrockFullDependencyReport>("auto_fix_bedrockboot_dependencies");
+}
+
+export async function enableBedrockDeveloperMode(): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("enable_bedrock_developer_mode");
+}
+
+export async function autoInstallBdsFallback(versionId: string, root?: string): Promise<string> {
+  if (!isDesktop) return "Demo BDS 核心安装成功";
+  return invoke<string>("auto_install_bds_fallback", { versionId, root });
 }
 
 export async function getBedrockLoaders(
@@ -343,5 +415,41 @@ export async function installBedrockModFile(
 ): Promise<string> {
   if (!isDesktop) return demoInstallBedrockModFile(versionId, filePath);
   return invoke<string>("install_bedrock_mod_file", { versionId, filePath, root });
+}
+
+export async function getJavaMods(
+  versionId: string,
+  root?: string,
+): Promise<JavaModItem[]> {
+  if (!isDesktop) return [];
+  return invoke<JavaModItem[]>("get_java_mods", { versionId, root });
+}
+
+export async function toggleJavaMod(
+  versionId: string,
+  fileName: string,
+  enabled: boolean,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("toggle_java_mod", { versionId, fileName, enabled, root });
+}
+
+export async function deleteJavaMod(
+  versionId: string,
+  fileName: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("delete_java_mod", { versionId, fileName, root });
+}
+
+export async function installJavaModFile(
+  versionId: string,
+  filePath: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return "模拟安装成功";
+  return invoke<string>("install_java_mod_file", { versionId, filePath, root });
 }
 

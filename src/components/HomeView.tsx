@@ -199,6 +199,12 @@ export function HomeView({
     if (selectedBedrockVersion && selectedBedrockVersion !== "uwp") {
       return selectedBedrockVersion;
     }
+    // Offline accounts boot the BDS core by default: the Store client needs a
+    // Microsoft sign-in, which an offline account cannot provide.
+    if (isOffline) {
+      const bds = bedrockStatus?.versionDetails?.find((detail) => detail.isServer);
+      if (bds) return bds.id;
+    }
     if (bedrockStatus?.installedVersions && bedrockStatus.installedVersions.length > 0) {
       return bedrockStatus.installedVersions[0];
     }
@@ -206,7 +212,7 @@ export function HomeView({
       return "uwp";
     }
     return selectedBedrockVersion || "uwp";
-  }, [selectedVersion, selectedBedrockVersion, bedrockStatus]);
+  }, [selectedVersion, selectedBedrockVersion, bedrockStatus, isOffline]);
 
   const isBedrockInstalled = useMemo(() => {
     if (activeBedrockVersion === "uwp") {
@@ -300,7 +306,8 @@ export function HomeView({
           ? undefined
           : activeBedrockVersion;
       const msg = await launchBedrock(target, gameRoot);
-      onNotify?.("success", "已唤起 Minecraft 基岩版", msg);
+      onNotify?.("success", "基岩版启动 / 自动程序处理中", msg);
+      await refreshBedrockStatus();
     } catch (e) {
       onNotify?.("error", "启动基岩版失败", String(e));
     } finally {
@@ -767,6 +774,7 @@ export function HomeView({
                 </p>
               ) : null}
             </div>
+
 
             {/* Unified Big Play Button */}
             {(() => {

@@ -1065,7 +1065,7 @@ export default function App() {
           root: settingsRef.current.gameRoot,
           playerName: settings.playerName.trim(),
           memoryMb: launchSettings.memoryMb,
-          javaPath: settings.javaPath.trim() || null,
+          javaPath: launchSettings.javaPath?.trim() || settings.javaPath.trim() || null,
           width: effectiveWidth,
           height: effectiveHeight,
           skinType: settings.offlineSkinType,
@@ -1078,6 +1078,7 @@ export default function App() {
           launcherVisibility: launchSettings.launcherVisibility,
           processPriority: launchSettings.processPriority,
           windowSize: launchSettings.windowSize,
+          jvmArgs: launchSettings.jvmArgs || null,
         });
         // Java may have been installed during launch; reflect it in the UI.
         void detectJavaForRoot(settingsRef.current.gameRoot);
@@ -1323,7 +1324,7 @@ export default function App() {
                   onChangeThreads={(downloadThreads) =>
                     updateSettings({ downloadThreads })
                   }
-                  onInstall={(versionId) => void handleInstall(versionId)}
+                  onInstall={(versionId: string) => void handleInstall(versionId)}
                   onLaunch={(versionId) => void handleLaunch(versionId)}
                   onPauseInstall={() => void handlePauseInstall()}
                   onCancelInstall={() => void handleCancelInstall()}
@@ -1364,12 +1365,13 @@ export default function App() {
                   onResetLaunchSettings={resetVersionLaunchSettings}
                   onLaunch={() => void handleLaunch()}
                   onStop={() => void handleStop()}
-                  onInstall={(versionId) => void handleInstall(versionId)}
+                  onInstall={(versionId: string) => void handleInstall(versionId)}
                   onOpenVersionSelect={() => setView("version-select")}
                   onOpenFolder={(path) => void openFolder(path)}
                   onRefreshJava={() => void refreshJava()}
                   onClearLogs={() => setLogs([])}
                   onDeleteVersion={(verId) => handleDeleteVersion(verId, "java")}
+                  onNotify={pushToast}
                 />
               ) : null}
 

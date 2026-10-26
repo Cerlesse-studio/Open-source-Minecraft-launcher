@@ -1,7 +1,21 @@
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How many builds the version picker shows.
+const VERSION_LIST_LIMIT: usize = 50;
+/// A fetched version list is reused for this long before the API is queried again.
+const VERSION_LIST_TTL: Duration = Duration::from_secs(10 * 60);
+/// Upper bound on cached lists so a long session cannot grow without limit.
+const VERSION_CACHE_MAX_ENTRIES: usize = 64;
+
+type VersionListCache = std::collections::HashMap<String, (Instant, Vec<ContentVersionItem>)>;
+
+fn version_list_cache() -> &'static std::sync::Mutex<VersionListCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<VersionListCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,18 +123,26 @@ struct ModrinthRawHit {
     project_type: String,
 }
 
-fn get_bedrock_hits(query: &str, project_type: &str) -> Vec<ContentHit> {
-    let all = crate::bedrock::get_curated_bedrock_content();
+async fn get_bedrock_hits(query: &str, project_type: &str) -> Vec<ContentHit> {
+    let all = crate::bedrock::get_bedrock_content_async(None).await;
     let q = query.trim().to_lowercase();
     all.into_iter()
         .filter(|item| {
-            if item.content_type != project_type {
+            let type_match = if project_type == "resourcepack" {
+                item.content_type == "resourcepack" || item.content_type == "shader"
+            } else if project_type == "shader" {
+                item.content_type == "shader" || item.content_type == "resourcepack"
+            } else {
+                item.content_type == project_type
+            };
+            if !type_match {
                 return false;
             }
             if !q.is_empty() {
                 if !item.title.to_lowercase().contains(&q)
                     && !item.description.to_lowercase().contains(&q)
                     && !item.author.to_lowercase().contains(&q)
+                    && !item.tags.iter().any(|t| t.to_lowercase().contains(&q))
                 {
                     return false;
                 }
@@ -161,17 +183,72 @@ pub async fn search_content(
 ) -> Result<SearchContentResult, String> {
     let limit = limit.clamp(1, 50);
 
-    // If explicitly searching bedrock
+    // If explicitly searching bedrock (by loader or version)
     let is_bedrock = loader.as_deref() == Some("bedrock")
-        || game_version.as_deref() == Some("bedrock");
+        || game_version.as_deref() == Some("bedrock")
+        || game_version.as_deref() == Some("基岩版");
+
     if is_bedrock {
-        let all_hits = get_bedrock_hits(&query, &project_type);
-        let total = all_hits.len() as u32;
-        let start = (offset as usize).min(all_hits.len());
-        let end = (start + limit as usize).min(all_hits.len());
-        let hits = all_hits[start..end].to_vec();
+        let bedrock_local_hits = get_bedrock_hits(&query, &project_type).await;
+
+        // Query Modrinth API in real time for Bedrock-compatible items
+        let modrinth_query = if query.trim().is_empty() {
+            "bedrock".to_string()
+        } else if !query.to_lowercase().contains("bedrock") {
+            format!("{} bedrock", query.trim())
+        } else {
+            query.clone()
+        };
+
+        let mut facets: Vec<Vec<String>> = Vec::new();
+        facets.push(vec![format!("project_type:{project_type}")]);
+        let facets_json = serde_json::to_string(&facets).unwrap_or_else(|_| "[]".to_string());
+
+        let url = format!(
+            "https://api.modrinth.com/v2/search?query={}&facets={}&index={}&offset={}&limit={}",
+            urlencoding(&modrinth_query),
+            urlencoding(&facets_json),
+            "downloads",
+            0,
+            limit
+        );
+
+        let mut combined_hits = bedrock_local_hits;
+        let client = net::client();
+        if let Ok(resp) = client.get(&url).timeout(Duration::from_secs(6)).send().await {
+            if resp.status().is_success() {
+                if let Ok(raw) = resp.json::<ModrinthSearchResponse>().await {
+                    for h in raw.hits {
+                        if !combined_hits.iter().any(|c| c.project_id == h.project_id || c.slug == h.slug) {
+                            combined_hits.push(ContentHit {
+                                project_id: h.project_id,
+                                slug: h.slug,
+                                author: h.author,
+                                title: h.title,
+                                description: h.description,
+                                categories: h.categories,
+                                versions: h.versions,
+                                downloads: h.downloads,
+                                follows: h.follows,
+                                icon_url: h.icon_url,
+                                date_created: h.date_created,
+                                date_modified: h.date_modified,
+                                latest_version: h.latest_version,
+                                project_type: h.project_type,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let total = combined_hits.len() as u32;
+        let start = (offset as usize).min(combined_hits.len());
+        let end = (start + limit as usize).min(combined_hits.len());
+        let paged_hits = combined_hits[start..end].to_vec();
+
         return Ok(SearchContentResult {
-            hits,
+            hits: paged_hits,
             offset,
             limit,
             total_hits: total,
@@ -189,11 +266,11 @@ pub async fn search_content(
     // Project type facet: "project_type:mod" / "project_type:shader" / etc.
     facets.push(vec![format!("project_type:{project_type}")]);
 
-    if let Some(v) = game_version.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
+    if let Some(v) = game_version.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
         facets.push(vec![format!("versions:{v}")]);
     }
 
-    if let Some(l) = loader.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
+    if let Some(l) = loader.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
         facets.push(vec![format!("categories:{}", l.to_lowercase())]);
     }
 
@@ -208,22 +285,11 @@ pub async fn search_content(
         limit
     );
 
-    let client = net::client();
-    let resp = client
-        .get(&url)
-        .timeout(Duration::from_secs(12))
-        .send()
+    // Modrinth can answer slowly on congested links, so the timeout covers the
+    // whole body and stalled transfers are retried instead of failing outright.
+    let raw: ModrinthSearchResponse = net::fetch_json(&url, Duration::from_secs(60), 3)
         .await
         .map_err(|e| format!("搜索 Modrinth 失败: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Modrinth 请求失败: HTTP {}", resp.status()));
-    }
-
-    let raw: ModrinthSearchResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析 Modrinth 响应失败: {e}"))?;
 
     let mut hits: Vec<ContentHit> = raw
         .hits
@@ -248,7 +314,7 @@ pub async fn search_content(
 
     // Include Bedrock hits in first page if no specific loader or all loaders
     if offset == 0 && (loader.is_none() || loader.as_deref() == Some("all")) {
-        let bedrock_hits = get_bedrock_hits(&query, &project_type);
+        let bedrock_hits = get_bedrock_hits(&query, &project_type).await;
         if !bedrock_hits.is_empty() {
             let mut combined = bedrock_hits;
             combined.extend(hits);
@@ -300,8 +366,10 @@ pub async fn get_content_versions(
     game_version: Option<String>,
     loader: Option<String>,
 ) -> Result<Vec<ContentVersionItem>, String> {
-    // Check if it's a bedrock curated project
-    let bedrock_items = crate::bedrock::get_curated_bedrock_content();
+    // Check if it's a bedrock curated project. Use the cache-only view: this
+    // runs before every version list, and waiting on the remote catalog here
+    // added seconds to each open when its mirrors were unreachable.
+    let bedrock_items = crate::bedrock::get_bedrock_content_cached();
     if let Some(item) = bedrock_items.into_iter().find(|i| i.id == project_id_or_slug) {
         return Ok(vec![ContentVersionItem {
             id: format!("{}-v1", item.id),
@@ -320,43 +388,34 @@ pub async fn get_content_versions(
             }],
         }]);
     }
-    let mut url = format!("https://api.modrinth.com/v2/project/{project_id_or_slug}/version");
-    let mut query_params = Vec::new();
-
-    if let Some(v) = game_version.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
-        let gv_json = serde_json::to_string(&vec![v]).unwrap_or_default();
-        query_params.push(format!("game_versions={}", urlencoding(&gv_json)));
+    // Reopening the same project/filter combination is served from memory: the
+    // version list is immutable enough that a 10 minute window is safe.
+    let cache_key = format!(
+        "{}|{}|{}",
+        project_id_or_slug.trim().to_lowercase(),
+        game_version.as_deref().unwrap_or("").trim(),
+        loader.as_deref().unwrap_or("").trim()
+    );
+    if let Ok(cache) = version_list_cache().lock() {
+        if let Some((fetched_at, cached)) = cache.get(&cache_key) {
+            if fetched_at.elapsed() < VERSION_LIST_TTL {
+                return Ok(cached.clone());
+            }
+        }
     }
-    if let Some(l) = loader.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
-        let l_json = serde_json::to_string(&vec![l.to_lowercase()]).unwrap_or_default();
-        query_params.push(format!("loaders={}", urlencoding(&l_json)));
-    }
 
-    if !query_params.is_empty() {
-        url.push('?');
-        url.push_str(&query_params.join("&"));
-    }
-
-    let client = net::client();
-    let resp = client
-        .get(&url)
-        .timeout(Duration::from_secs(12))
-        .send()
+    let url = build_version_list_url(&project_id_or_slug, game_version.as_deref(), loader.as_deref());
+    // A version list can exceed a megabyte, and the old 12s request-wide cap
+    // cut the body mid-transfer on slow links: reqwest then reported the
+    // useless "error decoding response body". Use a body-inclusive timeout and
+    // retry stalled transfers.
+    let raw_versions: Vec<ModrinthRawVersion> = net::fetch_json(&url, Duration::from_secs(60), 3)
         .await
-        .map_err(|e| format!("获取版本列表失败: {e}"))?;
+        .map_err(|e| format!("Modrinth 版本列表: {e}"))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("Modrinth 请求失败: HTTP {}", resp.status()));
-    }
-
-    let raw_versions: Vec<ModrinthRawVersion> = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析版本列表失败: {e}"))?;
-
-    let items = raw_versions
+    let items: Vec<ContentVersionItem> = raw_versions
         .into_iter()
-        .take(50)
+        .take(VERSION_LIST_LIMIT)
         .map(|v| ContentVersionItem {
             id: v.id,
             name: v.name,
@@ -379,7 +438,44 @@ pub async fn get_content_versions(
         })
         .collect();
 
+    if let Ok(mut cache) = version_list_cache().lock() {
+        if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(cache_key, (Instant::now(), items.clone()));
+    }
+
     Ok(items)
+}
+
+/// Compose the Modrinth version list URL for one project and filter set.
+///
+/// `limit` keeps the response to the page the picker actually renders. Without
+/// it a popular project returns its entire history (Fabric API: 1216 versions,
+/// 1.2 MB of JSON, ~35s on a slow link) to show 50 rows.
+fn build_version_list_url(
+    project_id_or_slug: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> String {
+    let mut query_params = Vec::new();
+
+    // Do NOT pass "基岩版" or "bedrock" to Modrinth version filter
+    if let Some(v) = game_version.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
+        let gv_json = serde_json::to_string(&vec![v]).unwrap_or_default();
+        query_params.push(format!("game_versions={}", urlencoding(&gv_json)));
+    }
+    if let Some(l) = loader.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
+        let l_json = serde_json::to_string(&vec![l.to_lowercase()]).unwrap_or_default();
+        query_params.push(format!("loaders={}", urlencoding(&l_json)));
+    }
+
+    query_params.push(format!("limit={VERSION_LIST_LIMIT}"));
+
+    format!(
+        "https://api.modrinth.com/v2/project/{project_id_or_slug}/version?{}",
+        query_params.join("&")
+    )
 }
 
 fn urlencoding(input: &str) -> String {
@@ -476,4 +572,36 @@ pub async fn download_content_file(
         file_path: dest.to_string_lossy().to_string(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_url_requests_only_the_visible_page() {
+        assert_eq!(
+            build_version_list_url("fabric-api", None, None),
+            "https://api.modrinth.com/v2/project/fabric-api/version?limit=50"
+        );
+    }
+
+    #[test]
+    fn version_url_encodes_game_version_and_loader_filters() {
+        let url = build_version_list_url("fabric-api", Some("1.20.1"), Some("Fabric"));
+        assert!(url.contains("game_versions=%5B%221.20.1%22%5D"), "{url}");
+        assert!(url.contains("loaders=%5B%22fabric%22%5D"), "{url}");
+        assert!(url.ends_with("&limit=50"), "{url}");
+    }
+
+    #[test]
+    fn version_url_omits_filters_that_mean_everything() {
+        for value in ["all", "bedrock", "", "   "] {
+            assert_eq!(
+                build_version_list_url("pack", Some(value), Some(value)),
+                "https://api.modrinth.com/v2/project/pack/version?limit=50",
+                "value {value:?} should not become a filter"
+            );
+        }
+    }
 }

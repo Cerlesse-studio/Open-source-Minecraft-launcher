@@ -1,4 +1,5 @@
 use crate::net;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
@@ -20,6 +21,47 @@ pub struct BedrockStatus {
     pub behavior_packs_count: usize,
     pub worlds_count: usize,
     pub installed_versions: Vec<String>,
+    #[serde(default)]
+    pub version_details: Vec<BedrockInstalledVersionDetail>,
+    #[serde(default)]
+    pub runtime_status: Option<BedrockRuntimeStatus>,
+    #[serde(default)]
+    pub full_dependency_report: Option<BedrockFullDependencyReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockInstalledVersionDetail {
+    pub id: String,
+    pub name: String,
+    pub is_server: bool,
+    pub package_file: Option<String>,
+    pub package_type: Option<String>,
+    pub is_gdk: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockDependencyItem {
+    pub key: String,
+    pub name: String,
+    pub required: bool,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub min_version: Option<String>,
+    pub fix_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockFullDependencyReport {
+    pub all_satisfied: bool,
+    pub developer_mode: bool,
+    pub vc_redist_x64: bool,
+    pub gaming_services: bool,
+    pub xbox_app: bool,
+    pub uwp_client: bool,
+    pub items: Vec<BedrockDependencyItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,14 +172,41 @@ pub struct BedrockInstanceLoaderConfig {
 pub fn get_uwp_mojang_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
+        // 1. BedrockBoot-DM / Bedrock 1.21.120+ GDK shared data directory
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let gdk = PathBuf::from(appdata)
+                .join("Minecraft Bedrock")
+                .join("users")
+                .join("shared")
+                .join("games")
+                .join("com.mojang");
+            if gdk.is_dir() {
+                return Some(gdk);
+            }
+        }
+
+        // 2. UWP Release path
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-            let uwp = PathBuf::from(local_appdata)
+            let uwp = PathBuf::from(&local_appdata)
                 .join("Packages")
                 .join("Microsoft.MinecraftUWP_8wekyb3d8bbwe")
                 .join("LocalState")
                 .join("games")
                 .join("com.mojang");
-            return Some(uwp);
+            if uwp.is_dir() {
+                return Some(uwp);
+            }
+
+            // 3. UWP Preview / Beta path
+            let preview = PathBuf::from(local_appdata)
+                .join("Packages")
+                .join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe")
+                .join("LocalState")
+                .join("games")
+                .join("com.mojang");
+            if preview.is_dir() {
+                return Some(preview);
+            }
         }
     }
     None
@@ -166,7 +235,14 @@ pub fn is_uwp_installed() -> bool {
                     return true;
                 }
             }
-            // 2. Fast check registry for protocol registration (minecraft: or minecraft-preview:)
+            // 2. GDK builds (1.21.120+) keep shared data under %APPDATA%\Minecraft Bedrock
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                if PathBuf::from(appdata).join("Minecraft Bedrock").is_dir() {
+                    return true;
+                }
+            }
+
+            // 3. Fast check registry for protocol registration (minecraft: or minecraft-preview:)
             use std::os::windows::process::CommandExt;
             for proto in ["HKCR\\minecraft", "HKCR\\minecraft-preview"] {
                 let mut cmd = Command::new("reg");
@@ -416,6 +492,7 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
     // Check installed versions in <game_root>/bedrock/versions
     let bedrock_versions_dir = game_root.join("bedrock").join("versions");
     let mut installed_versions = Vec::new();
+    let mut version_details = Vec::new();
     let mut standalone_installed = false;
     if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
         for entry in entries.flatten() {
@@ -432,12 +509,46 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
                         && insp.version_id != name
                         && !installed_versions.contains(&insp.version_id)
                     {
-                        installed_versions.push(insp.version_id);
+                        installed_versions.push(insp.version_id.clone());
                     }
+
+                    let pkg_ext = insp.package_file.as_ref().and_then(|p| {
+                        p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase())
+                    });
+                    let is_gdk = pkg_ext.as_deref() == Some("msixvc");
+                    let package_type = if is_gdk {
+                        Some("msixvc".to_string())
+                    } else if let Some(ref ext) = pkg_ext {
+                        Some(ext.clone())
+                    } else if insp.is_server {
+                        Some("bds".to_string())
+                    } else if insp.main_executable.is_some() {
+                        Some("exe".to_string())
+                    } else {
+                        None
+                    };
+
+                    version_details.push(BedrockInstalledVersionDetail {
+                        id: if !insp.version_id.is_empty() { insp.version_id } else { name.clone() },
+                        name: if insp.display_name.is_empty() { name } else { insp.display_name },
+                        is_server: insp.is_server,
+                        package_file: insp.package_file.map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string()),
+                        package_type,
+                        is_gdk,
+                    });
                 }
             }
         }
     }
+
+    let runtime_status = RUNTIME_CACHE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, s)| s.clone()));
+    let full_dependency_report = DEPENDENCY_CACHE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, s)| s.clone()));
 
     BedrockStatus {
         uwp_installed,
@@ -448,6 +559,9 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
         behavior_packs_count,
         worlds_count,
         installed_versions,
+        version_details,
+        runtime_status,
+        full_dependency_report,
     }
 }
 
@@ -688,6 +802,16 @@ pub fn get_curated_fallback_versions() -> Vec<BedrockVersionItem> {
             "ms-windows-store://pdp/?ProductId=9NBLGGH537BL"
         };
 
+        let b_type = if direct_url.contains(".msixvc") {
+            "GDK"
+        } else if direct_url.contains(".appx") || direct_url.contains(".msix") {
+            "UWP"
+        } else if direct_url.contains("bedrock-server") {
+            "BDS"
+        } else {
+            "UWP"
+        };
+
         list.push(BedrockVersionItem {
             id: ver.to_string(),
             name: name.to_string(),
@@ -699,7 +823,7 @@ pub fn get_curated_fallback_versions() -> Vec<BedrockVersionItem> {
             size: 1_870_000_000,
             sha256: None,
             api_source: Some("Xbox Live CDN 镜像".to_string()),
-            build_type: Some("UWP".to_string()),
+            build_type: Some(b_type.to_string()),
             md5: md5_opt.map(|s| s.to_string()),
         });
     }
@@ -745,8 +869,11 @@ fn format_iso8601_utc(secs: u64) -> String {
 }
 
 pub async fn resolve_fe3_soap_update_url(update_id: &str) -> Option<String> {
+    // The SOAP round trip to Windows Update routinely takes several seconds and
+    // the endpoint is slow from outside the EU/US; a short timeout here silently
+    // dropped every UWP package URL.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .ok()?;
 
@@ -776,24 +903,51 @@ pub async fn resolve_fe3_soap_update_url(update_id: &str) -> Option<String> {
     }
 
     let text = resp.text().await.ok()?;
-    let mut urls = Vec::new();
-    let mut start_idx = 0;
-    while let Some(open_pos) = text[start_idx..].find(":Url>") {
-        let abs_open = start_idx + open_pos + 5;
-        if let Some(close_pos) = text[abs_open..].find("</") {
-            let u = &text[abs_open..abs_open + close_pos];
-            let decoded = u.replace("&amp;", "&");
-            urls.push(decoded);
-            start_idx = abs_open + close_pos;
-        } else {
-            break;
-        }
-    }
+    let urls = extract_fe3_urls(&text);
 
     let complex = urls.iter().find(|u| {
-        u.contains("?P1=") || u.contains("tlu.dl.") || u.contains("&P2=") || u.contains("%3d") || u.len() > 150
+        u.contains("?P1=")
+            || u.contains("tlu.dl.")
+            || u.contains("&P2=")
+            || u.contains("%3d")
+            || u.len() > 150
     });
     complex.cloned().or_else(|| urls.last().cloned())
+}
+
+/// Collect the `<Url>` values from a fe3 `GetExtendedUpdateInfo2` response.
+///
+/// The element is normally unprefixed (`<FileLocation><Url>…</Url>`), but some
+/// responses namespace it (`<a:Url>`), so both spellings have to be accepted —
+/// matching only `:Url>` silently dropped every URL and made UWP (UpdateID
+/// based) downloads fail while GDK entries, which ship a direct `.msixvc` URL,
+/// kept working.
+fn extract_fe3_urls(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut urls = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(rel) = text[cursor..].find("Url>") {
+        let tag_start = cursor + rel;
+        let open_end = tag_start + 4;
+        let prefixed = tag_start > 0 && matches!(bytes[tag_start - 1], b'<' | b':');
+        if !prefixed {
+            // `</Url>` closing tags also end in `Url>`; skip them.
+            cursor = open_end;
+            continue;
+        }
+        let Some(close_rel) = text[open_end..].find("</") else {
+            break;
+        };
+        let close_pos = open_end + close_rel;
+        let value = text[open_end..close_pos].trim();
+        if !value.is_empty() {
+            urls.push(value.replace("&amp;", "&"));
+        }
+        cursor = close_pos;
+    }
+
+    urls
 }
 
 pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<BedrockVersionItem> {
@@ -937,6 +1091,9 @@ pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<Bedro
     items
 }
 
+static BEDROCK_VERSIONS_MEMORY_CACHE: std::sync::Mutex<Option<(Instant, String, Vec<BedrockVersionItem>)>> =
+    std::sync::Mutex::new(None);
+
 pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<BedrockVersionItem> {
     let source = api_source.unwrap_or("mcappx");
 
@@ -944,8 +1101,16 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
         return get_curated_fallback_versions();
     }
 
+    if let Ok(guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
+        if let Some((ts, cached_src, items)) = guard.as_ref() {
+            if cached_src == source && ts.elapsed() < std::time::Duration::from_secs(300) && !items.is_empty() {
+                return items.clone();
+            }
+        }
+    }
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_millis(2500))
         .build()
         .unwrap_or_default();
 
@@ -968,9 +1133,9 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
 
         let candidate_sources = [
             (primary_url, label),
+            ("https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json", "BedrockBoot 源 (Gitee 镜像)"),
             ("https://api.chlna6666.com/api/v1/bedrock/mcappx", "BMCBL 源 ①"),
             ("https://data.mcappx.com/v2/bedrock.json", "McAppx 源 (BedrockBoot 官方)"),
-            ("https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json", "BedrockBoot 源 (Gitee 镜像)"),
         ];
 
         for (url, src_label) in candidate_sources {
@@ -985,6 +1150,9 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
                         let items = parse_bedrockboot_db_json(&text, src_label);
                         if !items.is_empty() {
                             save_cached_versions(&items);
+                            if let Ok(mut guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
+                                *guard = Some((Instant::now(), source.to_string(), items.clone()));
+                            }
                             return items;
                         }
                     }
@@ -1010,6 +1178,9 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
                 let items = data.into_items("EndstoneMC API");
                 if !items.is_empty() {
                     save_cached_versions(&items);
+                    if let Ok(mut guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
+                        *guard = Some((Instant::now(), source.to_string(), items.clone()));
+                    }
                     return items;
                 }
             }
@@ -1018,11 +1189,18 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
 
     // If all remote network endpoints failed, fallback to local cache
     if let Some(cached) = load_cached_versions() {
+        if let Ok(mut guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
+            *guard = Some((Instant::now(), source.to_string(), cached.clone()));
+        }
         return cached;
     }
 
     // Final fallback to comprehensive curated catalog
-    get_curated_fallback_versions()
+    let fallback = get_curated_fallback_versions();
+    if let Ok(mut guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
+        *guard = Some((Instant::now(), source.to_string(), fallback.clone()));
+    }
+    fallback
 }
 
 pub fn get_curated_bedrock_content() -> Vec<BedrockContentItem> {
@@ -1133,7 +1311,157 @@ pub fn get_curated_bedrock_content() -> Vec<BedrockContentItem> {
             downloads: 278_400,
             version: "v1.5.0".to_string(),
         },
+        // 材质包与资源包 (Resource Packs)
+        BedrockContentItem {
+            id: "faithful-32x-bedrock".to_string(),
+            title: "Faithful 32x Bedrock (原版高清材质包)".to_string(),
+            author: "Faithful Team".to_string(),
+            description: "经典原汁原味 32x 双倍高清材质包，全面提升方块、工具、界面与生物细节清晰度。".to_string(),
+            content_type: "resourcepack".to_string(),
+            download_url: "https://raw.githubusercontent.com/Faithful-Bedrock/Pack/main/Faithful32x.mcpack".to_string(),
+            file_name: "Faithful32x.mcpack".to_string(),
+            icon_url: Some("https://cdn.modrinth.com/data/lhGA9TYQ/icon.png".to_string()),
+            tags: vec!["材质包".to_string(), "高清".to_string(), "原版增强".to_string(), "32x".to_string()],
+            downloads: 1_250_000,
+            version: "v1.21.3".to_string(),
+        },
+        BedrockContentItem {
+            id: "bare-bones-bedrock".to_string(),
+            title: "Bare Bones Bedrock (宣传片极简卡通材质)".to_string(),
+            author: "RobotPantaloons".to_string(),
+            description: "将游戏视觉变为 Mojang 官方宣传片色彩风格，极度清爽平整、饱和度舒适且帧率极高。".to_string(),
+            content_type: "resourcepack".to_string(),
+            download_url: "https://raw.githubusercontent.com/RobotPantaloons/BareBones/main/BareBonesBedrock.mcpack".to_string(),
+            file_name: "BareBonesBedrock.mcpack".to_string(),
+            icon_url: Some("https://cdn.modrinth.com/data/OSyv2ndA/icon.png".to_string()),
+            tags: vec!["材质包".to_string(), "卡通".to_string(), "极简".to_string(), "高帧率".to_string()],
+            downloads: 980_000,
+            version: "v1.21.1".to_string(),
+        },
+        BedrockContentItem {
+            id: "java-aspects-bedrock".to_string(),
+            title: "Java Aspects (Java 界面与动画还原资源包)".to_string(),
+            author: "AgentMindStorm".to_string(),
+            description: "完美将 Java 版原生 UI 布局、战斗冷却光标、挥手击打动画与音效无缝移植到基岩版中。".to_string(),
+            content_type: "resourcepack".to_string(),
+            download_url: "https://raw.githubusercontent.com/AgentMindStorm/JavaAspects/main/JavaAspects.mcpack".to_string(),
+            file_name: "JavaAspects.mcpack".to_string(),
+            icon_url: Some("https://cdn.modrinth.com/data/nkW4305l/icon.png".to_string()),
+            tags: vec!["材质包".to_string(), "Java还原".to_string(), "UI界面".to_string(), "实用".to_string()],
+            downloads: 540_000,
+            version: "v2.5.0".to_string(),
+        },
+        // 数据包与玩法世界 (Datapacks / Worlds)
+        BedrockContentItem {
+            id: "bedrock-oneblock".to_string(),
+            title: "OneBlock Bedrock (单方块空岛极限生存)".to_string(),
+            author: "IJAMinecraft".to_string(),
+            description: "从虚空中的唯一一个泥土方块开始挖掘，随阶段解锁十种不同生态与地牢挑战。".to_string(),
+            content_type: "datapack".to_string(),
+            download_url: "https://raw.githubusercontent.com/IJAMinecraft/OneBlock/main/OneBlockBedrock.mcworld".to_string(),
+            file_name: "OneBlockBedrock.mcworld".to_string(),
+            icon_url: Some("https://cdn.modrinth.com/data/jbgL2L1k/icon.png".to_string()),
+            tags: vec!["数据包".to_string(), "单方块".to_string(), "空岛".to_string(), "极限生存".to_string()],
+            downloads: 720_000,
+            version: "v3.1.0".to_string(),
+        },
     ]
+}
+
+static BEDROCK_CONTENT_CACHE: std::sync::Mutex<Option<(Instant, Vec<BedrockContentItem>)>> =
+    std::sync::Mutex::new(None);
+
+/// The curated packs plus any remote catalog entries already cached.
+///
+/// Never performs network I/O: callers on a latency-critical path (opening a
+/// mod's version list) must not wait for the remote catalog, which can take
+/// seconds when its mirrors are unreachable.
+pub fn get_bedrock_content_cached() -> Vec<BedrockContentItem> {
+    let mut items = get_curated_bedrock_content();
+    if let Ok(guard) = BEDROCK_CONTENT_CACHE.lock() {
+        if let Some((_, ref cached)) = *guard {
+            for entry in cached {
+                if !items.iter().any(|i| i.id == entry.id) {
+                    items.push(entry.clone());
+                }
+            }
+        }
+    }
+    items
+}
+
+pub async fn get_bedrock_content_async(category: Option<&str>) -> Vec<BedrockContentItem> {
+    if let Ok(guard) = BEDROCK_CONTENT_CACHE.lock() {
+        if let Some((timestamp, ref cached)) = *guard {
+            if timestamp.elapsed() < std::time::Duration::from_secs(300) {
+                return filter_bedrock_content(cached.clone(), category);
+            }
+        }
+    }
+
+    let client = net::client();
+    let remote_endpoints = [
+        "https://fastly.jsdelivr.net/gh/bedrock-oss/bedrock-resource-db@main/content.json",
+        "https://cdn.jsdelivr.net/gh/bedrock-oss/bedrock-resource-db@main/content.json",
+        "https://raw.gitmirror.com/bedrock-oss/bedrock-resource-db/main/content.json",
+        "https://raw.githubusercontent.com/bedrock-oss/bedrock-resource-db/main/content.json",
+    ];
+
+    // Race the mirrors instead of trying them one after another: a blocked or
+    // dead mirror used to cost its full timeout before the next was tried.
+    let fetches = futures_util::stream::iter(remote_endpoints.iter().map(|ep| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(*ep)
+                .timeout(std::time::Duration::from_secs(4))
+                .send()
+                .await
+                .ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp.json::<Vec<BedrockContentItem>>().await.ok()
+        }
+    }))
+    .buffer_unordered(remote_endpoints.len())
+    .filter_map(|items| async move { items.filter(|i| !i.is_empty()) });
+
+    if let Some(mut merged) = fetches.boxed().next().await {
+        for c in get_curated_bedrock_content() {
+            if !merged.iter().any(|m| m.id == c.id) {
+                merged.push(c);
+            }
+        }
+        if let Ok(mut guard) = BEDROCK_CONTENT_CACHE.lock() {
+            *guard = Some((Instant::now(), merged.clone()));
+        }
+        return filter_bedrock_content(merged, category);
+    }
+
+    let fallback = get_curated_bedrock_content();
+    if let Ok(mut guard) = BEDROCK_CONTENT_CACHE.lock() {
+        *guard = Some((Instant::now(), fallback.clone()));
+    }
+    filter_bedrock_content(fallback, category)
+}
+
+fn filter_bedrock_content(items: Vec<BedrockContentItem>, category: Option<&str>) -> Vec<BedrockContentItem> {
+    match category {
+        Some(c) if !c.is_empty() && c != "all" => items
+            .into_iter()
+            .filter(|i| {
+                if c == "resourcepack" {
+                    i.content_type == "resourcepack" || i.content_type == "shader"
+                } else if c == "shader" {
+                    i.content_type == "shader" || i.content_type == "resourcepack"
+                } else {
+                    i.content_type == c
+                }
+            })
+            .collect(),
+        _ => items,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,9 +1474,16 @@ fn spawn_bedrock_exe(exe: &Path, working_dir: &Path, is_console: bool) -> Result
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x00000010;
 
+        clean_exe_run_as_admin(exe);
+        ensure_game_input_installed(working_dir, None);
+
         // Auto-enable UWP loopback exemption so clients can join localhost BDS without Windows isolation blocks
         let _ = Command::new("CheckNetIsolation")
             .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe"])
+            .spawn();
+
+        let _ = Command::new("CheckNetIsolation")
+            .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe"])
             .spawn();
 
         let mut cmd = Command::new(exe);
@@ -1171,31 +1506,1775 @@ fn spawn_bedrock_exe(exe: &Path, working_dir: &Path, is_console: bool) -> Result
     }
 }
 
+// ---------------------------------------------------------------------------
+// BedrockBoot-DM Architectural Compatibility & Dependency Suite
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+pub fn check_developer_mode() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let paths = [
+        "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
+        "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Appx",
+    ];
+
+    for path in paths {
+        let mut cmd = Command::new("reg");
+        cmd.args(["query", path, "/v", "AllowDevelopmentWithoutDevLicense"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                if text.contains("0x1") || text.contains(" 1") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn check_developer_mode() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub fn enable_developer_mode() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "add",
+        "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
+        "/t",
+        "REG_DWORD",
+        "/f",
+        "/v",
+        "AllowDevelopmentWithoutDevLicense",
+        "/d",
+        "1",
+    ]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(out) = cmd.output() {
+        if out.status.success() {
+            invalidate_dependency_cache();
+            return Ok(());
+        }
+    }
+
+    let script = "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -Command \"Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord\"'";
+    let mut ps_cmd = Command::new("powershell");
+    ps_cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    ps_cmd.creation_flags(CREATE_NO_WINDOW);
+    let _ = ps_cmd.spawn();
+
+    let _ = Command::new("explorer")
+        .arg("ms-settings:developers")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+
+    invalidate_dependency_cache();
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enable_developer_mode() -> Result<(), String> {
+    Err("开发者模式仅在 Windows 平台受支持".to_string())
+}
+
+#[cfg(target_os = "windows")]
+pub fn check_vc_redist_x64() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let subkeys = [
+        "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    ];
+
+    for base in subkeys {
+        let mut cmd = Command::new("reg");
+        cmd.args(["query", base, "/s", "/f", "Visual C++", "/k"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let patterns = [
+                "2015-2022 Redistributable (x64)",
+                "2015-2022 (x64)",
+                "v14 Redistributable (x64)",
+                "2022 X64",
+                "2019 X64",
+            ];
+            for p in patterns {
+                if text.contains(p) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn check_vc_redist_x64() -> bool {
+    true
+}
+
+#[cfg(target_os = "windows")]
+pub fn clean_exe_run_as_admin(exe: &Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    if let Some(exe_str) = exe.to_str() {
+        let script = format!(
+            "$p = '{}'; foreach ($k in @('HKCU:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers', 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers')) {{ try {{ $v = (Get-ItemProperty -Path $k -Name $p -ErrorAction Stop).$p; if ($v -and $v -like '*RUNASADMIN*') {{ $nv = $v.Replace('RUNASADMIN','').Trim(); if ([string]::IsNullOrWhiteSpace($nv)) {{ Remove-ItemProperty -Path $k -Name $p -ErrorAction SilentlyContinue }} else {{ Set-ItemProperty -Path $k -Name $p -Value $nv -ErrorAction SilentlyContinue }} }} }} catch {{}} }}",
+            exe_str.replace('\'', "''")
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.output();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn clean_exe_run_as_admin(_exe: &Path) {}
+
+#[cfg(target_os = "windows")]
+pub fn ensure_game_input_installed(work_dir: &Path, app: Option<&tauri::AppHandle>) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let msi_path = work_dir.join("Installers").join("GameInputRedist.msi");
+    if msi_path.is_file() {
+        emit_bedrock_log(app, "正在自动执行 GameInputRedist 运行时安装…");
+        let mut cmd = Command::new("msiexec.exe");
+        cmd.args(["/i", &msi_path.to_string_lossy(), "/qb"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.status();
+        emit_bedrock_log(app, "GameInputRedist 运行时已就绪。");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_game_input_installed(_work_dir: &Path, _app: Option<&tauri::AppHandle>) {}
+
+fn compare_windows_versions(v1: &str, v2: &str) -> std::cmp::Ordering {
+    let parse_nums = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .filter_map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().ok())
+            .collect()
+    };
+    let n1 = parse_nums(v1);
+    let n2 = parse_nums(v2);
+    n1.cmp(&n2)
+}
+
+static DEPENDENCY_CACHE: std::sync::Mutex<Option<(Instant, BedrockFullDependencyReport)>> =
+    std::sync::Mutex::new(None);
+
+pub fn invalidate_dependency_cache() {
+    if let Ok(mut guard) = DEPENDENCY_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+pub fn check_bedrockboot_dependencies(force: bool) -> BedrockFullDependencyReport {
+    if !force {
+        if let Ok(guard) = DEPENDENCY_CACHE.lock() {
+            if let Some((timestamp, cached)) = guard.as_ref() {
+                if timestamp.elapsed() < std::time::Duration::from_secs(20) {
+                    return cached.clone();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::collections::HashMap;
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let dev_mode = check_developer_mode();
+        let vc_redist = check_vc_redist_x64();
+
+        let mut installed_pkgs: HashMap<String, String> = HashMap::new();
+        let script = "Get-AppxPackage | ForEach-Object { '{0}={1}' -f $_.Name, $_.Version }";
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Some((k, v)) = trimmed.split_once('=') {
+                    let k_lower = k.trim().to_ascii_lowercase();
+                    let v_trim = v.trim().to_string();
+                    if let Some(existing) = installed_pkgs.get_mut(&k_lower) {
+                        if compare_windows_versions(&v_trim, existing).is_gt() {
+                            *existing = v_trim;
+                        }
+                    } else {
+                        installed_pkgs.insert(k_lower, v_trim);
+                    }
+                }
+            }
+        }
+
+        let mut items = Vec::new();
+
+        // 1. Developer Mode
+        items.push(BedrockDependencyItem {
+            key: "developer_mode".to_string(),
+            name: "Windows 开发者模式 (Developer Mode)".to_string(),
+            required: false,
+            installed: dev_mode,
+            version: None,
+            min_version: None,
+            fix_hint: "开启后可旁加载注册 Bedrock AppX/MSIX 核心与开发清单".to_string(),
+        });
+
+        // 2. VC++ 2015-2022 x64
+        items.push(BedrockDependencyItem {
+            key: "vc_redist_x64".to_string(),
+            name: "Microsoft Visual C++ 2015-2022 运行库 (x64)".to_string(),
+            required: true,
+            installed: vc_redist,
+            version: None,
+            min_version: Some("14.0.0.0".to_string()),
+            fix_hint: "安装 Visual C++ 2015-2022 x64 运行库".to_string(),
+        });
+
+        // 3. Gaming Services
+        let (gs_installed, gs_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.gamingservices") {
+                let ok = compare_windows_versions(ver, "33.108.12001.0").is_ge();
+                (ok, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "gaming_services".to_string(),
+            name: "Xbox 游戏服务 (Microsoft.GamingServices)".to_string(),
+            required: true,
+            installed: gs_installed,
+            version: gs_ver,
+            min_version: Some("33.108.12001.0".to_string()),
+            fix_hint: "Xbox GDK 核心运行必备，启动器可一键自动启动并修复".to_string(),
+        });
+
+        // 4. Xbox App
+        let (xbox_installed, xbox_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.gamingapp") {
+                (true, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "xbox_app".to_string(),
+            name: "Xbox 应用 (Microsoft.GamingApp)".to_string(),
+            required: true,
+            installed: xbox_installed,
+            version: xbox_ver,
+            min_version: None,
+            fix_hint: "用于承载 Xbox 账号验证与 GDK 加密包运行".to_string(),
+        });
+
+        // 5. Minecraft UWP Client
+        let (uwp_installed, uwp_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.minecraftuwp") {
+                (true, Some(ver.clone()))
+            } else if let Some(ver) = installed_pkgs.get("microsoft.minecraftwindowsbeta") {
+                (true, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "minecraft_uwp".to_string(),
+            name: "Minecraft for Windows 客户端".to_string(),
+            required: false,
+            installed: uwp_installed,
+            version: uwp_ver,
+            min_version: None,
+            fix_hint: "微软商店正版客户端，亦可选择 BDS 免密核心免商店直接运行".to_string(),
+        });
+
+        // 6. VCLibs 140
+        let (vclibs_ok, vclibs_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.vclibs.140.00") {
+                let ok = compare_windows_versions(ver, "14.0.33519.0").is_ge();
+                (ok, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "vclibs_140".to_string(),
+            name: "Microsoft.VCLibs.140.00".to_string(),
+            required: true,
+            installed: vclibs_ok,
+            version: vclibs_ver,
+            min_version: Some("14.0.33519.0".to_string()),
+            fix_hint: "UWP 核心底层 VC 运行库".to_string(),
+        });
+
+        // 7. VCLibs UWPDesktop
+        let (vclibs_desk_ok, vclibs_desk_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.vclibs.140.00.uwpdesktop") {
+                (true, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "vclibs_uwpdesktop".to_string(),
+            name: "Microsoft.VCLibs.140.00.UWPDesktop".to_string(),
+            required: true,
+            installed: vclibs_desk_ok,
+            version: vclibs_desk_ver,
+            min_version: None,
+            fix_hint: "UWP 桌面支持扩展库".to_string(),
+        });
+
+        // 8. .NET Native Runtime 2.2
+        let (net_rt_ok, net_rt_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.net.native.runtime.2.2") {
+                let ok = compare_windows_versions(ver, "2.2.28604.0").is_ge();
+                (ok, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "net_native_runtime".to_string(),
+            name: "Microsoft.NET.Native.Runtime.2.2".to_string(),
+            required: true,
+            installed: net_rt_ok,
+            version: net_rt_ver,
+            min_version: Some("2.2.28604.0".to_string()),
+            fix_hint: "基岩版 UWP .NET Native 运行时".to_string(),
+        });
+
+        // 9. .NET Native Framework 2.2
+        let (net_fw_ok, net_fw_ver) = {
+            if let Some(ver) = installed_pkgs.get("microsoft.net.native.framework.2.2") {
+                let ok = compare_windows_versions(ver, "2.2.29512.0").is_ge();
+                (ok, Some(ver.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "net_native_framework".to_string(),
+            name: "Microsoft.NET.Native.Framework.2.2".to_string(),
+            required: true,
+            installed: net_fw_ok,
+            version: net_fw_ver,
+            min_version: Some("2.2.29512.0".to_string()),
+            fix_hint: "基岩版 UWP .NET Native 框架".to_string(),
+        });
+
+        // 10. WinAppRuntime (Windows App SDK)
+        let (win_app_rt_ok, win_app_rt_ver) = {
+            let found = installed_pkgs.iter().find(|(k, _)| {
+                k.starts_with("microsoft.windowsappruntime") || k.starts_with("microsoftcorporationii.winappruntime")
+            });
+            if let Some((_, v)) = found {
+                (true, Some(v.clone()))
+            } else {
+                (false, None)
+            }
+        };
+        items.push(BedrockDependencyItem {
+            key: "win_app_runtime".to_string(),
+            name: "Windows App SDK 运行库 (WinAppRuntime)".to_string(),
+            required: false,
+            installed: win_app_rt_ok,
+            version: win_app_rt_ver,
+            min_version: None,
+            fix_hint: "现代 Windows App SDK 运行环境组件".to_string(),
+        });
+
+        let all_satisfied = vc_redist && gs_installed && xbox_installed && vclibs_ok && net_rt_ok;
+
+        let report = BedrockFullDependencyReport {
+            all_satisfied,
+            developer_mode: dev_mode,
+            vc_redist_x64: vc_redist,
+            gaming_services: gs_installed,
+            xbox_app: xbox_installed,
+            uwp_client: uwp_installed,
+            items,
+        };
+
+        if let Ok(mut guard) = DEPENDENCY_CACHE.lock() {
+            *guard = Some((Instant::now(), report.clone()));
+        }
+        report
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        BedrockFullDependencyReport {
+            all_satisfied: true,
+            developer_mode: true,
+            vc_redist_x64: true,
+            gaming_services: true,
+            xbox_app: true,
+            uwp_client: false,
+            items: Vec::new(),
+        }
+    }
+}
+
+pub fn auto_fix_bedrockboot_dependencies(app: Option<&tauri::AppHandle>) -> BedrockFullDependencyReport {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        ensure_gaming_services_running(app);
+
+        if !check_developer_mode() {
+            emit_bedrock_log(app, "【自动修复】正在配置 Windows 开发者模式…");
+            let _ = enable_developer_mode();
+        }
+
+        if !check_vc_redist_x64() {
+            emit_bedrock_log(app, "【自动修复】正在安装 Visual C++ 2015-2022 (x64) 运行库…");
+            let _ = Command::new("winget")
+                .args(["install", "Microsoft.VCRedist.2015+.x64", "--silent", "--accept-package-agreements", "--accept-source-agreements"])
+                .creation_flags(0x0800_0000)
+                .output();
+        }
+
+        let runtime = provision_bedrock_runtime(app);
+        if !runtime.ready {
+            emit_bedrock_log(app, "【自动修复】正在通过微软官方商店补齐缺失组件…");
+        }
+
+        invalidate_runtime_cache();
+        invalidate_dependency_cache();
+        check_bedrockboot_dependencies(true)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        check_bedrockboot_dependencies(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Xbox GDK Runtime Automation (.msixvc encrypted packages)
+//
+// Xbox GDK packages are encrypted for the Microsoft Store delivery pipeline and
+// cannot be registered with Add-AppxPackage. Instead of asking the user to
+// install the Xbox app / Gaming Services by hand, the launcher provisions the
+// whole runtime itself (winget / Microsoft Store) and then boots the installed
+// UWP client.
+// ---------------------------------------------------------------------------
+
+pub const XBOX_APP_STORE_ID: &str = "9MV0B5HZVK9Z";
+pub const GAMING_SERVICES_STORE_ID: &str = "9MWPM2CQNLHN";
+pub const MINECRAFT_STORE_ID: &str = "9NBLGGH2JHXJ";
+
+const XBOX_APP_PACKAGE: &str = "Microsoft.GamingApp";
+const GAMING_SERVICES_PACKAGE: &str = "Microsoft.GamingServices";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockRuntimeStatus {
+    pub xbox_app_installed: bool,
+    pub gaming_services_installed: bool,
+    pub minecraft_uwp_installed: bool,
+    pub winget_available: bool,
+    pub ready: bool,
+}
+
+static RUNTIME_CACHE: std::sync::Mutex<Option<(Instant, BedrockRuntimeStatus)>> =
+    std::sync::Mutex::new(None);
+static GDK_AUTOFIX_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn invalidate_runtime_cache() {
+    if let Ok(mut guard) = RUNTIME_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn appx_package_installed(package_name: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // Fast path: the package family folder appears once the app has been staged
+    let lower = package_name.to_ascii_lowercase();
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        if let Ok(entries) = std::fs::read_dir(PathBuf::from(local_appdata).join("Packages")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if name.starts_with(&lower) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Authoritative check through the Appx package manager
+    let script = format!(
+        "if (Get-AppxPackage -Name '{}' -ErrorAction SilentlyContinue) {{ 'installed' }} else {{ 'missing' }}",
+        package_name
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    match cmd.output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .to_ascii_lowercase()
+            .contains("installed"),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn appx_package_installed(_package_name: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub fn find_winget_exe() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // 1. Try directly in PATH
+    let mut cmd = Command::new("winget");
+    cmd.arg("--version");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(out) = cmd.output() {
+        if out.status.success() {
+            return Some(PathBuf::from("winget"));
+        }
+    }
+
+    // 2. Try LOCALAPPDATA\Microsoft\WindowsApps\winget.exe
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local_appdata)
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join("winget.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    // 3. Try Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*\winget.exe
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        let windows_apps = PathBuf::from(program_files).join("WindowsApps");
+        if let Ok(entries) = std::fs::read_dir(windows_apps) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("Microsoft.DesktopAppInstaller") {
+                    let candidate = entry.path().join("winget.exe");
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn winget_available() -> bool {
+    find_winget_exe().is_some()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn winget_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub fn ensure_gaming_services_running(app: Option<&tauri::AppHandle>) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // 1. Start GamingServices and GamingServicesNet Windows services if stopped
+    let script = "Get-Service GamingServices, GamingServicesNet -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Running' } | Start-Service -ErrorAction SilentlyContinue";
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let _ = cmd.output();
+
+    // 2. Configure network loopback exemption for both standard and preview Bedrock UWP
+    let _ = Command::new("CheckNetIsolation")
+        .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+
+    let _ = Command::new("CheckNetIsolation")
+        .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+
+    emit_bedrock_log(app, "已自动检查并激活游戏服务 (Gaming Services) 与网络环回豁免。");
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_gaming_services_running(_app: Option<&tauri::AppHandle>) {}
+
+pub fn get_bedrock_runtime_status(force: bool) -> BedrockRuntimeStatus {
+    if !force {
+        if let Ok(guard) = RUNTIME_CACHE.lock() {
+            if let Some((timestamp, cached)) = guard.as_ref() {
+                if timestamp.elapsed() < std::time::Duration::from_secs(20) {
+                    return cached.clone();
+                }
+            }
+        }
+    }
+
+    let xbox_app_installed = appx_package_installed(XBOX_APP_PACKAGE);
+    let gaming_services_installed = appx_package_installed(GAMING_SERVICES_PACKAGE);
+    let minecraft_uwp_installed = is_uwp_installed();
+    let status = BedrockRuntimeStatus {
+        xbox_app_installed,
+        gaming_services_installed,
+        minecraft_uwp_installed,
+        winget_available: winget_available(),
+        ready: xbox_app_installed && gaming_services_installed && minecraft_uwp_installed,
+    };
+
+    if let Ok(mut guard) = RUNTIME_CACHE.lock() {
+        *guard = Some((Instant::now(), status.clone()));
+    }
+    status
+}
+
+fn emit_bedrock_log(app: Option<&tauri::AppHandle>, message: impl Into<String>) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "game:log",
+            serde_json::json!({ "stream": "cobble", "line": format!("[基岩运行环境] {}", message.into()) }),
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_store_page(product_id: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let uri = format!("ms-windows-store://pdp/?productid={product_id}");
+    Command::new("explorer")
+        .arg(uri)
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打开 Microsoft Store 页面失败: {e}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_store_page(_product_id: &str) -> Result<(), String> {
+    Err("Microsoft Store 仅在 Windows 平台可用".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn winget_install_store_product(
+    product_id: &str,
+    label: &str,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    let winget_bin = find_winget_exe().unwrap_or_else(|| PathBuf::from("winget"));
+    emit_bedrock_log(app, format!("正在通过 winget 自动安装 {label}（Store ID: {product_id}）…"));
+    let mut cmd = Command::new(&winget_bin);
+    cmd.args([
+        "install",
+        "--id",
+        product_id,
+        "--source",
+        "msstore",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity",
+        "--silent",
+    ]);
+    cmd.creation_flags(0x0800_0000);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("{label} 自动安装失败：无法调用 winget ({e})"))?;
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lower = merged.to_ascii_lowercase();
+    let already_ok = lower.contains("already installed")
+        || lower.contains("no applicable")
+        || merged.contains("已安装")
+        || merged.contains("无需更新");
+
+    if output.status.success() || already_ok {
+        emit_bedrock_log(app, format!("{label} 安装完成"));
+        Ok(())
+    } else {
+        let detail = merged
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .last()
+            .unwrap_or("未知错误")
+            .to_string();
+        Err(format!(
+            "{label} 自动安装未完成（退出码 {:?}）: {}",
+            output.status.code(),
+            detail
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn appx_identity_attr(manifest: &Path, attr: &str) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let start = text.find("<Identity")?;
+    let rest = &text[start..];
+    let needle = format!("{attr}=\"");
+    let value_start = rest.find(&needle)? + needle.len();
+    let value_end = rest[value_start..].find('"')? + value_start;
+    let value = rest[value_start..value_end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Reads the application id from the manifest's `<Application>` element. Bedrock
+/// uses `App`, and activation needs it for `shell:AppsFolder\<PFN>!<AppId>`.
+#[cfg(target_os = "windows")]
+fn appx_application_id(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let start = text.find("<Application")?;
+    let rest = &text[start..];
+    let value_start = rest.find("Id=\"")? + 4;
+    let value_end = rest[value_start..].find('"')? + value_start;
+    let value = rest[value_start..value_end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ps_single_quoted(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
+}
+
+/// Names of the `<PackageDependency>` framework packages a manifest declares.
+#[cfg(target_os = "windows")]
+fn appx_framework_dependencies(manifest: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find("<PackageDependency") {
+        let start = cursor + rel;
+        let Some(end_rel) = text[start..].find("/>") else {
+            break;
+        };
+        let element = &text[start..start + end_rel];
+        if let Some(name) = element
+            .split("Name=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+        {
+            let name = name.trim();
+            if !name.is_empty() {
+                names.push(name.to_string());
+            }
+        }
+        cursor = start + end_rel + 2;
+    }
+    names
+}
+
+/// Drops `<PackageDependency>` entries for framework packages that are not
+/// installed on this machine.
+///
+/// Deployment fails with `0x80073CF3` when a declared framework is missing, and
+/// some frameworks (e.g. `Microsoft.Services.Store.Engagement` on 1.16-1.18)
+/// only ever ship through the Microsoft Store. A locally deployed core has to
+/// stand on its own, so the optional dependency is removed from the unpacked
+/// manifest — the same manifest edit BedrockBoot performs. The untouched copy is
+/// kept next to it as `AppxManifest.factory.xml`.
+#[cfg(target_os = "windows")]
+fn strip_missing_appx_dependencies(manifest: &Path) -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let declared = appx_framework_dependencies(manifest);
+    if declared.is_empty() {
+        return Vec::new();
+    }
+
+    let script = "$ErrorActionPreference = 'SilentlyContinue'; Get-AppxPackage | ForEach-Object { 'PKG=' + $_.Name }";
+    let installed: Vec<String> = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("PKG=").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let missing: Vec<String> = declared
+        .iter()
+        .filter(|name| {
+            !installed
+                .iter()
+                .any(|have| have.eq_ignore_ascii_case(name))
+        })
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(original) = std::fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let backup = manifest.with_file_name("AppxManifest.factory.xml");
+    if !backup.is_file() {
+        let _ = std::fs::write(&backup, &original);
+    }
+
+    let mut patched = original.clone();
+    for name in &missing {
+        let mut search = 0usize;
+        while let Some(rel) = patched[search..].find("<PackageDependency") {
+            let start = search + rel;
+            let Some(end_rel) = patched[start..].find("/>") else {
+                break;
+            };
+            let end = start + end_rel + 2;
+            let element = &patched[start..end];
+            let matches = element
+                .split("Name=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .map(|value| value.trim().eq_ignore_ascii_case(name))
+                .unwrap_or(false);
+            if matches {
+                patched.replace_range(start..end, "");
+                search = start;
+            } else {
+                search = end;
+            }
+        }
+    }
+
+    if patched != original && std::fs::write(manifest, patched).is_ok() {
+        missing
+    } else {
+        Vec::new()
+    }
+}
+
+/// Deploys an unpacked AppX layout as a *development* package and returns its
+/// package family name.
+///
+/// This is the BedrockBoot recipe (`PackageManager.RegisterPackageAsync(... ,
+/// DeploymentOptions.DevelopmentMode)`) done through the deployment API: the
+/// core is installed straight from the files the launcher downloaded, so no
+/// Microsoft Store, no Store license and no network are involved.
+///
+/// `-DisableDevelopmentMode` must NOT be passed here. That flag asks Windows to
+/// re-register an *already installed* package, so it insists the manifest sits in
+/// the package's registered install root and rejects every loose layout with
+/// `0x80073CF9` / `0x80070057` ("manifest is not in the package root"). That
+/// rejection used to leave the package family name empty, which made activation
+/// fall back to the `minecraft:` protocol and pop up the "浏览 Microsoft Store"
+/// dialog.
+#[cfg(target_os = "windows")]
+fn register_loose_appx(dir: &Path, manifest: &Path) -> Result<(String, Vec<String>), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // A leftover signature blocks development-mode registration (BedrockBoot step).
+    let signature = dir.join("AppxSignature.p7x");
+    if signature.is_file() {
+        let _ = force_remove_file(&signature);
+    }
+
+    // Framework packages that are not installed here would abort deployment with
+    // 0x80073CF3; the unpacked core keeps working without them.
+    let stripped = strip_missing_appx_dependencies(manifest);
+
+    let identity_name = appx_identity_attr(manifest, "Name").unwrap_or_default();
+    if identity_name.trim().is_empty() {
+        return Err(format!(
+            "AppxManifest.xml 缺少 Identity/Name，无法本地部署: {}",
+            manifest.display()
+        ));
+    }
+
+    if !check_developer_mode() {
+        let _ = enable_developer_mode();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if !check_developer_mode() {
+            return Err(
+                "本地部署 AppX 核心需要 Windows「开发人员模式」（设置 → 系统 → 开发者选项）。\
+                 启动器不会改用 Microsoft Store 安装。"
+                    .to_string(),
+            );
+        }
+    }
+
+    let manifest_q = ps_single_quoted(manifest);
+    // 1. A packaged (Store) copy of the same identity can never be replaced by a
+    //    loose deployment, so report it instead of silently failing activation.
+    // 2. Any development copy is unregistered first: Windows refuses to register
+    //    over an existing deployment (0x80073CFB), and dropping it is what makes
+    //    switching between downloaded versions work.
+    let script = format!(
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+         $ErrorActionPreference = 'SilentlyContinue'; \
+         $p = Get-AppxPackage -Name '{identity_name}' | Select-Object -First 1; \
+         if ($p -and (-not $p.IsDevelopmentMode)) {{ Write-Output 'STORE_INSTALL'; exit 0 }}; \
+         if ($p) {{ Remove-AppxPackage -Package $p.PackageFullName | Out-Null }}; \
+         try {{ Add-AppxPackage -Register '{manifest_q}' -ErrorAction Stop }} catch {{ Write-Output ('ERROR=' + $_.Exception.Message); exit 0 }}; \
+         $p = Get-AppxPackage -Name '{identity_name}' | Select-Object -First 1; \
+         if ($p) {{ Write-Output ('PFN=' + $p.PackageFamilyName) }} else {{ Write-Output 'ERROR=注册后未找到程序包' }}"
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("调用 Windows 应用部署接口失败: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let mut pfn: Option<String> = None;
+    let mut store_install = false;
+    let mut detail: Option<String> = None;
+    for line in stdout.lines().map(|line| line.trim()) {
+        if line == "STORE_INSTALL" {
+            store_install = true;
+        } else if let Some(value) = line.strip_prefix("PFN=") {
+            pfn = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("ERROR=") {
+            detail = Some(value.trim().to_string());
+        }
+    }
+
+    if let Some(pfn) = pfn.filter(|value| !value.is_empty()) {
+        return Ok((pfn, stripped));
+    }
+
+    if store_install {
+        return Err(
+            "本机已经通过 Microsoft Store 安装了同一身份的基岩版客户端，Windows 不允许用本地部署版本\
+             覆盖商店版本。请先在「设置 → 应用 → 已安装的应用」中卸载商店版 Minecraft for Windows，\
+             再回到启动器启动。（启动器不会代你安装或打开 Microsoft Store）"
+                .to_string(),
+        );
+    }
+
+    let message = detail.filter(|value| !value.is_empty()).unwrap_or_else(|| {
+        let fallback = if stderr.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+        if fallback.is_empty() {
+            "未知错误".to_string()
+        } else {
+            fallback
+        }
+    });
+    Err(format!(
+        "本地部署 AppX 核心失败: {message}"
+    ))
+}
+
+/// Package family name of a client this launcher deployed itself (development
+/// mode). Such a core starts immediately: it never depended on the Microsoft
+/// Store licence, so the Xbox runtime pre-flight does not apply to it.
+#[cfg(target_os = "windows")]
+fn locally_deployed_minecraft_pfn() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    for name in ["Microsoft.MinecraftUWP", "Microsoft.MinecraftWindowsBeta"] {
+        let script = format!(
+            "$p = Get-AppxPackage -Name '{name}' | Where-Object {{ $_.IsDevelopmentMode }} | Select-Object -First 1; if ($p) {{ $p.PackageFamilyName }}"
+        );
+        let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        else {
+            continue;
+        };
+        let pfn = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if pfn
+            .rsplit_once('_')
+            .map(|(_, publisher)| publisher.len() == 13)
+            .unwrap_or(false)
+        {
+            return Some(pfn);
+        }
+    }
+    None
+}
+
+/// Package family name of an installed Minecraft / Minecraft Preview client,
+/// queried from the Appx package manager. GDK builds share the same identity.
+#[cfg(target_os = "windows")]
+fn installed_minecraft_pfn() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    for name in ["Microsoft.MinecraftUWP", "Microsoft.MinecraftWindowsBeta"] {
+        let script = format!(
+            "$p = Get-AppxPackage -Name '{name}' | Select-Object -First 1; if ($p) {{ $p.PackageFamilyName }}"
+        );
+        let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        else {
+            continue;
+        };
+        let pfn = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if pfn
+            .rsplit_once('_')
+            .map(|(_, publisher)| publisher.len() == 13)
+            .unwrap_or(false)
+        {
+            return Some(pfn);
+        }
+    }
+    None
+}
+
+/// Activates a registered Minecraft package by its app model id.
+///
+/// There is deliberately no `minecraft:` protocol fallback: when no package
+/// family name is known that protocol is either unregistered (Windows then shows
+/// the "获取打开此'minecraft'链接的应用 / 浏览 Microsoft Store" dialog) or it boots
+/// the Store client instead of the core the user picked.
+#[cfg(target_os = "windows")]
+fn launch_uwp_package(
+    package_family_name: Option<&str>,
+    application_id: &str,
+) -> Result<(), String> {
+    let Some(pfn) = package_family_name.filter(|p| !p.trim().is_empty()) else {
+        return Err(
+            "未能取得基岩版程序包标识（PackageFamilyName），已取消启动。启动器不会通过\
+             Microsoft Store 打开游戏，请重新下载该版本以完成本地部署。"
+                .to_string(),
+        );
+    };
+    Command::new("explorer")
+        .arg(format!("shell:AppsFolder\\{}!{}", pfn.trim(), application_id))
+        .spawn()
+        .map_err(|e| format!("按应用标识启动基岩版失败: {e}"))?;
+    Ok(())
+}
+
+/// BedrockBoot-style launch of an unpacked UWP/AppX core: developer mode, local
+/// manifest registration, then activation of exactly that package. Nothing here
+/// touches the Microsoft Store or its license.
+#[cfg(target_os = "windows")]
+fn launch_appx_core(manifest: &Path, exe: Option<&Path>, label: &str) -> Result<String, String> {
+    if let Some(exe) = exe {
+        clean_exe_run_as_admin(exe);
+    }
+    let dir = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
+    let (pfn, stripped) = register_loose_appx(&dir, manifest)?;
+    let app_id = appx_application_id(manifest).unwrap_or_else(|| "App".to_string());
+    launch_uwp_package(Some(pfn.as_str()), &app_id)?;
+    let mut message = format!(
+        "已从本地核心启动 Minecraft 基岩版 ({label})，未经过 Microsoft Store"
+    );
+    if !stripped.is_empty() {
+        message.push_str(&format!(
+            "；已跳过本机未安装的框架依赖: {}",
+            stripped.join("、")
+        ));
+    }
+    Ok(message)
+}
+
+#[cfg(target_os = "windows")]
+fn install_and_launch_appx(pkg: &Path, label: &str) -> Result<String, String> {
+    let dir = pkg.parent().unwrap_or(pkg);
+    let manifest = dir.join("AppxManifest.xml");
+    if manifest.is_file() {
+        return launch_appx_core(&manifest, None, label);
+    }
+    Err(format!(
+        "{label} 的 AppX 安装包还没有完成本地部署。请回到“下载”页面重新安装该版本，\
+         启动器会直接解包并在本地注册核心，无需 Microsoft Store。"
+    ))
+}
+
+/// Installs the missing Xbox runtime pieces (Xbox app + Gaming Services) so an
+/// encrypted .msixvc package can be played through the Store-delivered client.
+pub fn provision_bedrock_runtime(app: Option<&tauri::AppHandle>) -> BedrockRuntimeStatus {
+    #[cfg(target_os = "windows")]
+    {
+        ensure_gaming_services_running(app);
+
+        let status = get_bedrock_runtime_status(true);
+        if status.ready {
+            return status;
+        }
+
+        if !status.winget_available {
+            emit_bedrock_log(
+                app,
+                "未检测到 winget 包管理器，已改为自动打开 Microsoft Store 安装页面。",
+            );
+            if !status.xbox_app_installed {
+                let _ = open_store_page(XBOX_APP_STORE_ID);
+            }
+            if !status.gaming_services_installed {
+                let _ = open_store_page(GAMING_SERVICES_STORE_ID);
+            }
+            if !status.minecraft_uwp_installed {
+                emit_bedrock_log(
+                    app,
+                    "未检测到本机基岩版客户端，请到“下载”页面下载版本（启动器本地部署，不经过 Microsoft Store）。",
+                );
+            }
+            invalidate_runtime_cache();
+            return get_bedrock_runtime_status(true);
+        }
+
+        if !status.xbox_app_installed {
+            if let Err(err) = winget_install_store_product(XBOX_APP_STORE_ID, "Xbox 应用", app) {
+                emit_bedrock_log(app, err);
+            }
+        }
+
+        if !status.gaming_services_installed {
+            if let Err(err) = winget_install_store_product(GAMING_SERVICES_STORE_ID, "游戏服务 Gaming Services", app) {
+                emit_bedrock_log(app, err);
+            }
+        }
+
+        ensure_gaming_services_running(app);
+        invalidate_runtime_cache();
+        let refreshed = get_bedrock_runtime_status(true);
+
+        // Whatever winget could not deliver is handed over to the Store UI automatically
+        if !refreshed.xbox_app_installed {
+            emit_bedrock_log(app, "winget 未能完成 Xbox 应用安装，已自动打开 Microsoft Store 页面。");
+            let _ = open_store_page(XBOX_APP_STORE_ID);
+        }
+        if !refreshed.gaming_services_installed {
+            emit_bedrock_log(app, "winget 未能完成游戏服务安装，已自动打开 Microsoft Store 页面。");
+            let _ = open_store_page(GAMING_SERVICES_STORE_ID);
+        }
+        if !refreshed.minecraft_uwp_installed {
+            emit_bedrock_log(
+                app,
+                "未检测到本机基岩版客户端。启动器不会打开 Microsoft Store 安装游戏，请到“下载”页面下载版本后本地部署。",
+            );
+        }
+        refreshed
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        get_bedrock_runtime_status(true)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_gdk_auto_provision(
+    app: Option<tauri::AppHandle>,
+    open_minecraft_store: bool,
+    launch_after_install: bool,
+) {
+    if GDK_AUTOFIX_ACTIVE.swap(true, Ordering::SeqCst) {
+        emit_bedrock_log(
+            app.as_ref(),
+            "Xbox 运行环境自动程序已在执行中，请稍候…",
+        );
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let app_ref = app.as_ref();
+        emit_bedrock_log(app_ref, "【自动程序】开始自动配置 Xbox GDK 运行环境…");
+        let status = provision_bedrock_runtime(app_ref);
+
+        if status.ready {
+            emit_bedrock_log(app_ref, "【自动程序】Xbox 运行环境与游戏依赖已全部就绪。");
+        } else {
+            let mut missing: Vec<&str> = Vec::new();
+            if !status.xbox_app_installed {
+                missing.push("Xbox 应用");
+            }
+            if !status.gaming_services_installed {
+                missing.push("游戏服务 Gaming Services");
+            }
+            if !status.minecraft_uwp_installed {
+                missing.push("Minecraft for Windows (UWP)");
+            }
+            emit_bedrock_log(
+                app_ref,
+                format!(
+                    "【自动程序】运行依赖状态：缺失组件 [{}]。已为您自动弹出微软官方商店安装引导。",
+                    missing.join("、")
+                ),
+            );
+        }
+
+        if open_minecraft_store && !status.minecraft_uwp_installed {
+            emit_bedrock_log(
+                app_ref,
+                "【自动程序】未检测到本机基岩版客户端。启动器不再自动打开 Microsoft Store，请到“下载”页面选择版本本地部署。",
+            );
+        } else if launch_after_install {
+            if status.minecraft_uwp_installed {
+                emit_bedrock_log(app_ref, "【自动程序】正在自动唤起 Minecraft 基岩版客户端…");
+                let pfn = installed_minecraft_pfn();
+                if let Err(err) = launch_uwp_package(pfn.as_deref(), "App") {
+                    emit_bedrock_log(app_ref, format!("【自动程序】唤起基岩版客户端失败: {err}"));
+                }
+            } else {
+                emit_bedrock_log(
+                    app_ref,
+                    "【自动程序】Minecraft for Windows 尚未就绪，请先到“下载”页面安装对应版本。",
+                );
+            }
+        }
+
+        emit_bedrock_log(app_ref, "【自动程序】Xbox 运行环境自动处理流程已完成。");
+        GDK_AUTOFIX_ACTIVE.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Handles an encrypted Xbox GDK (.msixvc) package end to end: provisions the
+/// Xbox runtime when needed, then launches the Store client automatically.
+#[cfg(target_os = "windows")]
+fn auto_handle_msixvc_package(
+    app: Option<&tauri::AppHandle>,
+    game_root: &Path,
+    version_id: &str,
+) -> Result<String, String> {
+    ensure_gaming_services_running(app);
+    let status = get_bedrock_runtime_status(false);
+    let runtime_missing = !status.xbox_app_installed || !status.gaming_services_installed;
+
+    if status.minecraft_uwp_installed && !runtime_missing {
+        let pfn = installed_minecraft_pfn();
+        launch_uwp_package(pfn.as_deref(), "App")?;
+        return Ok(format!(
+            "{version_id} 为 Xbox GDK 加密包 (.msixvc)。自动程序检测到 Xbox 环境完整，已成功为您唤起 Minecraft 基岩版！"
+        ));
+    }
+
+    if status.minecraft_uwp_installed {
+        spawn_gdk_auto_provision(app.cloned(), false, true);
+        return Ok(format!(
+            "{version_id} 为 Xbox GDK 加密包。自动程序正在后台自动补齐「Xbox 应用与游戏服务」，完成后会自动唤起游戏，进度可在启动日志查看。"
+        ));
+    }
+
+    spawn_gdk_auto_provision(app.cloned(), true, false);
+    // Encrypted GDK packages can only be carried by the Store client. When it is
+    // missing, keep the launch from dead-ending by deploying the login-free BDS
+    // core as a fallback in the background.
+    let _ = start_bds_core_deployment(app, game_root, version_id);
+    Ok(format!(
+        "{version_id} 为 Xbox GDK 加密包 (.msixvc)，需由微软官方客户端承载运行。\n✔ 自动程序已启动：正在检查并激活 Xbox 与游戏服务环境（不会自动打开 Microsoft Store 安装游戏）；\n✔ 同时已在后台部署免密 BDS 独立核心作为备选，完成后再次点击「启动」即可进入游戏；\n✔ 也可在版本页选择 UWP / AppX 核心，启动器会解包并在本机以开发模式注册后直接启动，全程不经过 Microsoft Store。"
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn auto_handle_msixvc_package(
+    _app: Option<&tauri::AppHandle>,
+    _game_root: &Path,
+    _version_id: &str,
+) -> Result<String, String> {
+    Err("Xbox GDK 加密包仅支持在 Windows 平台运行".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// BDS Version Index
+// ---------------------------------------------------------------------------
+
+/// Version index published by the Bedrock-OSS / EndstoneMC projects. Its
+/// `windows` list is the only source of working BDS download URLs: the Store
+/// catalog (mcappx) contains UWP/GDK packages only, so an offline launch can
+/// never be satisfied from it.
+#[derive(Debug, Clone, Deserialize)]
+struct BdsVersionsIndex {
+    #[serde(default)]
+    cdn_root: Option<String>,
+    #[serde(default)]
+    windows: Option<BdsWindowsVersions>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct BdsWindowsVersions {
+    #[serde(default)]
+    versions: Vec<String>,
+    #[serde(default)]
+    preview_versions: Vec<String>,
+}
+
+impl BdsVersionsIndex {
+    fn into_items(self, source_name: &str) -> Vec<BedrockVersionItem> {
+        let cdn_root = self
+            .cdn_root
+            .filter(|root| root.starts_with("http"))
+            .unwrap_or_else(|| "https://www.minecraft.net/bedrockdedicatedserver".to_string());
+        let cdn_root = cdn_root.trim_end_matches('/').to_string();
+
+        let Some(windows) = self.windows else {
+            return Vec::new();
+        };
+
+        let mut items = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (versions, is_preview) in [
+            (&windows.versions, false),
+            (&windows.preview_versions, true),
+        ] {
+            for version in versions {
+                if !seen.insert(version.clone()) {
+                    continue;
+                }
+                items.push(BedrockVersionItem {
+                    id: version.clone(),
+                    name: if is_preview {
+                        format!("Minecraft 基岩预览版 {version} (BDS)")
+                    } else {
+                        format!("Minecraft 基岩版 {version} (BDS)")
+                    },
+                    version: version.clone(),
+                    release_type: if is_preview { "preview" } else { "release" }.to_string(),
+                    download_url: format!("{cdn_root}/bin-win/bedrock-server-{version}.zip"),
+                    store_url: None,
+                    date: "BDS 官方版本索引".to_string(),
+                    size: 85_983_232,
+                    sha256: None,
+                    api_source: Some(source_name.to_string()),
+                    build_type: Some("BDS".to_string()),
+                    md5: None,
+                });
+            }
+        }
+
+        items.sort_by(|a, b| version_sort_key(&b.version).cmp(&version_sort_key(&a.version)));
+        items
+    }
+}
+
+fn version_sort_key(version: &str) -> Vec<u32> {
+    version
+        .split('.')
+        .filter_map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .ok()
+        })
+        .collect()
+}
+
+/// Version IDs are dotted: `1.26.5` must not match `1.26.52.3`, so a prefix only
+/// counts when it ends on a dot boundary.
+fn version_ids_match(requested: &str, candidate: &str) -> bool {
+    if requested.is_empty() || candidate.is_empty() {
+        return false;
+    }
+    let extends_with_dot = |long: &str, prefix: &str| {
+        long.strip_prefix(prefix)
+            .map(|rest| rest.starts_with('.'))
+            .unwrap_or(false)
+    };
+    requested == candidate
+        || extends_with_dot(candidate, requested)
+        || extends_with_dot(requested, candidate)
+}
+
+async fn fetch_bds_registry_versions() -> Vec<BedrockVersionItem> {
+    const ENDPOINTS: &[&str] = &[
+        "https://cdn.jsdelivr.net/gh/Bedrock-OSS/BDS-Versions@main/versions.json",
+        "https://fastly.jsdelivr.net/gh/Bedrock-OSS/BDS-Versions@main/versions.json",
+        "https://raw.gitmirror.com/Bedrock-OSS/BDS-Versions/main/versions.json",
+        "https://raw.githubusercontent.com/Bedrock-OSS/BDS-Versions/main/versions.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/Bedrock-OSS/BDS-Versions/main/versions.json",
+    ];
+
+    let client = net::client();
+    for endpoint in ENDPOINTS {
+        let Ok(response) = client
+            .get(*endpoint)
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(text) = response.text().await else {
+            continue;
+        };
+        let Ok(index) = serde_json::from_str::<BdsVersionsIndex>(&text) else {
+            continue;
+        };
+        let items = index.into_items("BDS 官方版本索引");
+        if !items.is_empty() {
+            return items;
+        }
+    }
+
+    // Last resort: reuse any BDS entries saved by an earlier successful fetch.
+    load_cached_versions()
+        .map(|items| {
+            items
+                .into_iter()
+                .filter(|v| v.build_type.as_deref() == Some("BDS"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Automatically finds or downloads a matching direct-running BDS core for users
+/// who prefer running Bedrock standalone without Microsoft Store or Xbox DRM.
+pub async fn find_or_install_bds_fallback(
+    app: &tauri::AppHandle,
+    game_root: &Path,
+    version_id: &str,
+) -> Result<String, String> {
+    let clean_id = version_id
+        .trim_start_matches("bedrock:")
+        .trim_start_matches("Minecraft 基岩版:")
+        .trim_start_matches("Minecraft 基岩版 ")
+        .trim_start_matches("基岩版 ")
+        .trim();
+
+    // 1. Check if an unencrypted BDS version is already installed locally
+    let versions_dir = game_root.join("bedrock").join("versions");
+    if let Ok(entries) = std::fs::read_dir(&versions_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let insp = inspect_bedrock_version_dir(&p);
+                if insp.is_valid && insp.is_server {
+                    return Ok(format!(
+                        "已找到已就绪的 BDS 免密独立核心 ({})，可直接独立启动游戏！",
+                        insp.folder_name
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2. Fetch the BDS version index. The Store (mcappx) catalog only carries
+    // UWP/GDK packages, so it can never satisfy an offline launch.
+    let bds_versions = fetch_bds_registry_versions().await;
+    let target = bds_versions
+        .iter()
+        .find(|v| v.release_type == "release" && version_ids_match(&clean_id, &v.id))
+        .or_else(|| bds_versions.iter().find(|v| version_ids_match(&clean_id, &v.id)))
+        .or_else(|| bds_versions.iter().find(|v| v.release_type == "release"))
+        .or_else(|| bds_versions.first());
+
+    let Some(target) = target else {
+        return Err("未能获取到可用的 BDS 免密核心版本索引，请检查网络后重试。".to_string());
+    };
+
+    emit_bedrock_log(
+        Some(app),
+        format!("【自动程序】正在为您下载并部署免密独立 BDS 核心: {}…", target.name),
+    );
+    install_bedrock_version(
+        app,
+        game_root,
+        &target.id,
+        &target.download_url,
+        Some("Mojang BDS 官方直链"),
+        8,
+    )
+    .await?;
+    Ok(format!(
+        "自动程序已成功下载并部署 BDS 免密独立核心 ({})，无需 Xbox 登录即可独立直接运行！",
+        target.name
+    ))
+}
+
+/// First-launch guidance when no core is available. It deliberately does not
+/// touch the Microsoft Store: every core is deployed from the package the
+/// launcher downloads itself (see `register_loose_appx`), which is also what
+/// keeps the launcher portable to Linux/macOS later on.
+#[cfg(target_os = "windows")]
+fn bootstrap_uwp_client(app: Option<&tauri::AppHandle>) -> String {
+    emit_bedrock_log(
+        app,
+        "未检测到可用的基岩版核心；启动器不会通过 Microsoft Store 安装游戏。",
+    );
+    "未检测到可用的基岩版核心。请到“下载”页面选择 UWP / GDK 版本，启动器会自行下载并在本地部署（不经过 Microsoft Store），完成后再点启动即可。".to_string()
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UwpLaunchPlan {
+    LaunchNow,
+    InstallDepsThenLaunch,
+    BootstrapClient,
+}
+
+#[cfg(target_os = "windows")]
+fn plan_uwp_launch(status: &BedrockRuntimeStatus) -> UwpLaunchPlan {
+    if !status.minecraft_uwp_installed {
+        UwpLaunchPlan::BootstrapClient
+    } else if !status.ready {
+        UwpLaunchPlan::InstallDepsThenLaunch
+    } else {
+        UwpLaunchPlan::LaunchNow
+    }
+}
+
+/// Every launch that boots the Store client goes through here, so the Xbox
+/// runtime dependencies are installed automatically on the first launch.
+#[cfg(target_os = "windows")]
+fn ensure_and_launch_uwp(app: Option<&tauri::AppHandle>) -> Result<String, String> {
+    // A core deployed locally by this launcher starts straight away; the Store
+    // licence and the Xbox runtime pre-flight are irrelevant for it.
+    if let Some(pfn) = locally_deployed_minecraft_pfn() {
+        launch_uwp_package(Some(pfn.as_str()), "App")?;
+        return Ok("已从本地核心唤起 Minecraft 基岩版（未经过 Microsoft Store）".to_string());
+    }
+
+    let status = get_bedrock_runtime_status(false);
+
+    match plan_uwp_launch(&status) {
+        UwpLaunchPlan::BootstrapClient => Ok(bootstrap_uwp_client(app)),
+        UwpLaunchPlan::InstallDepsThenLaunch => {
+            spawn_gdk_auto_provision(app.cloned(), false, true);
+            Ok(
+                "运行环境自检：正在自动补齐「Xbox 应用 / 游戏服务」等运行依赖，安装完成后会自动唤起 Minecraft 基岩版，进度可在控制台查看。".to_string(),
+            )
+        }
+        UwpLaunchPlan::LaunchNow => {
+            let pfn = installed_minecraft_pfn();
+            launch_uwp_package(pfn.as_deref(), "App")?;
+            Ok("已成功唤起 Minecraft 基岩版 (Windows)".to_string())
+        }
+    }
+}
+
+/// Finds the newest standalone core below `<game_root>/bedrock/versions`. When
+/// `prefer_bds` is set a BDS (server) core wins over unpacked AppX/client cores,
+/// which is what offline accounts need: they cannot sign in to the Store client.
+fn find_installed_standalone_core(
+    game_root: &Path,
+    prefer_bds: bool,
+) -> Option<(PathBuf, PathBuf, bool, String)> {
+    let versions_dir = game_root.join("bedrock").join("versions");
+    let entries = std::fs::read_dir(&versions_dir).ok()?;
+    let mut cores: Vec<(PathBuf, PathBuf, bool, String)> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let dir = entry.path();
+        let insp = inspect_bedrock_version_dir(&dir);
+        if let Some(exe) = insp.main_executable {
+            let work_dir = exe.parent().unwrap_or(&dir).to_path_buf();
+            cores.push((exe, work_dir, insp.is_server, insp.folder_name));
+        }
+    }
+
+    // Folder names are version strings, so a descending sort puts the newest first
+    cores.sort_by(|a, b| b.3.cmp(&a.3));
+    if prefer_bds {
+        if let Some(bds) = cores.iter().find(|c| c.2) {
+            return Some(bds.clone());
+        }
+    }
+    cores.into_iter().next()
+}
+
+/// Finds the newest unpacked UWP/AppX client core under `<game_root>/bedrock/versions`.
+#[cfg(target_os = "windows")]
+fn newest_client_core_dir(game_root: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(game_root.join("bedrock").join("versions")).ok()?;
+    let mut cores: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let dir = entry.path();
+        let insp = inspect_bedrock_version_dir(&dir);
+        if insp.is_server || !insp.is_valid {
+            continue;
+        }
+        if insp.manifest_path.is_some()
+            || insp.package_file.is_some()
+            || insp.main_executable.is_some()
+        {
+            cores.push((insp.folder_name, dir));
+        }
+    }
+    cores.sort_by(|a, b| b.0.cmp(&a.0));
+    cores.into_iter().next().map(|(_, dir)| dir)
+}
+
+/// Launches an installed UWP/AppX/GDK client core. Unpacked AppX cores are
+/// registered and activated directly; encrypted GDK packages are carried by the
+/// Store client, so the Xbox runtime is provisioned for them.
+#[cfg(target_os = "windows")]
+fn launch_installed_client_core(
+    app: Option<&tauri::AppHandle>,
+    game_root: &Path,
+    version_id: &str,
+) -> Option<Result<String, String>> {
+    let dir = if version_id.trim().is_empty() {
+        newest_client_core_dir(game_root)?
+    } else {
+        let dir = resolve_bedrock_version_dir(game_root, version_id);
+        if !dir.is_dir() {
+            return None;
+        }
+        dir
+    };
+
+    let insp = inspect_bedrock_version_dir(&dir);
+    if insp.is_server || !insp.is_valid {
+        return None;
+    }
+
+    if let Some(manifest) = insp.manifest_path.as_deref() {
+        return Some(launch_appx_core(
+            manifest,
+            insp.main_executable.as_deref(),
+            &insp.folder_name,
+        ));
+    }
+
+    if let Some(pkg) = insp.package_file.as_deref() {
+        let ext = pkg
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext == "appx" || ext == "msix" {
+            return Some(install_and_launch_appx(pkg, &insp.folder_name));
+        }
+        if ext == "msixvc" {
+            return Some(auto_handle_msixvc_package(
+                app,
+                game_root,
+                &insp.folder_name,
+            ));
+        }
+    }
+
+    if let Some(exe) = insp.main_executable.as_deref() {
+        let work_dir = exe.parent().unwrap_or(&dir);
+        return Some(
+            spawn_bedrock_exe(exe, work_dir, false)
+                .map(|_| format!("已启动基岩版客户端核心 ({})", insp.folder_name)),
+        );
+    }
+
+    None
+}
+
+/// Offline accounts launch Bedrock on a standalone core. When none is present the
+/// BDS core is downloaded in the background and reported through the launch log.
+fn start_bds_core_deployment(
+    app: Option<&tauri::AppHandle>,
+    game_root: &Path,
+    version_id: &str,
+) -> String {
+    emit_bedrock_log(
+        app,
+        "【自动程序】离线账户需要免密 BDS 独立核心，正在后台自动下载部署…",
+    );
+
+    let app_handle = app.cloned();
+    let root = game_root.to_path_buf();
+    let requested = version_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(handle) = app_handle else {
+            return;
+        };
+        match find_or_install_bds_fallback(&handle, &root, &requested).await {
+            Ok(msg) => emit_bedrock_log(Some(&handle), format!("【自动程序】{msg}")),
+            Err(err) => {
+                emit_bedrock_log(Some(&handle), format!("【自动程序】BDS 核心自动部署失败: {err}"))
+            }
+        }
+    });
+
+    "本机暂未安装可用的基岩版核心。自动程序已在后台开始下载部署免密 BDS 独立核心，完成后再次点击「启动」即可进入游戏（进度见启动日志）。"
+        .to_string()
+}
+
+/// Offline launches prefer an installed BDS core, then a downloaded UWP/AppX or
+/// GDK client core, and only fall back to deploying a new BDS core when neither
+/// exists. This keeps UWP/GDK cores the user downloaded playable.
+fn launch_offline_bedrock_core(
+    app: Option<&tauri::AppHandle>,
+    game_root: &Path,
+    version_id: &str,
+) -> Result<String, String> {
+    if let Some((exe, work_dir, is_server, name)) = find_installed_standalone_core(game_root, true) {
+        if is_server {
+            spawn_bedrock_exe(&exe, &work_dir, true)?;
+            return Ok(format!(
+                "离线账户已使用 BDS 独立核心启动基岩版，已开启独立控制台窗口 ({name})"
+            ));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(result) = launch_installed_client_core(app, game_root, version_id) {
+        return result;
+    }
+
+    Ok(start_bds_core_deployment(app, game_root, version_id))
+}
+
 pub fn launch_bedrock_edition(
     game_root: &Path,
     version_id: Option<&str>,
+    app: Option<&tauri::AppHandle>,
+    offline_account: bool,
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let bedrock_versions_dir = game_root.join("bedrock").join("versions");
-
-        let launch_uwp = || -> Result<String, String> {
-            let protocol = if let Ok(output) = Command::new("reg").args(["query", "HKCR\\minecraft-preview", "/ve"]).output() {
-                if output.status.success() {
-                    "minecraft-preview:"
-                } else {
-                    "minecraft:"
-                }
-            } else {
-                "minecraft:"
-            };
-
-            Command::new("explorer")
-                .arg(protocol)
-                .spawn()
-                .map_err(|e| format!("通过协议启动基岩版 UWP 客户端失败: {e}"))?;
-            Ok("已成功唤起 Minecraft 基岩版 (Windows)".to_string())
-        };
 
         // 1. If explicit UWP is requested
         if let Some(vid) = version_id.filter(|s| !s.trim().is_empty()) {
@@ -1208,28 +3287,17 @@ pub fn launch_bedrock_edition(
 
             if clean_vid.eq_ignore_ascii_case("uwp") || clean_vid.eq_ignore_ascii_case("bedrock-uwp") {
                 if is_uwp_installed() {
-                    return launch_uwp();
-                } else {
-                    // Check if any standalone core exists as fallback
-                    if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
-                        for entry in entries.flatten() {
-                            let dir = entry.path();
-                            let insp = inspect_bedrock_version_dir(&dir);
-                            if let Some(exe) = insp.main_executable {
-                                let work_dir = exe.parent().unwrap_or(&dir);
-                                spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
-                                let type_desc = if insp.is_server { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
-                                return Ok(format!(
-                                    "未检测到 Windows 原生 UWP 客户端，已为您启动本地基岩版{type_desc} ({})",
-                                    insp.folder_name
-                                ));
-                            }
-                        }
-                    }
-                    return Err(
-                        "未检测到已安装的 Minecraft 基岩版 (Windows UWP) 或本地 BDS 核心。\n请在启动器“下载”页面下载基岩版核心，或前往 Microsoft Store 安装 Minecraft for Windows。".to_string()
-                    );
+                    return ensure_and_launch_uwp(app);
                 }
+                // No Store client installed: a downloaded UWP/AppX core boots directly.
+                if let Some(result) = launch_installed_client_core(app, game_root, "") {
+                    return result;
+                }
+                if offline_account {
+                    return Ok(start_bds_core_deployment(app, game_root, ""));
+                }
+                // First launch: bootstrap the missing runtime + Store client automatically
+                return Ok(bootstrap_uwp_client(app));
             }
 
             // 2. Specific standalone version requested (e.g. 1.26.52 or unpacked AppX instance)
@@ -1237,20 +3305,10 @@ pub fn launch_bedrock_edition(
             if target_dir.is_dir() {
                 let insp = inspect_bedrock_version_dir(&target_dir);
 
-                // BedrockBoot-style AppxManifest package registration
-                if let Some(manifest) = insp.manifest_path {
-                    let _ = Command::new("powershell")
-                        .args([
-                            "-NoProfile",
-                            "-NonInteractive",
-                            "-Command",
-                            &format!(
-                                "Add-AppxPackage -Register '{}' -DisableDevelopmentMode",
-                                manifest.to_string_lossy()
-                            ),
-                        ])
-                        .output();
-                    return launch_uwp();
+                // BedrockBoot-style AppxManifest package registration: boot the
+                // exact UWP/AppX core the user selected, offline account or not.
+                if let Some(manifest) = insp.manifest_path.clone() {
+                    return launch_appx_core(&manifest, insp.main_executable.as_deref(), clean_vid);
                 }
 
                 if let Some(exe) = insp.main_executable {
@@ -1267,26 +3325,23 @@ pub fn launch_bedrock_edition(
                         .unwrap_or("")
                         .to_lowercase();
                     if ext == "appx" || ext == "msix" {
-                        let _ = Command::new("powershell")
-                            .args([
-                                "-NoProfile",
-                                "-NonInteractive",
-                                "-Command",
-                                &format!("Add-AppxPackage -Path '{}'", pkg.to_string_lossy()),
-                            ])
-                            .output();
-                        return launch_uwp();
+                        return install_and_launch_appx(&pkg, clean_vid);
                     } else if ext == "msixvc" {
-                        return Err(format!(
-                            "当前基岩版版本 ({clean_vid}) 为 Xbox GDK 加密包 (.msixvc)。\n请确保已在系统安装“Xbox 应用”与“游戏服务”，或前往应用商店启动；若需要直接运行，建议在下载页选择 AppX / BDS 核心。"
-                        ));
+                        // Xbox GDK encrypted package: provision the Xbox runtime and
+                        // boot the Store client automatically instead of failing.
+                        return auto_handle_msixvc_package(app, game_root, clean_vid);
                     }
                 }
             }
 
+            // Missing version: fall back to an installed BDS/UWP/GDK core.
+            if offline_account {
+                return launch_offline_bedrock_core(app, game_root, clean_vid);
+            }
+
             // If requested standalone version directory is missing, fallback to UWP if installed
             if is_uwp_installed() {
-                return launch_uwp();
+                return ensure_and_launch_uwp(app);
             }
 
             return Err(format!(
@@ -1295,14 +3350,21 @@ pub fn launch_bedrock_edition(
         }
 
         // 3. No specific version requested (version_id is None / empty)
+        // Installed BDS/UWP/GDK cores are launched first; a BDS core is only
+        // deployed on a machine that has no playable core yet.
+        if offline_account {
+            return launch_offline_bedrock_core(app, game_root, "");
+        }
+
         // If UWP is installed, prioritize launching UWP
         if is_uwp_installed() {
-            return launch_uwp();
+            return ensure_and_launch_uwp(app);
         }
 
         // Otherwise, launch the first/latest available standalone version
         if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
             let mut candidates = Vec::new();
+            let mut gdk_package: Option<String> = None;
             for entry in entries.flatten() {
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     let dir = entry.path();
@@ -1315,6 +3377,17 @@ pub fn launch_bedrock_edition(
                             insp.is_server,
                             insp.folder_name,
                         ));
+                    } else if gdk_package.is_none() {
+                        if let Some(pkg) = insp.package_file.as_ref() {
+                            let ext = pkg
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            if ext == "msixvc" {
+                                gdk_package = Some(insp.folder_name.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -1327,9 +3400,15 @@ pub fn launch_bedrock_edition(
                 let type_desc = if is_console { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
                 return Ok(format!("已启动本地基岩版{type_desc} ({name})"));
             }
+
+            // Only encrypted Xbox GDK packages on disk: run the automation instead of failing
+            if let Some(vid) = gdk_package {
+                return auto_handle_msixvc_package(app, game_root, &vid);
+            }
         }
 
-        Err("未检测到已安装的 Minecraft 基岩版。您可以通过 Microsoft Store 安装正版，或在启动器“下载”中心获取基岩版运行核心。".to_string())
+        // Nothing installed yet: run the first-launch dependency bootstrap instead of failing
+        Ok(bootstrap_uwp_client(app))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1820,20 +3899,9 @@ pub async fn install_bedrock_version(
             let _ = force_remove_file(&sig_p7x);
         }
 
-        // Register AppX on Windows in developer mode if AppxManifest.xml is present
-        #[cfg(target_os = "windows")]
-        {
-            let manifest = dest_dir.join("AppxManifest.xml");
-            if manifest.exists() {
-                let ps_cmd = format!(
-                    "Add-AppxPackage -Register \"{}\" -DisableDevelopmentMode",
-                    manifest.to_string_lossy()
-                );
-                let _ = std::process::Command::new("powershell")
-                    .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
-                    .output();
-            }
-        }
+        // Installation only unpacks the core. The package is deployed to Windows
+        // locally on first launch (`register_loose_appx`), so a download never
+        // depends on the Microsoft Store and switching versions stays cheap.
     } else {
         // Raw msixvc / insPack file: copy to dest_dir
         let target_dest = dest_dir.join(&pkg_filename);
@@ -2635,6 +4703,83 @@ pub fn install_bedrock_mod_file(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_appx_framework_dependencies_are_parsed() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble_appx_deps_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("AppxManifest.xml");
+        std::fs::write(
+            &manifest,
+            r#"<?xml version="1.0"?>
+<Package>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17134.0" />
+    <PackageDependency Name="Microsoft.VCLibs.140.00" MinVersion="14.0.30704.0" />
+    <PackageDependency Name="Microsoft.Services.Store.Engagement" MinVersion="10.0.1610.0" />
+  </Dependencies>
+</Package>"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            appx_framework_dependencies(&manifest),
+            vec![
+                "Microsoft.VCLibs.140.00".to_string(),
+                "Microsoft.Services.Store.Engagement".to_string(),
+            ]
+        );
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
+    /// A locally deployed core must not declare framework packages that are not
+    /// installed: deployment would abort with 0x80073CF3 and the user would be
+    /// pushed back towards the Microsoft Store for a framework.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_missing_appx_dependency_is_stripped_and_backed_up() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble_appx_strip_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("AppxManifest.xml");
+        let original = r#"<?xml version="1.0"?>
+<Package>
+  <Identity Name="Microsoft.MinecraftUWP" Publisher="CN=Microsoft Corporation" Version="1.18.3104.0" ProcessorArchitecture="x64" />
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17134.0" />
+    <PackageDependency Name="Cobble.Test.Missing.Framework" MinVersion="1.0.0.0" />
+  </Dependencies>
+</Package>"#;
+        std::fs::write(&manifest, original).unwrap();
+
+        let removed = strip_missing_appx_dependencies(&manifest);
+        assert_eq!(removed, vec!["Cobble.Test.Missing.Framework".to_string()]);
+
+        let patched = std::fs::read_to_string(&manifest).unwrap();
+        assert!(!patched.contains("Cobble.Test.Missing.Framework"));
+        assert!(patched.contains("TargetDeviceFamily"));
+        // The untouched manifest stays available next to the deployed one.
+        let backup = dir.join("AppxManifest.factory.xml");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+
+        // The patched manifest is valid for deployment: no phantom dependency left.
+        assert!(appx_framework_dependencies(&manifest).is_empty());
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_get_bedrock_versions() {
         let versions = get_bedrock_versions();
@@ -2648,6 +4793,7 @@ mod tests {
         assert!(!content.is_empty());
         assert!(content.iter().any(|c| c.content_type == "shader"));
         assert!(content.iter().any(|c| c.content_type == "mod"));
+        assert!(content.iter().any(|c| c.content_type == "resourcepack"));
     }
 
     #[test]
@@ -2701,6 +4847,32 @@ mod tests {
         assert_eq!(parsed[1].id, "1.20.15");
         assert_eq!(parsed[1].release_type, "release");
         assert_eq!(parsed[1].build_type.as_deref(), Some("UWP"));
+    }
+
+    #[test]
+    fn fe3_url_extraction_handles_plain_and_prefixed_elements() {
+        // Shape returned by fe3 `GetExtendedUpdateInfo2` (unprefixed `<Url>`).
+        let response = r#"<s:Envelope><s:Body><GetExtendedUpdateInfo2Result>
+            <FileLocations>
+                <FileLocation><FileDigest>abc=</FileDigest><Url>http://dl.delivery.mp.microsoft.com/filestreamingservice/files/aaaaaaaa-1111</Url></FileLocation>
+                <FileLocation><FileDigest>def=</FileDigest><Url>http://tlu.dl.delivery.mp.microsoft.com/filestreamingservice/files/bbbbbbbb-2222?P1=123&amp;P2=404&amp;P3=2&amp;P4=xyz</Url></FileLocation>
+            </FileLocations></GetExtendedUpdateInfo2Result></s:Body></s:Envelope>"#;
+        let urls = extract_fe3_urls(response);
+        assert_eq!(urls.len(), 2);
+        assert!(
+            urls[1].contains("P1=123&P2=404"),
+            "entities decoded: {urls:?}"
+        );
+        assert!(urls[1].starts_with("http://tlu.dl.delivery.mp.microsoft.com/"));
+
+        // Namespaced spelling must not be missed either.
+        let prefixed =
+            r#"<FileLocation><a:Url>http://dl.delivery.mp.microsoft.com/x</a:Url></FileLocation>"#;
+        assert_eq!(
+            extract_fe3_urls(prefixed),
+            vec!["http://dl.delivery.mp.microsoft.com/x".to_string()]
+        );
+        assert!(extract_fe3_urls("<Url></Url>").is_empty());
     }
 
     #[tokio::test]
@@ -2768,6 +4940,45 @@ mod tests {
     }
 
     #[test]
+    fn test_bds_versions_index_into_items() {
+        let index: BdsVersionsIndex = serde_json::from_str(
+            r#"{
+                "cdn_root": "https://www.minecraft.net/bedrockdedicatedserver",
+                "linux": { "versions": ["9.9.9.9"] },
+                "windows": {
+                    "stable": "1.26.52.3",
+                    "preview": "1.26.70.21",
+                    "versions": ["1.26.44.3", "1.26.52.3"],
+                    "preview_versions": ["1.26.70.21"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let items = index.into_items("test");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, "1.26.70.21");
+        assert_eq!(items[0].release_type, "preview");
+        assert_eq!(items[0].build_type.as_deref(), Some("BDS"));
+        assert_eq!(
+            items[0].download_url,
+            "https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.70.21.zip"
+        );
+        assert_eq!(items[1].id, "1.26.52.3");
+        assert_eq!(items[1].release_type, "release");
+        assert_eq!(items[2].id, "1.26.44.3");
+    }
+
+    #[test]
+    fn test_version_ids_match_uses_dot_boundaries() {
+        assert!(version_ids_match("1.26.52", "1.26.52.3"));
+        assert!(version_ids_match("1.26.52.3", "1.26.52"));
+        assert!(!version_ids_match("1.26.5", "1.26.52.3"));
+        assert!(!version_ids_match("1.26.201", "1.26.52.3"));
+        assert!(!version_ids_match("", "1.26.52.3"));
+    }
+
+    #[test]
     fn test_inspect_and_get_bedrock_status() {
         let temp_dir = std::env::temp_dir().join(format!(
             "cobble_bds_insp_{}",
@@ -2807,5 +5018,153 @@ mod tests {
         assert!(status.installed_versions.contains(&"1.21.50".to_string()));
 
         let _ = force_remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_uwp_launch_plan_covers_first_launch_cases() {
+        // Nothing installed: bootstrap the Store client + Xbox runtime
+        assert_eq!(
+            plan_uwp_launch(&BedrockRuntimeStatus::default()),
+            UwpLaunchPlan::BootstrapClient
+        );
+
+        // Client installed but Xbox runtime missing: install deps, then launch
+        let client_only = BedrockRuntimeStatus {
+            minecraft_uwp_installed: true,
+            winget_available: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_uwp_launch(&client_only),
+            UwpLaunchPlan::InstallDepsThenLaunch
+        );
+
+        // Fully provisioned: launch straight away
+        let ready = BedrockRuntimeStatus {
+            xbox_app_installed: true,
+            gaming_services_installed: true,
+            minecraft_uwp_installed: true,
+            winget_available: true,
+            ready: true,
+        };
+        assert_eq!(plan_uwp_launch(&ready), UwpLaunchPlan::LaunchNow);
+    }
+
+    #[test]
+    fn test_bedrock_runtime_status_probe() {
+        // Real Appx / winget probe must complete and stay internally consistent
+        let status = get_bedrock_runtime_status(true);
+        eprintln!("bedrock runtime status: {status:?}");
+        assert_eq!(
+            status.ready,
+            status.xbox_app_installed
+                && status.gaming_services_installed
+                && status.minecraft_uwp_installed
+        );
+
+        // Cached reads must return the same snapshot within the cache window
+        let cached = get_bedrock_runtime_status(false);
+        assert_eq!(cached.ready, status.ready);
+        assert_eq!(cached.winget_available, status.winget_available);
+    }
+
+    #[test]
+    fn offline_accounts_pick_the_bds_core_by_default() {
+        let root = std::env::temp_dir().join(format!(
+            "cobble_offline_bds_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let versions = root.join("bedrock").join("versions");
+        let client = versions.join("1.21.90");
+        let bds = versions.join("1.21.50");
+        std::fs::create_dir_all(&client).unwrap();
+        std::fs::create_dir_all(&bds).unwrap();
+        std::fs::write(client.join("Minecraft.Windows.exe"), b"").unwrap();
+        std::fs::write(bds.join("bedrock_server.exe"), b"").unwrap();
+
+        // Offline accounts pick the BDS core even though the client is newer.
+        let chosen = find_installed_standalone_core(&root, true).unwrap();
+        assert_eq!(chosen.3, "1.21.50");
+        assert!(chosen.2, "the selected core must be a server core");
+        assert_eq!(chosen.0, bds.join("bedrock_server.exe"));        // Online-capable accounts keep the newest installed core.
+        let newest = find_installed_standalone_core(&root, false).unwrap();
+        assert_eq!(newest.3, "1.21.90");
+        assert!(!newest.2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn newest_client_core_prefers_downloaded_client_cores() {
+        let root = std::env::temp_dir().join(format!(
+            "cobble_client_core_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let versions = root.join("bedrock").join("versions");
+        let bds = versions.join("1.21.50");
+        let uwp = versions.join("1.21.90");
+        let gdk = versions.join("1.26.201");
+        std::fs::create_dir_all(&bds).unwrap();
+        std::fs::create_dir_all(&uwp).unwrap();
+        std::fs::create_dir_all(&gdk).unwrap();
+        std::fs::write(bds.join("bedrock_server.exe"), b"").unwrap();
+        std::fs::write(uwp.join("Minecraft.Windows.exe"), b"").unwrap();
+        std::fs::write(gdk.join("1.26.201.msixvc"), b"dummy").unwrap();
+        std::fs::write(
+            gdk.join("version.json"),
+            r#"{"id":"1.26.201","name":"Minecraft 基岩版 1.26.201","packageFile":"1.26.201.msixvc"}"#,
+        )
+        .unwrap();
+
+        // A BDS server core is never picked as a client core.
+        let chosen = newest_client_core_dir(&root).unwrap();
+        assert_eq!(chosen.file_name().unwrap(), "1.26.201");
+
+        std::fs::remove_dir_all(&uwp).unwrap();
+        std::fs::remove_dir_all(&gdk).unwrap();
+        assert!(newest_client_core_dir(&root).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn appx_manifest_identity_and_application_id_are_parsed() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble_appx_manifest_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("AppxManifest.xml");
+        std::fs::write(
+            &manifest,
+            r#"<?xml version="1.0"?>
+<Package>
+  <Identity Name="Microsoft.MinecraftUWP" Publisher="CN=Microsoft Corporation" Version="1.26.201.0" />
+  <Applications>
+    <Application Id="App" Executable="Minecraft.Windows.exe" />
+  </Applications>
+</Package>"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            appx_identity_attr(&manifest, "Name").as_deref(),
+            Some("Microsoft.MinecraftUWP")
+        );
+        assert_eq!(appx_application_id(&manifest).as_deref(), Some("App"));
+
+        let _ = force_remove_dir_all(&dir);
     }
 }

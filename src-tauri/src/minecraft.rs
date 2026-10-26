@@ -228,7 +228,30 @@ pub struct Library {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryDownloads {
     pub artifact: Option<Artifact>,
+    #[serde(default, deserialize_with = "deserialize_classifiers")]
     pub classifiers: Option<HashMap<String, Artifact>>,
+}
+
+/// Betacraft's patched version JSONs store a `__comment` string inside
+/// `downloads.classifiers` (1.6.x ARM natives). Keep only well-formed artifact
+/// objects so the whole version still parses.
+fn deserialize_classifiers<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, Artifact>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<HashMap<String, serde_json::Value>>::deserialize(deserializer)?;
+    Ok(raw.map(|entries| {
+        entries
+            .into_iter()
+            .filter_map(|(name, value)| {
+                serde_json::from_value::<Artifact>(value)
+                    .ok()
+                    .map(|artifact| (name, artifact))
+            })
+            .collect()
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,6 +317,10 @@ impl AssetIndex {
 pub struct AssetObject {
     pub hash: String,
     pub size: u64,
+    /// Betacraft indexes point pruned legacy assets at their own mirror
+    /// (`https://resources.betacraft.uk/..`), which Mojang's CDN no longer serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1666,6 +1693,19 @@ struct PreparedAssets {
     total_bytes: u64,
 }
 
+/// Object URL for an asset index entry. Betacraft indexes carry an explicit
+/// per-object URL for assets Mojang pruned from its CDN; using the official
+/// resources host for those returns HTTP 404 mid-install.
+fn asset_object_url(hash: &str, object: &AssetObject) -> String {
+    if let Some(url) = object.url.as_deref() {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return url.to_string();
+        }
+    }
+    let prefix = hash.get(0..2).unwrap_or("00");
+    format!("{RESOURCES_URL}/{prefix}/{hash}")
+}
+
 async fn prepare_assets_plan(
     root: &Path,
     version: &VersionDetail,
@@ -1679,8 +1719,16 @@ async fn prepare_assets_plan(
         .map_err(|e| format!("无法创建资源索引目录: {e}"))?;
     let index_path = indexes.join(format!("{}.json", index_ref.id));
 
+    // Betacraft rewrites the indexes it serves (pruned assets get their own
+    // mirror URL), so the sha1/size recorded in the version JSON describe
+    // Mojang's original file and never match. Verifying them would both fail
+    // the install and re-download the index on every attempt.
+    let patched_index = index_ref.url.contains("betacraft.uk");
+
     let mut need_download = true;
-    if net::looks_complete(&index_path, index_ref.size) {
+    if patched_index {
+        need_download = !net::looks_complete(&index_path, None);
+    } else if net::looks_complete(&index_path, index_ref.size) {
         if let Some(expected) = &index_ref.sha1 {
             if let Ok(actual) = net::sha1_file(&index_path).await {
                 need_download = !actual.eq_ignore_ascii_case(expected);
@@ -1690,11 +1738,16 @@ async fn prepare_assets_plan(
         }
     }
     if need_download {
+        let (expected_sha1, expected_size) = if patched_index {
+            (None, None)
+        } else {
+            (index_ref.sha1.as_deref(), index_ref.size)
+        };
         net::download_file(
             &index_ref.url,
             &index_path,
-            index_ref.sha1.as_deref(),
-            index_ref.size,
+            expected_sha1,
+            expected_size,
             None,
         )
         .await?;
@@ -1710,6 +1763,12 @@ async fn prepare_assets_plan(
     for object in index.objects.values() {
         unique
             .entry(object.hash.clone())
+            .and_modify(|existing| {
+                // Duplicate names for one hash: keep the entry carrying a URL.
+                if existing.url.is_none() && object.url.is_some() {
+                    existing.url = object.url.clone();
+                }
+            })
             .or_insert_with(|| object.clone());
     }
 
@@ -1720,7 +1779,7 @@ async fn prepare_assets_plan(
         let prefix = hash.get(0..2).unwrap_or("00");
         total_bytes += object.size;
         jobs.push(FileJob {
-            url: format!("{RESOURCES_URL}/{prefix}/{hash}"),
+            url: asset_object_url(hash, object),
             dest: objects_dir.join(prefix).join(hash),
             sha1: Some(hash.clone()),
             size: Some(object.size),
@@ -2269,6 +2328,7 @@ pub struct LaunchRequest {
     pub launcher_visibility: Option<String>,
     pub process_priority: Option<String>,
     pub window_size: Option<String>,
+    pub jvm_args: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2757,6 +2817,14 @@ fn build_launch_spec(
         }
     }
 
+    if let Some(extra_jvm) = request.jvm_args.as_deref().map(str::trim) {
+        for arg in extra_jvm.split_whitespace() {
+            if !arg.is_empty() {
+                jvm_args.push(arg.to_string());
+            }
+        }
+    }
+
     jvm_args.push(version.main_class.clone());
 
     let mut game_args = if let Some(arguments) = &version.arguments {
@@ -3000,6 +3068,637 @@ pub async fn prepare_launch(
     Ok(spec)
 }
 
+// ---------------------------------------------------------------------------
+// Java Mod Management
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaModItem {
+    pub id: String,
+    pub name: String,
+    pub file_name: String,
+    pub path: String,
+    pub enabled: bool,
+    pub size: u64,
+    pub modified_time: String,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub mod_loader: Option<String>,
+    /// Icon shipped inside the jar, inlined as a `data:` URL so the list can
+    /// render it without exposing an asset protocol or a temp-file path.
+    #[serde(default)]
+    pub icon_data_url: Option<String>,
+}
+
+pub fn resolve_java_mods_dir(root: &Path, version_id: &str) -> PathBuf {
+    let ver_mods = root.join("versions").join(version_id).join("mods");
+    if ver_mods.is_dir() {
+        return ver_mods;
+    }
+    let global_mods = root.join("mods");
+    if global_mods.is_dir() {
+        return global_mods;
+    }
+    ver_mods
+}
+
+pub fn get_java_mods(root: &Path, version_id: &str) -> Result<Vec<JavaModItem>, String> {
+    let mut mods = Vec::new();
+    let mut seen_files = HashSet::new();
+
+    let dirs = [
+        root.join("versions").join(version_id).join("mods"),
+        root.join("mods"),
+    ];
+
+    for dir in &dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let lower = file_name.to_lowercase();
+            let is_jar = lower.ends_with(".jar");
+            let is_disabled = lower.ends_with(".disabled") || lower.ends_with(".dis");
+
+            if !is_jar && !is_disabled {
+                continue;
+            }
+
+            if seen_files.contains(&file_name) {
+                continue;
+            }
+            seen_files.insert(file_name.clone());
+
+            let enabled = !is_disabled;
+            let meta = std::fs::metadata(&p).ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified_time = meta
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| {
+                    let secs = d.as_secs();
+                    let dt = chrono_format_timestamp(secs);
+                    dt
+                })
+                .unwrap_or_else(|| "未知时间".to_string());
+
+            let mut mod_id = file_name
+                .trim_end_matches(".disabled")
+                .trim_end_matches(".dis")
+                .trim_end_matches(".jar")
+                .to_string();
+            let mut mod_name = mod_id.clone();
+            let mut mod_version = None;
+            let mut mod_desc = None;
+            let mut mod_loader = None;
+            let mut icon_data_url = None;
+
+            // Read the jar's own metadata: it carries the real display name,
+            // version, description and icon, which keeps the list readable even
+            // for Forge/NeoForge jars whose file name is a long coordinate.
+            if let Ok(file) = std::fs::File::open(&p) {
+                if let Ok(mut archive) = zip::ZipArchive::new(file) {
+                    let meta = read_jar_mod_metadata(&mut archive);
+                    if let Some(id) = meta.id.as_deref().filter(|id| !id.is_empty()) {
+                        mod_id = id.to_string();
+                    }
+                    if let Some(name) = meta.name.as_deref().filter(|name| !name.is_empty()) {
+                        mod_name = name.to_string();
+                    }
+                    mod_version = meta.version.clone();
+                    mod_desc = meta.description.clone();
+                    mod_loader = meta.loader.clone();
+                    icon_data_url =
+                        read_mod_icon_data_url(&mut archive, &mod_id, meta.icon_path.as_deref());
+                }
+            }
+
+            mods.push(JavaModItem {
+                id: mod_id,
+                name: mod_name,
+                file_name,
+                path: p.to_string_lossy().to_string(),
+                enabled,
+                size,
+                modified_time,
+                version: mod_version,
+                description: mod_desc,
+                mod_loader,
+                icon_data_url,
+            });
+        }
+    }
+
+    mods.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(mods)
+}
+
+/// Metadata read out of a mod jar, whichever loader wrote it.
+#[derive(Debug, Default)]
+struct JarModMetadata {
+    id: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+    loader: Option<String>,
+    /// Path of the icon inside the jar, when the loader metadata names one.
+    icon_path: Option<String>,
+}
+
+fn read_zip_text(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+    use std::io::Read;
+    let mut entry = archive.by_name(name).ok()?;
+    // Metadata files are tiny; refuse anything that looks like a mislabelled blob.
+    if entry.size() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Fabric/Quilt declare `icon` either as a path or as a size -> path map; keep
+/// the largest entry so the list gets the sharpest picture available.
+fn json_icon_path(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if let Some(path) = value.as_str() {
+        let path = path.trim();
+        return (!path.is_empty()).then(|| path.to_string());
+    }
+    value
+        .as_object()?
+        .iter()
+        .filter_map(|(size, path)| {
+            let path = path.as_str()?.trim();
+            if path.is_empty() {
+                return None;
+            }
+            Some((size.parse::<u64>().unwrap_or(0), path.to_string()))
+        })
+        .max_by_key(|(size, _)| *size)
+        .map(|(_, path)| path)
+}
+
+fn read_jar_mod_metadata(archive: &mut zip::ZipArchive<std::fs::File>) -> JarModMetadata {
+    let mut meta = JarModMetadata::default();
+
+    if let Some(text) = read_zip_text(archive, "fabric.mod.json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            meta.loader = Some("Fabric".to_string());
+            meta.id = json_string(&v, "id");
+            meta.name = json_string(&v, "name");
+            meta.version = json_string(&v, "version");
+            meta.description =
+                json_string(&v, "description").map(|d| normalize_mod_description(&d));
+            meta.icon_path = json_icon_path(v.get("icon"));
+            return meta;
+        }
+    }
+
+    if let Some(text) = read_zip_text(archive, "quilt.mod.json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            meta.loader = Some("Quilt".to_string());
+            if let Some(q) = v.get("quilt_loader") {
+                meta.id = json_string(q, "id");
+                meta.version = json_string(q, "version");
+                if let Some(metadata) = q.get("metadata") {
+                    meta.name = json_string(metadata, "name");
+                    meta.description = json_string(metadata, "description")
+                        .map(|d| normalize_mod_description(&d));
+                    meta.icon_path = json_icon_path(metadata.get("icon"));
+                }
+            }
+            return meta;
+        }
+    }
+
+    for (entry, loader) in [
+        ("META-INF/neoforge.mods.toml", "NeoForge"),
+        ("META-INF/mods.toml", "Forge"),
+    ] {
+        if let Some(text) = read_zip_text(archive, entry) {
+            meta.loader = Some(loader.to_string());
+            if let Some(parsed) = parse_forge_mods_toml(&text) {
+                meta.id = parsed.mod_id;
+                meta.name = parsed.display_name;
+                meta.version = parsed.version;
+                meta.description = parsed.description;
+                meta.icon_path = parsed.logo_file;
+            }
+            return meta;
+        }
+    }
+
+    if let Some(text) = read_zip_text(archive, "mcmod.info") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let first = match &v {
+                serde_json::Value::Array(items) => items.first().cloned(),
+                other => Some(other.clone()),
+            };
+            if let Some(entry) = first {
+                meta.loader = Some("Forge".to_string());
+                meta.id = json_string(&entry, "modid");
+                meta.name = json_string(&entry, "name");
+                meta.version = json_string(&entry, "version");
+                meta.description = json_string(&entry, "description")
+                    .map(|d| normalize_mod_description(&d));
+                meta.icon_path = json_string(&entry, "logoFile");
+            }
+        }
+    }
+
+    meta
+}
+
+#[derive(Debug, Default)]
+struct ForgeModsToml {
+    mod_id: Option<String>,
+    display_name: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+    logo_file: Option<String>,
+}
+
+/// Minimal reader for the `[[mods]]` table of `mods.toml`.
+///
+/// The launcher needs only a handful of fields, so this avoids pulling in a TOML
+/// dependency; it understands the value forms mod metadata actually uses: bare
+/// values, `"..."`, `'...'` and the multi-line `'''...'''` / `"""..."""`.
+fn parse_forge_mods_toml(text: &str) -> Option<ForgeModsToml> {
+    let block = first_toml_table(text, "[[mods]]")?;
+    let mut out = ForgeModsToml::default();
+    let mut offset = 0usize;
+
+    while offset < block.len() {
+        let line_end = block[offset..]
+            .find('\n')
+            .map(|i| offset + i)
+            .unwrap_or(block.len());
+        let line = &block[offset..line_end];
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            offset = line_end + 1;
+            continue;
+        }
+        let Some(eq) = line.find('=') else {
+            offset = line_end + 1;
+            continue;
+        };
+        let key = line[..eq].trim();
+        let (value, consumed) = read_toml_value(&block[offset + eq + 1..]);
+        offset = offset + eq + 1 + consumed.max(1);
+
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "modId" => out.mod_id = Some(value.to_string()),
+            "displayName" => out.display_name = Some(value.to_string()),
+            "version" => out.version = Some(value.to_string()),
+            "description" => out.description = Some(normalize_mod_description(value)),
+            "logoFile" => out.logo_file = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    Some(out)
+}
+
+/// A TOML line without its trailing `#` comment.
+fn toml_line_without_comment(line: &str) -> &str {
+    let trimmed = line.trim();
+    match trimmed.find('#') {
+        Some(index) => trimmed[..index].trim(),
+        None => trimmed,
+    }
+}
+
+/// Byte range of the first TOML table with the given header.
+fn first_toml_table<'a>(text: &'a str, header: &str) -> Option<&'a str> {
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if toml_line_without_comment(line) == header {
+            let body_start = offset + line.len();
+            let mut end = text.len();
+            let mut cursor = body_start;
+            for next in text[body_start..].split_inclusive('\n') {
+                if next.trim_start().starts_with('[') {
+                    end = cursor;
+                    break;
+                }
+                cursor += next.len();
+            }
+            return Some(&text[body_start..end]);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// Reads one TOML value and reports how many bytes of `text` it consumed.
+fn read_toml_value(text: &str) -> (String, usize) {
+    let start = text.len() - text.trim_start().len();
+    let body = &text[start..];
+
+    for delim in ["'''", "\"\"\""] {
+        if let Some(inner) = body.strip_prefix(delim) {
+            if let Some(end) = inner.find(delim) {
+                return (inner[..end].to_string(), start + end + delim.len() * 2);
+            }
+            return (inner.to_string(), text.len());
+        }
+    }
+
+    let quote = match body.as_bytes().first().copied() {
+        Some(b) if b == b'"' || b == 0x27 => b as char,
+        _ => {
+            let end = body.find('\n').unwrap_or(body.len());
+            let raw = body[..end].split(" #").next().unwrap_or("").trim();
+            return (raw.to_string(), start + end);
+        }
+    };
+
+    let mut out = String::new();
+    let mut consumed = 1usize;
+    let mut escaped = false;
+    for ch in body[1..].chars() {
+        consumed += ch.len_utf8();
+        if escaped {
+            out.push(match ch {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '"' => '"',
+                other => other,
+            });
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote == '"' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return (out, start + consumed);
+        }
+        out.push(ch);
+    }
+    (out, text.len())
+}
+
+/// Strips Minecraft formatting codes (`§a`, `§l`, …) and collapses whitespace so
+/// a description fits on a single list line.
+fn normalize_mod_description(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '§' {
+            chars.next();
+            continue;
+        }
+        stripped.push(if ch == '\n' || ch == '\r' || ch == '\t' {
+            ' '
+        } else {
+            ch
+        });
+    }
+    let joined = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.chars().take(280).collect()
+}
+
+/// Icons are small; anything larger is almost certainly not one.
+const MAX_MOD_ICON_BYTES: u64 = 512 * 1024;
+
+fn image_mime_for_path(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        Some("image/png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if lower.ends_with(".gif") {
+        Some("image/gif")
+    } else if lower.ends_with(".webp") {
+        Some("image/webp")
+    } else if lower.ends_with(".svg") {
+        Some("image/svg+xml")
+    } else {
+        None
+    }
+}
+
+fn bytes_look_like_image(bytes: &[u8], mime: &str) -> bool {
+    match mime {
+        "image/png" => bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+        "image/jpeg" => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "image/gif" => bytes.starts_with(b"GIF8"),
+        "image/webp" => bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        "image/svg+xml" => {
+            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).to_string();
+            head.trim_start_matches('\u{feff}').trim_start().starts_with('<')
+        }
+        _ => false,
+    }
+}
+
+/// Pulls a mod's icon out of its jar as a `data:` URL.
+///
+/// Loader metadata points at the icon (`fabric.mod.json` `icon`, `mods.toml`
+/// `logoFile`); everything else is guessed from the conventional locations so a
+/// jar without metadata still gets a picture instead of an empty tile.
+fn read_mod_icon_data_url(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    mod_id: &str,
+    declared: Option<&str>,
+) -> Option<String> {
+    use base64::Engine;
+    use std::io::Read;
+
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(declared) = declared {
+        let cleaned = declared
+            .trim()
+            .trim_start_matches("./")
+            .trim_start_matches('/');
+        if !cleaned.is_empty() {
+            candidates.push(cleaned.to_string());
+        }
+    }
+    for name in ["icon.png", "logo.png", "icon.jpg", "logo.jpg"] {
+        candidates.push(name.to_string());
+    }
+    if !mod_id.is_empty() {
+        for name in ["icon", "logo"] {
+            for ext in ["png", "jpg", "jpeg", "gif", "webp"] {
+                candidates.push(format!("assets/{mod_id}/{name}.{ext}"));
+            }
+        }
+    }
+
+    for candidate in candidates {
+        let Some(mime) = image_mime_for_path(&candidate) else {
+            continue;
+        };
+        let Ok(mut entry) = archive.by_name(&candidate) else {
+            continue;
+        };
+        let size = entry.size();
+        if size == 0 || size > MAX_MOD_ICON_BYTES {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(size as usize);
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        if !bytes_look_like_image(&bytes, mime) {
+            continue;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Some(format!("data:{mime};base64,{encoded}"));
+    }
+
+    None
+}
+
+fn chrono_format_timestamp(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem_secs = secs % 86400;
+    let hours = rem_secs / 3600;
+    let minutes = (rem_secs % 3600) / 60;
+    // Simple year-month-day approximation since UNIX epoch
+    let mut year = 1970;
+    let mut day_count = days;
+    loop {
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let days_in_year = if is_leap { 366 } else { 365 };
+        if day_count >= days_in_year {
+            day_count -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let month_days = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1;
+    for &d in &month_days {
+        if day_count >= d {
+            day_count -= d;
+            month += 1;
+        } else {
+            break;
+        }
+    }
+    let day = day_count + 1;
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}")
+}
+
+pub fn toggle_java_mod(
+    root: &Path,
+    version_id: &str,
+    file_name: &str,
+    enable: bool,
+) -> Result<(), String> {
+    let dirs = [
+        root.join("versions").join(version_id).join("mods"),
+        root.join("mods"),
+    ];
+
+    for dir in &dirs {
+        let target = dir.join(file_name);
+        if target.is_file() {
+            let new_name = if enable {
+                if file_name.ends_with(".disabled") {
+                    file_name.trim_end_matches(".disabled").to_string()
+                } else if file_name.ends_with(".dis") {
+                    file_name.trim_end_matches(".dis").to_string()
+                } else {
+                    file_name.to_string()
+                }
+            } else {
+                if !file_name.ends_with(".disabled") && !file_name.ends_with(".dis") {
+                    format!("{file_name}.disabled")
+                } else {
+                    file_name.to_string()
+                }
+            };
+
+            let new_path = dir.join(&new_name);
+            if new_path != target {
+                std::fs::rename(&target, &new_path)
+                    .map_err(|e| format!("重命名模组文件失败: {e}"))?;
+            }
+            return Ok(());
+        }
+    }
+
+    Err(format!("未找到指定模组文件: {file_name}"))
+}
+
+pub fn delete_java_mod(root: &Path, version_id: &str, file_name: &str) -> Result<(), String> {
+    let dirs = [
+        root.join("versions").join(version_id).join("mods"),
+        root.join("mods"),
+    ];
+
+    for dir in &dirs {
+        let target = dir.join(file_name);
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(|e| format!("删除模组文件失败: {e}"))?;
+            return Ok(());
+        }
+    }
+
+    Err(format!("未找到指定模组文件: {file_name}"))
+}
+
+pub fn install_java_mod_file(
+    root: &Path,
+    version_id: &str,
+    src_path: &Path,
+) -> Result<String, String> {
+    if !src_path.is_file() {
+        return Err("源模组文件不存在".to_string());
+    }
+    let file_name = src_path
+        .file_name()
+        .ok_or_else(|| "源文件名无效".to_string())?
+        .to_string_lossy()
+        .to_string();
+
+    let target_dir = root.join("versions").join(version_id).join("mods");
+    std::fs::create_dir_all(&target_dir).map_err(|e| format!("创建模组目录失败: {e}"))?;
+
+    let dest = target_dir.join(&file_name);
+    std::fs::copy(src_path, &dest).map_err(|e| format!("复制模组文件失败: {e}"))?;
+
+    Ok(format!("已成功安装模组: {file_name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3121,6 +3820,61 @@ mod tests {
     }
 
     #[test]
+    fn betacraft_asset_urls_are_used_before_the_mojang_cdn() {
+        let index: AssetIndex = serde_json::from_str(
+            r#"{
+                "objects": {
+                    "newsound/random/bow.ogg": {
+                        "hash": "f1b527e059bb4abe3aed3acf6b5eb96f40b07f67",
+                        "size": 8589,
+                        "url": "https://resources.betacraft.uk/f1/f1b527e059bb4abe3aed3acf6b5eb96f40b07f67"
+                    },
+                    "sound/random/click.ogg": {
+                        "hash": "022e48005197b37f0caa53e8051c8a266eeae15e",
+                        "size": 9796
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let betacraft_object = &index.objects["newsound/random/bow.ogg"];
+        assert_eq!(
+            asset_object_url(&betacraft_object.hash, betacraft_object),
+            "https://resources.betacraft.uk/f1/f1b527e059bb4abe3aed3acf6b5eb96f40b07f67"
+        );
+
+        let plain_object = &index.objects["sound/random/click.ogg"];
+        assert_eq!(
+            asset_object_url(&plain_object.hash, plain_object),
+            "https://resources.download.minecraft.net/02/022e48005197b37f0caa53e8051c8a266eeae15e"
+        );
+    }
+
+    #[test]
+    fn betacraft_classifier_comment_does_not_break_parsing() {
+        // Verbatim shape from Betacraft's 1.6.4 version JSON.
+        let downloads: LibraryDownloads = serde_json::from_str(
+            r#"{
+                "classifiers": {
+                    "__comment": "Add arm natives for linux and windows",
+                    "natives-windows": {
+                        "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-windows.jar",
+                        "sha1": "33b2a5c2d5d0a6a0f2a5b0b0ad1c8bb1e3e2f6a2",
+                        "size": 1234,
+                        "url": "https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-windows.jar"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let classifiers = downloads.classifiers.unwrap();
+        assert_eq!(classifiers.len(), 1);
+        assert!(classifiers.contains_key("natives-windows"));
+    }
+
+    #[test]
     fn library_conflict_key_preserves_classifiers_and_filters_foreign_arch() {
         let base_lwjgl = Library {
             name: "org.lwjgl:lwjgl:3.3.3".to_string(),
@@ -3156,5 +3910,135 @@ mod tests {
                 "org.lwjgl:lwjgl:3.3.3:natives-windows-arm64"
             ));
         }
+    }
+
+    #[test]
+    fn test_java_mod_management() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "oml_test_jmods_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let ver_mods = temp_dir.join("versions").join("1.20.1-Fabric").join("mods");
+        std::fs::create_dir_all(&ver_mods).unwrap();
+        let mod_file = ver_mods.join("test_mod.jar");
+        std::fs::write(&mod_file, b"dummy jar").unwrap();
+
+        // Check get_java_mods
+        let list = get_java_mods(&temp_dir, "1.20.1-Fabric").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].file_name, "test_mod.jar");
+        assert!(list[0].enabled);
+
+        // Toggle disabled
+        toggle_java_mod(&temp_dir, "1.20.1-Fabric", "test_mod.jar", false).unwrap();
+        let list2 = get_java_mods(&temp_dir, "1.20.1-Fabric").unwrap();
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0].file_name, "test_mod.jar.disabled");
+        assert!(!list2[0].enabled);
+
+        // Toggle enabled
+        toggle_java_mod(&temp_dir, "1.20.1-Fabric", "test_mod.jar.disabled", true).unwrap();
+        let list3 = get_java_mods(&temp_dir, "1.20.1-Fabric").unwrap();
+        assert_eq!(list3.len(), 1);
+        assert_eq!(list3[0].file_name, "test_mod.jar");
+        assert!(list3[0].enabled);
+
+        // Delete mod
+        delete_java_mod(&temp_dir, "1.20.1-Fabric", "test_mod.jar").unwrap();
+        let list4 = get_java_mods(&temp_dir, "1.20.1-Fabric").unwrap();
+        assert_eq!(list4.len(), 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_forge_mods_toml_parsing() {
+        // Mirrors the shape real Forge jars ship: CRLF endings, trailing `#`
+        // comments after every value and after the table header itself.
+        let text = concat!(
+            "modLoader = \"javafml\" #mandatory\r\n",
+            "license = \"All Rights Reserved\" # comment\r\n",
+            "[[mods]] #mandatory\r\n",
+            "modId = \"xaerominimap\" #mandatory\r\n",
+            "version = \"26.6.0\" #mandatory\r\n",
+            "displayName = \"Xaero's Minimap\" #mandatory\r\n",
+            "logoFile = \"assets/xaerominimap/icon.png\"\r\n",
+            "description = '''A minimap for Minecraft.\r\n",
+            "It shows §epoints of interest§r on the map.''' #mandatory\r\n",
+            "[[dependencies.xaerominimap]] #optional\r\n",
+            "    modId = \"forge\" #mandatory\r\n",
+        );
+
+        let parsed = parse_forge_mods_toml(text).expect("mods table");
+        assert_eq!(parsed.mod_id.as_deref(), Some("xaerominimap"));
+        assert_eq!(parsed.display_name.as_deref(), Some("Xaero's Minimap"));
+        assert_eq!(parsed.version.as_deref(), Some("26.6.0"));
+        assert_eq!(
+            parsed.logo_file.as_deref(),
+            Some("assets/xaerominimap/icon.png")
+        );
+        assert_eq!(
+            parsed.description.as_deref(),
+            Some("A minimap for Minecraft. It shows points of interest on the map.")
+        );
+    }
+
+    #[test]
+    fn test_java_mod_icon_and_forge_metadata() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "oml_test_modicon_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let mods_dir = temp_dir.join("versions").join("1.21.1-forge").join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+
+        let png: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D', b'R',
+        ];
+
+        let jar_path = mods_dir.join("xaerominimap-forge-1.21.1-26.6.0.jar");
+        {
+            let file = std::fs::File::create(&jar_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("META-INF/mods.toml", options).unwrap();
+            writer
+                .write_all(
+                    br#"[[mods]]
+modId="xaerominimap"
+version="26.6.0"
+displayName="Xaero's Minimap"
+logoFile="assets/xaerominimap/icon.png"
+description="A minimap."
+"#,
+                )
+                .unwrap();
+            writer
+                .start_file("assets/xaerominimap/icon.png", options)
+                .unwrap();
+            writer.write_all(png).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let list = get_java_mods(&temp_dir, "1.21.1-forge").unwrap();
+        assert_eq!(list.len(), 1);
+        let item = &list[0];
+        assert_eq!(item.name, "Xaero's Minimap");
+        assert_eq!(item.version.as_deref(), Some("26.6.0"));
+        assert_eq!(item.mod_loader.as_deref(), Some("Forge"));
+        assert_eq!(item.description.as_deref(), Some("A minimap."));
+        let icon = item.icon_data_url.as_deref().expect("icon extracted");
+        assert!(icon.starts_with("data:image/png;base64,"), "{icon}");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

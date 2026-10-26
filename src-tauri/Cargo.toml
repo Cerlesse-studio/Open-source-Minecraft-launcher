@@ -21,7 +21,13 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# `gzip`/`deflate` matter for the Modrinth API: its version lists are
+# uncompressed JSON of over a megabyte, and compressing them cuts load time
+# by roughly 10x on slow links.
+# Native roots matter: Microsoft's update delivery (fe3.delivery.mp.microsoft.com,
+# which serves UWP packages) chains to `Microsoft Root Certificate Authority
+# 2011`, a root that only lives in the Windows store — never in webpki-roots.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots", "gzip", "deflate"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "sync", "time", "process", "macros", "rt-multi-thread"] }
 sha1 = "0.10"

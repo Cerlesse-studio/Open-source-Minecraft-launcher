@@ -68,15 +68,19 @@
 - **原生 DLL 模组管理 (DllMods)**：遵循 BedrockBoot 目录与配置规范，支持原生 `.dll` 模组、LeviLamina 插件与行为包的一键启停（`.disabled` 切换）、删除与本地导入。
 
 ### ❖ 基岩版环境管理 (Bedrock Edition)
+- **首次启动依赖自检**：所有基岩版启动路径（商店客户端、`.msixvc` 加密包、AppX、BDS 独立核心）都会在启动前自检运行依赖；Xbox GDK 路径会通过 winget 自动静默补齐「Xbox 应用」与「游戏服务」，随后直接唤起游戏，无需手动排查。
+- **UWP / AppX 核心不经过 Microsoft Store**：下载得到的 UWP 核心由启动器自行解包，并按 BedrockBoot 的方式以开发模式在本机注册（`Add-AppxPackage -Register`，不带 `-DisableDevelopmentMode`），随后按应用标识唤起游戏；本机未安装的框架依赖会被自动跳过，不再回退到 `minecraft:` 协议或弹出商店安装页。安装包内的原始清单会保留为 `AppxManifest.factory.xml`。
+- **Xbox GDK 加密包自动接管**：选中 `.msixvc` 加密核心时不再报错阻塞，启动器会自动探测并补齐运行依赖，随后直接唤起商店版客户端；若 winget 缺失或安装被拦截，会自动打开对应商店安装页。
 - **85+ 款官方 Xbox Live CDN 实测直链**：集成高带宽原生直链，支持正式版与预览版极速下载安装。
-- **UWP / 独立核心多实例并存**：支持原生一键启动 Windows Store UWP 正版基岩版，或一键启动本地版本隔离的独立运行核心。
+- **离线账户核心策略**：离线账户启动基岩版时优先使用已安装的 BDS 独立核心；若只下载了 UWP/AppX 或 GDK 核心，则直接注册并唤起对应客户端（GDK 加密包自动补齐 Xbox 运行环境），不再强制改用 BDS；本机完全没有核心时才自动后台部署 BDS，无需手动选版本。
+- **UWP / 独立核心多实例并存**：下载的 UWP/AppX 核心会以开发模式注册并直接启动，商店版 UWP 正版同样一键唤起，也可运行版本隔离的 AppX / BDS 独立核心。
 - **光影与行为包自动部署**：原生支持 `.mcpack` 与 `.mcaddon`，智能区分资源包与行为包，一键解压并部署至 `com.mojang` 与实例目录。
 
 ### ▦ 资源市场
 接入 Modrinth，可按游戏版本、加载器（Fabric/Forge/NeoForge/Quilt/Bedrock）和热度搜索模组、整合包、光影包与材质包，自动下载部署至目标实例目录。
 
 ### ☕ 智能运行时环境
-启动前根据 Minecraft 版本规范自动匹配系统已安装的 Java 版本；缺失时可一键自动拉取 Eclipse Temurin JRE / JDK。
+启动前根据 Minecraft 版本规范自动匹配系统已安装的 Java 版本；首次启动若缺失对应 Java，会自动下载并部署 Eclipse Temurin JRE / JDK 后继续启动，无需手动干预。
 
 ---
 
