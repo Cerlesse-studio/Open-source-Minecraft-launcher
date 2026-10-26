@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { cn } from "cn";
@@ -136,6 +137,7 @@ export function VersionSelectView({
   const [cloudBedrockVersions, setCloudBedrockVersions] = useState<BedrockVersionItem[]>([]);
   const [deletingItem, setDeletingItem] = useState<MixedVersionItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [cleaningLeftovers, setCleaningLeftovers] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -145,6 +147,34 @@ export function VersionSelectView({
       // ignore
     }
   }, [gameRoot]);
+
+  const leftovers = bedrockStatus?.leftoverVersions ?? [];
+
+  // Folders left behind by aborted downloads never show up as installed cores,
+  // so they had no delete entry at all. Clearing them goes through the same
+  // backend delete path as a real version.
+  const handleCleanLeftovers = useCallback(async () => {
+    if (cleaningLeftovers || leftovers.length === 0) return;
+    setCleaningLeftovers(true);
+    const failed: string[] = [];
+    try {
+      for (const id of leftovers) {
+        try {
+          await deleteBedrockVersion(id, gameRoot);
+        } catch (error) {
+          failed.push(`${id}: ${String(error)}`);
+        }
+      }
+      await refreshStatus();
+      if (failed.length === 0) {
+        onNotify?.("success", "已清理残留目录", `移除 ${leftovers.length} 个未完成安装的目录。`);
+      } else {
+        onNotify?.("error", "部分残留目录无法清理", failed.join("\n"));
+      }
+    } finally {
+      setCleaningLeftovers(false);
+    }
+  }, [cleaningLeftovers, leftovers, gameRoot, refreshStatus, onNotify]);
 
   useEffect(() => {
     void refreshStatus();
@@ -442,6 +472,31 @@ export function VersionSelectView({
                     打开基岩版目录
                   </Button>
                 </div>
+                {leftovers.length > 0 ? (
+                  <div className="mt-1.5 flex items-center justify-between gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-1.5 py-1">
+                    <span className="flex min-w-0 items-center gap-1 text-[9.5px] text-amber-400/90">
+                      <TriangleAlert className="size-2.5 shrink-0" />
+                      <span className="truncate" title={leftovers.join("\n")}>
+                        {leftovers.length} 个残留目录
+                      </span>
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="h-5 shrink-0 gap-1 px-1.5 text-[9.5px] text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                      disabled={cleaningLeftovers}
+                      onClick={() => void handleCleanLeftovers()}
+                      title={`清理: ${leftovers.join(", ")}`}
+                    >
+                      {cleaningLeftovers ? (
+                        <LoaderCircle className="size-2.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="size-2.5" />
+                      )}
+                      清理
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </CardContent>
           </Card>

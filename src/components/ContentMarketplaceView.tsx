@@ -3,6 +3,7 @@ import { cn } from "cn";
 import {
   ArrowDownToLine,
   ArrowUpDown,
+  Boxes,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -85,10 +86,18 @@ function formatCount(num: number): string {
   return String(num);
 }
 
-function typeDestinationLabel(type: ContentProjectType): string {
+function typeDestinationLabel(type: ContentProjectType, bedrock: boolean): string {
+  if (bedrock) {
+    // Bedrock packs are deployed into the game data folder, not a Java
+    // instance: the installer sorts them into resource_packs/behavior_packs.
+    return type === "shader" || type === "resourcepack"
+      ? "com.mojang/resource_packs"
+      : "com.mojang/behavior_packs";
+  }
   switch (type) {
     case "mod":
-      return "mods/";
+      // Mods live with their instance; there is no shared `mods/` folder.
+      return "versions/<对应版本>/mods";
     case "shader":
       return "shaderpacks/";
     case "datapack":
@@ -127,6 +136,7 @@ function getPaginationRange(current: number, total: number, maxVisible = 7): Arr
 
 export function ContentMarketplaceView({
   projectType,
+  selectedVersion,
   gameRoot,
   onOpenFolder,
   onNotify,
@@ -137,6 +147,18 @@ export function ContentMarketplaceView({
   const [loader, setLoader] = useState("all");
   const [sort, setSort] = useState("downloads");
   const [importing, setImporting] = useState(false);
+  // Bedrock add-ons come from CurseForge instead of Modrinth.
+  const [bedrockOnly, setBedrockOnly] = useState(false);
+  const isBedrockSource = bedrockOnly || loader === "bedrock";
+
+  // Java mods are installed into the instance they were built for, so the
+  // destination pill follows the selected version instead of a shared folder.
+  const modDestinationPath = selectedVersion
+    ? `versions/${selectedVersion}/mods`
+    : "versions/<对应版本>/mods";
+  const modDestinationOpen = selectedVersion
+    ? `${gameRoot}/${modDestinationPath}`
+    : `${gameRoot}/versions`;
 
   const [hits, setHits] = useState<ContentHit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -147,7 +169,14 @@ export function ContentMarketplaceView({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [jumpInput, setJumpInput] = useState("");
-  const prevFilterRef = useRef({ projectType, debouncedQuery, gameVersion, loader, sort });
+  const prevFilterRef = useRef({
+    projectType,
+    debouncedQuery,
+    gameVersion,
+    loader,
+    sort,
+    bedrockOnly,
+  });
 
   const totalPages = Math.max(1, Math.ceil(totalHits / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -210,8 +239,8 @@ export function ContentMarketplaceView({
       const res = await searchContent({
         query: debouncedQuery,
         projectType,
-        gameVersion: gameVersion !== "all" ? gameVersion : undefined,
-        loader: loader !== "all" ? loader : undefined,
+        gameVersion: !isBedrockSource && gameVersion !== "all" ? gameVersion : undefined,
+        loader: isBedrockSource ? "bedrock" : loader !== "all" ? loader : undefined,
         sort,
         offset,
         limit: targetPageSize,
@@ -232,10 +261,18 @@ export function ContentMarketplaceView({
       pf.debouncedQuery !== debouncedQuery ||
       pf.gameVersion !== gameVersion ||
       pf.loader !== loader ||
-      pf.sort !== sort;
+      pf.sort !== sort ||
+      pf.bedrockOnly !== bedrockOnly;
 
     if (filterChanged) {
-      prevFilterRef.current = { projectType, debouncedQuery, gameVersion, loader, sort };
+      prevFilterRef.current = {
+        projectType,
+        debouncedQuery,
+        gameVersion,
+        loader,
+        sort,
+        bedrockOnly,
+      };
       if (page !== 1) {
         setPage(1);
         return;
@@ -243,7 +280,7 @@ export function ContentMarketplaceView({
     }
 
     void doSearch(page, pageSize);
-  }, [projectType, debouncedQuery, gameVersion, loader, sort, page, pageSize]);
+  }, [projectType, debouncedQuery, gameVersion, loader, sort, bedrockOnly, page, pageSize]);
 
   // If a project is selected, render the dedicated Standalone Page (No Floating Popup!)
   if (selectedProject) {
@@ -253,7 +290,7 @@ export function ContentMarketplaceView({
         projectType={projectType}
         gameRoot={gameRoot}
         initialGameVersion={gameVersion}
-        initialLoader={loader}
+        initialLoader={isBedrockSource ? "bedrock" : loader}
         onBack={() => setSelectedProject(null)}
         onOpenFolder={onOpenFolder}
         onNotify={onNotify}
@@ -272,17 +309,21 @@ export function ContentMarketplaceView({
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={`在 Modrinth 搜索${
-                projectType === "mod"
-                  ? "模组 (如 JEI, Sodium, Create)…"
-                  : projectType === "shader"
-                    ? "光影包 (如 Complementary, BSL)…"
-                    : projectType === "datapack"
-                      ? "数据包 (如 Terralith, Incendium)…"
-                      : projectType === "modpack"
-                        ? "整合包 (如 Fabulously Optimized)…"
-                        : "资源包…"
-              }`}
+              placeholder={
+                isBedrockSource
+                  ? "在 CurseForge 搜索基岩版附加包 (行为包 / 材质光影 / 地图)…"
+                  : `在 Modrinth 搜索${
+                      projectType === "mod"
+                        ? "模组 (如 JEI, Sodium, Create)…"
+                        : projectType === "shader"
+                          ? "光影包 (如 Complementary, BSL)…"
+                          : projectType === "datapack"
+                            ? "数据包 (如 Terralith, Incendium)…"
+                            : projectType === "modpack"
+                              ? "整合包 (如 Fabulously Optimized)…"
+                              : "资源包…"
+                    }`
+              }
               className="h-10 rounded-xl border-border/70 bg-background/60 pl-9 pr-9 text-xs shadow-xs focus-visible:ring-1"
             />
             {query ? (
@@ -328,7 +369,29 @@ export function ContentMarketplaceView({
         {/* Row 2: Filter Pills & Folder Path */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2.5">
           <div className="flex flex-wrap items-center gap-2">
+            {/* Bedrock catalogue toggle: CurseForge instead of Modrinth */}
+            <Button
+              variant={isBedrockSource ? "default" : "outline"}
+              size="sm"
+              className={cn(
+                "h-8 gap-1.5 rounded-lg px-2.5 text-xs",
+                !isBedrockSource &&
+                  "border-border/70 bg-background/50 font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+              )}
+              onClick={() => {
+                setBedrockOnly((current) => !current);
+                setLoader("all");
+                setGameVersion("all");
+                setPage(1);
+              }}
+              title="切换基岩版资源库 (CurseForge)"
+            >
+              <Boxes className="size-3.5" />
+              基岩版
+            </Button>
+
             {/* Game Version Filter */}
+            {!isBedrockSource ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -359,9 +422,17 @@ export function ContentMarketplaceView({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            ) : (
+              <Badge
+                variant="outline"
+                className="h-8 gap-1.5 rounded-lg border-emerald-500/35 bg-emerald-500/10 px-2.5 text-[11px] font-normal text-emerald-400"
+              >
+                CurseForge · 基岩版全版本
+              </Badge>
+            )}
 
             {/* Loader Filter */}
-            {(projectType === "mod" || projectType === "modpack") && (
+            {!isBedrockSource && (projectType === "mod" || projectType === "modpack") && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -438,12 +509,17 @@ export function ContentMarketplaceView({
             </DropdownMenu>
           </div>
 
-          {/* Target Directory Clickable Pill */}
+          {/* Target Directory Clickable Pill. Java mods are installed per
+              instance, so they point at the selected version's own folder. */}
           <button
             type="button"
             onClick={() =>
               onOpenFolder(
-                `${gameRoot}/${typeDestinationLabel(projectType)}`,
+                isBedrockSource
+                  ? `${gameRoot}/bedrock/games/com.mojang`
+                  : projectType === "mod"
+                    ? modDestinationOpen
+                    : `${gameRoot}/${typeDestinationLabel(projectType, false)}`,
               )
             }
             title="点击打开对应存储文件夹"
@@ -452,7 +528,11 @@ export function ContentMarketplaceView({
             <FolderOpen className="size-3.5 text-primary/80 transition-transform group-hover:scale-110" />
             <span>目标:</span>
             <code className="font-mono text-[10.5px] text-foreground/85 transition-colors group-hover:text-primary">
-              {typeDestinationLabel(projectType)}
+              {isBedrockSource
+                ? typeDestinationLabel(projectType, true)
+                : projectType === "mod"
+                  ? modDestinationPath
+                  : typeDestinationLabel(projectType, false)}
             </code>
           </button>
         </div>
@@ -462,6 +542,11 @@ export function ContentMarketplaceView({
       <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
         <span>
           找到约 <strong className="font-mono text-foreground">{totalHits}</strong> 个资源
+          {isBedrockSource ? (
+            <span className="ml-1.5 text-emerald-400/85">
+              · 数据来源 CurseForge（基岩版 gameId 78022）
+            </span>
+          ) : null}
           {totalHits > 0 ? (
             <span className="ml-1 text-muted-foreground/75">
               (第 {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalHits)} 项)

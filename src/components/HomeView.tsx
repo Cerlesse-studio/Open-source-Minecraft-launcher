@@ -367,10 +367,10 @@ export function HomeView({
       ? activeProgress?.detail || runtime.detail || "正在检查运行环境…"
       : isBedrock
         ? isBedrockInstalled
-          ? "基岩版已就绪，随时出发"
+          ? settings?.statusText?.trim() || "基岩版已就绪，随时出发"
           : "尚未下载安装此基岩版本"
         : isInstalled
-          ? "准备就绪，随时出发"
+          ? settings?.statusText?.trim() || "准备就绪，随时出发"
           : selectedVersion
             ? "此版本尚未安装"
             : "还没有可启动的版本";
@@ -380,10 +380,10 @@ export function HomeView({
       ? "正在启动…"
       : isBedrock
         ? isBedrockInstalled
-          ? "启动基岩版"
+          ? settings?.launchButtonText?.trim() || "启动基岩版"
           : "下载基岩版"
         : isInstalled
-          ? "启动游戏"
+          ? settings?.launchButtonText?.trim() || "启动游戏"
           : "下载游戏";
 
   return (
@@ -827,7 +827,7 @@ export function HomeView({
                         ? "正在启动…"
                         : isBedrock
                           ? isBedrockInstalled
-                            ? "启动基岩版"
+                            ? settings?.launchButtonText?.trim() || "启动基岩版"
                             : "获取并下载基岩版"
                           : launchLabel}
                   </Button>

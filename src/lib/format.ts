@@ -32,6 +32,30 @@ export function formatDate(iso?: string): string {
   });
 }
 
+export function formatRelativeDate(iso?: string): string {
+  if (!iso) return "未知日期";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "未知日期";
+
+  const diff = Date.now() - date.getTime();
+  if (diff < 0) return formatDate(iso);
+
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diff < hour) return `${Math.max(1, Math.floor(diff / minute))} 分钟前`;
+  if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
+
+  const days = Math.floor(diff / day);
+  if (days < 30) return `${days} 天前`;
+
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} 个月前`;
+
+  return `${Math.floor(months / 12)} 年前`;
+}
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];

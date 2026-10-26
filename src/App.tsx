@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar, TitleBar } from "./components/Chrome";
 import { DownloadCatalogView } from "./components/DownloadCatalogView";
@@ -192,11 +199,13 @@ export default function App() {
   useEffect(() => {
     applyThemeToDom(settings);
   }, [
-    settings.themeColor,
     settings.customThemeColor,
     settings.themeMode,
     settings.fontFamily,
+    settings.fontWeight,
+    settings.letterSpacing,
     settings.enableAnimation,
+    settings.uiOpacity,
   ]);
 
   useEffect(() => {
@@ -1136,8 +1145,40 @@ export default function App() {
     contentRef.current?.scrollTo({ top: 0 });
   }, [view]);
 
+  // A single wallpaper layer for the whole window. It has to live outside the
+  // scrolling `<main>`: an absolute layer inside a scroll container stays glued
+  // to the top of the content, so changing the wallpaper from the settings page
+  // (which is scrolled far down) looked like nothing happened.
+  const wallpaperStyle = (() => {
+    if (settings.backgroundType !== "custom" || !bgDataUrl) return null;
+    const alpha = Math.min(1, Math.max(0.05, settings.backgroundOpacity / 100));
+    return {
+      backgroundImage: `url(${bgDataUrl})`,
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+      backgroundRepeat: "no-repeat",
+      filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
+      opacity: alpha,
+      transform: settings.backgroundBlur > 0 ? "scale(1.04)" : undefined,
+    } satisfies CSSProperties;
+  })();
+
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="relative isolate flex h-screen flex-col overflow-hidden bg-background text-foreground">
+      {/* Solid backdrop: when the UI surfaces are faded for a wallpaper, this
+          keeps the desktop from showing through the window itself. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 -z-20"
+        style={{ background: "var(--background-solid)" }}
+      />
+      {wallpaperStyle ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 -z-10"
+          style={wallpaperStyle}
+        />
+      ) : null}
       <TitleBar demo={!isDesktop} title={settings.windowTitle} />
       <div className="flex min-h-0 flex-1">
         <Sidebar
@@ -1150,7 +1191,7 @@ export default function App() {
           javaPath={settings.javaPath}
           javaDetecting={javaDetecting}
           runtimeStatus={runtime.status}
-          launcherVersion={systemInfo?.launcherVersion ?? "0.1.0"}
+          launcherVersion={systemInfo?.launcherVersion ?? "0.0.7"}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
           skinType={settings.offlineSkinType}
@@ -1166,42 +1207,6 @@ export default function App() {
               : "relative min-h-0 flex-1 overflow-y-auto"
           }
         >
-          {/* Background Wallpaper Layer */}
-          {settings.backgroundType === "custom" && bgDataUrl ? (
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat transition-all duration-300"
-              style={{
-                backgroundImage: `url(${bgDataUrl})`,
-                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
-                opacity: settings.backgroundOpacity / 100,
-                transform: settings.backgroundBlur > 0 ? "scale(1.05)" : undefined,
-              }}
-            />
-          ) : settings.backgroundType === "dirt" ? (
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-25 [image-rendering:pixelated]"
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23573d26'/%3E%3Crect x='0' y='0' width='8' height='8' fill='%2369492d'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%2347311e'/%3E%3Crect x='2' y='2' width='4' height='4' fill='%237a5534'/%3E%3Crect x='10' y='10' width='4' height='4' fill='%23573d26'/%3E%3Crect x='4' y='10' width='2' height='2' fill='%23865d39'/%3E%3Crect x='10' y='4' width='2' height='2' fill='%23382717'/%3E%3C/svg%3E")`,
-                backgroundRepeat: "repeat",
-                backgroundSize: "32px 32px",
-                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
-              }}
-            />
-          ) : settings.backgroundType === "stone" ? (
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-25 [image-rendering:pixelated]"
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%235c5c5c'/%3E%3Crect x='0' y='0' width='8' height='8' fill='%236b6b6b'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%234a4a4a'/%3E%3Crect x='2' y='2' width='4' height='4' fill='%237a7a7a'/%3E%3Crect x='10' y='10' width='4' height='4' fill='%23525252'/%3E%3Crect x='4' y='10' width='2' height='2' fill='%238c8c8c'/%3E%3Crect x='10' y='4' width='2' height='2' fill='%233b3b3b'/%3E%3C/svg%3E")`,
-                backgroundRepeat: "repeat",
-                backgroundSize: "32px 32px",
-                filter: settings.backgroundBlur > 0 ? `blur(${settings.backgroundBlur}px)` : undefined,
-              }}
-            />
-          ) : null}
-
           {/* 3D World Grid Layer */}
           {settings.showWorldGrid ? (
             <div
@@ -1243,7 +1248,13 @@ export default function App() {
                   onEditionChange={handleEditionChange}
                   selectedBedrockVersion={selectedBedrockVersion}
                   onSelectBedrockVersion={handleSelectBedrockVersion}
-                  onSelect={handleSelectVersion}
+                  onSelect={(versionId) => {
+                    // Picking a version is the end of this page: remember the
+                    // choice and go straight back to the launcher home where
+                    // the big launch button lives.
+                    handleSelectVersion(versionId);
+                    setView("home");
+                  }}
                   onPlay={(versionId) => void handleLaunch(versionId)}
                   onPlayBedrock={(verId) => {
                     void (async () => {
@@ -1348,6 +1359,7 @@ export default function App() {
                   manifest={manifest}
                   installed={installed}
                   selectedVersion={selectedVersion}
+                  edition={edition}
                   onSelectVersion={handleSelectVersion}
                   playerName={settings.playerName}
                   gameRoot={settings.gameRoot}

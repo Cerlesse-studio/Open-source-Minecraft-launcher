@@ -1,6 +1,6 @@
 [package]
 name = "open-source-minecraft-launcher"
-version = "0.1.0"
+version = "0.0.7"
 description = "Open-source-Minecraft-launcher — an open-source Minecraft launcher"
 authors = ["you"]
 edition = "2024"

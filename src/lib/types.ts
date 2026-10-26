@@ -158,6 +158,13 @@ export interface ContentVersionItem {
   files: ContentFile[];
 }
 
+/** A resolved MC 百科 page (`/class/<id>.html` or `/modpack/<id>.html`). */
+export interface WikiEntry {
+  id: number;
+  title: string;
+  url: string;
+}
+
 export interface DownloadContentRequest {
   root: string;
   instanceId?: string;
@@ -167,12 +174,20 @@ export interface DownloadContentRequest {
   sha1?: string;
   size?: number;
   title: string;
+  /** Minecraft versions the build was published for; drives instance matching. */
+  gameVersions?: string[];
+  /** Loader family of the file ("fabric", "forge", …) when known. */
+  loader?: string;
 }
 
 export interface DownloadContentResult {
   success: boolean;
   filePath: string;
   bytes: number;
+  /** Instance the file ended up in (explicit or auto-detected). */
+  instanceId?: string;
+  /** True when no instance was requested and a matching local one was found. */
+  autoMatched?: boolean;
 }
 
 export interface ActiveDownloadTask {
@@ -310,19 +325,14 @@ export interface LaunchRequest {
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
 
-export type ThemeColorPreset =
-  | "emerald"
-  | "sapphire"
-  | "amethyst"
-  | "blaze"
-  | "ruby"
-  | "gold"
-  | "prismarine"
-  | "custom";
-
 export type ThemeMode = "dark" | "light" | "system";
-export type BackgroundType = "default" | "dirt" | "stone" | "custom";
-export type LauncherFont = "default" | "pixel" | "system";
+/** `default` keeps the flat theme backdrop, `custom` paints one image. */
+export type BackgroundType = "default" | "custom";
+export type LauncherFont = "default" | "pixel" | "system" | "serif";
+/** Interface text weight; "medium" dials the whole launcher one step heavier. */
+export type LauncherFontWeight = "regular" | "medium";
+/** Interface letter spacing; useful with the pixel font. */
+export type LauncherLetterSpacing = "tight" | "normal" | "wide";
 
 export interface LauncherSettings {
   playerName: string;
@@ -346,18 +356,26 @@ export interface LauncherSettings {
   launcherVisibility: LauncherVisibility;
   processPriority: ProcessPriority;
   windowSize: WindowSizeMode;
-  themeColor: ThemeColorPreset;
+  /** Accent color as `#rrggbb`; `DEFAULT_ACCENT` is used when empty. */
   customThemeColor: string;
   themeMode: ThemeMode;
   backgroundType: BackgroundType;
   customBackgroundPath: string;
   backgroundBlur: number;
   backgroundOpacity: number;
+  /** 30-100. Scales every UI surface (cards, sidebar, popovers, inputs). */
+  uiOpacity: number;
   enableMica: boolean;
   enableAnimation: boolean;
   showWorldGrid: boolean;
   customSlogan: string;
   fontFamily: LauncherFont;
+  fontWeight: LauncherFontWeight;
+  letterSpacing: LauncherLetterSpacing;
+  /** Replaces the ready-state line on the home card; empty keeps the default. */
+  statusText: string;
+  /** Replaces the launch button label; empty keeps the default per edition. */
+  launchButtonText: string;
 }
 
 export type ViewId =
@@ -380,6 +398,8 @@ export interface BedrockStatus {
   behaviorPacksCount: number;
   worldsCount: number;
   installedVersions: string[];
+  /** Version folders left behind by aborted installs; deletable, never launched. */
+  leftoverVersions?: string[];
   versionDetails?: BedrockInstalledVersionDetail[];
   runtimeStatus?: BedrockRuntimeStatus;
   fullDependencyReport?: BedrockFullDependencyReport;
@@ -457,5 +477,27 @@ export interface InstallPackResult {
   packType: string;
   targetPath: string;
   message: string;
+}
+
+/** One pack installed under a Bedrock `com.mojang` folder. */
+export interface BedrockPackItem {
+  /** Manifest UUID when readable, otherwise the folder name. */
+  id: string;
+  name: string;
+  description: string;
+  /** Semver-ish manifest version, e.g. `1.0.3`. */
+  version: string;
+  /** `resource` | `behavior` | `skin` | `template` */
+  packType: string;
+  folder: string;
+  path: string;
+  enabled: boolean;
+  size: number;
+  modifiedTime: string;
+  /** `pack_icon.png` as a data URL, when the pack ships one. */
+  icon?: string | null;
+  /** Which data folder this copy lives in: portable, GDK or UWP. */
+  location: string;
+  locationPath: string;
 }
 

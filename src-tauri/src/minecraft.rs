@@ -2519,6 +2519,79 @@ fn collect_arguments(
     out
 }
 
+/// Whether the version accepts `--width` / `--height` / `--fullscreen`.
+///
+/// Modern metadata declares them in `arguments`; legacy metadata only carries
+/// them in its `minecraftArguments` template when the client supports them at
+/// all. Passing a window size to 1.5.2 or Beta makes those clients choke before
+/// a window is created.
+fn window_size_supported(version: &VersionDetail) -> bool {
+    if version.arguments.is_some() {
+        return true;
+    }
+    if let Some(template) = version.minecraft_arguments.as_deref() {
+        if template.contains("--width") || template.contains("--height") {
+            return true;
+        }
+    }
+    release_supports_window_args(&version.id)
+}
+
+/// Releases 1.6+ and snapshots from 13w16a on accept `--width`/`--height`;
+/// 1.5.2 and older (and Alpha/Beta/Infdev ids) do not.
+fn release_supports_window_args(id: &str) -> bool {
+    let id = id.trim();
+    if let Some(rest) = id.strip_prefix("1.") {
+        let minor: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(minor) = minor.parse::<u32>() {
+            return minor >= 6;
+        }
+        return false;
+    }
+
+    // Snapshots use ids like `13w16a`; 13w16a was the first 1.6 snapshot.
+    let (year_part, rest) = id.split_at(id.len().min(2));
+    let Ok(year) = year_part.parse::<u32>() else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('w') else {
+        return false;
+    };
+    let week: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let Ok(week) = week.parse::<u32>() else {
+        return false;
+    };
+    year > 13 || (year == 13 && week >= 16)
+}
+
+/// Drop `--width` / `--height` pairs that ended up with an empty value, plus
+/// stray empty arguments. Legacy metadata (and the Betacraft archive) always
+/// emits the resolution pair, even when the launcher has no custom size, and a
+/// blank value makes old clients fail before the window appears.
+fn strip_empty_window_args(args: &mut Vec<String>) {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if matches!(arg.as_str(), "--width" | "--height")
+            && args
+                .get(index + 1)
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+        {
+            index += 2;
+            continue;
+        }
+        if arg.is_empty() {
+            index += 1;
+            continue;
+        }
+        kept.push(arg.clone());
+        index += 1;
+    }
+    *args = kept;
+}
+
 fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -2686,6 +2759,16 @@ fn build_launch_spec(
     let insert = |vars: &mut HashMap<String, String>, k: &str, v: String| {
         vars.insert(k.to_string(), v);
     };
+    // LegacyFix (used by the Betacraft archive) reads this for the window icon.
+    // An empty value is not an error there, but passing `-Dlf.icon=` logs a
+    // failure, so the variable is only filled when the instance ships an icon.
+    let instance_icon = ["icon.png", "icon.jpg", "icon.jpeg"]
+        .iter()
+        .map(|name| instance_dir.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    insert(&mut vars, "instance_icon", instance_icon);
     insert(&mut vars, "auth_player_name", player_name.to_string());
     insert(&mut vars, "version_name", version.id.clone());
     insert(
@@ -2758,6 +2841,8 @@ fn build_launch_spec(
         format!("-Xmx{memory}M"),
         format!("-Dminecraft.launcher.brand={custom_info}"),
     ];
+    let legacy_template = version.arguments.is_none();
+    let window_args_supported = window_size_supported(version);
 
     if let Some(title) = request.window_title.as_deref().map(str::trim) {
         if !title.is_empty() && title != "默认" {
@@ -2776,6 +2861,12 @@ fn build_launch_spec(
                     arg.push(',');
                     arg.push_str(&client_jar_filename);
                 }
+            }
+            // `${instance_icon}` collapses to nothing without an icon file;
+            // drop the resulting empty system property instead of handing
+            // LegacyFix a blank path it will complain about.
+            if arg == "-Dlf.icon=" {
+                continue;
             }
             jvm_args.push(arg);
         }
@@ -2838,38 +2929,51 @@ fn build_launch_spec(
         Vec::new()
     };
 
-    if !game_args.iter().any(|a| a == "--username") {
-        game_args.extend(["--username".into(), vars["auth_player_name"].clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--version") {
-        game_args.extend(["--version".into(), version.id.clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--gameDir") {
-        game_args.extend(["--gameDir".into(), vars["game_directory"].clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--assetsDir") {
-        game_args.extend(["--assetsDir".into(), vars["assets_root"].clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--assetIndex") {
-        game_args.extend(["--assetIndex".into(), vars["assets_index_name"].clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--uuid") {
-        game_args.extend(["--uuid".into(), vars["auth_uuid"].clone()]);
-    }
-    if !game_args.iter().any(|a| a == "--accessToken") {
-        game_args.extend(["--accessToken".into(), "0".into()]);
+    // Versions built from a `minecraftArguments` template (1.12.2 and older)
+    // already receive exactly the arguments they understand — 1.5.2 and older
+    // even take the user name and session as positional values — so nothing is
+    // appended for them. Modern metadata gets the usual fallbacks.
+    if !legacy_template {
+        if !game_args.iter().any(|a| a == "--username") {
+            game_args.extend(["--username".into(), vars["auth_player_name"].clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--version") {
+            game_args.extend(["--version".into(), version.id.clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--gameDir") {
+            game_args.extend(["--gameDir".into(), vars["game_directory"].clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--assetsDir") {
+            game_args.extend(["--assetsDir".into(), vars["assets_root"].clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--assetIndex") {
+            game_args.extend(["--assetIndex".into(), vars["assets_index_name"].clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--uuid") {
+            game_args.extend(["--uuid".into(), vars["auth_uuid"].clone()]);
+        }
+        if !game_args.iter().any(|a| a == "--accessToken") {
+            game_args.extend(["--accessToken".into(), "0".into()]);
+        }
     }
 
-    if window_size_mode == "fullscreen" {
-        if !game_args.iter().any(|a| a == "--fullscreen") {
-            game_args.push("--fullscreen".to_string());
-        }
-    } else if let Some((w, h)) = custom_resolution {
-        if !game_args.iter().any(|a| a == "--width") {
-            game_args.extend(["--width".into(), w.to_string()]);
-        }
-        if !game_args.iter().any(|a| a == "--height") {
-            game_args.extend(["--height".into(), h.to_string()]);
+    // The Betacraft archive feeds `--width ${resolution_width}` through even when
+    // no resolution was chosen; an empty value makes the game (and LegacyFix's
+    // applet launcher) fail before the window opens. Same for `--height`.
+    strip_empty_window_args(&mut game_args);
+
+    if window_args_supported {
+        if window_size_mode == "fullscreen" {
+            if !game_args.iter().any(|a| a == "--fullscreen") {
+                game_args.push("--fullscreen".to_string());
+            }
+        } else if let Some((w, h)) = custom_resolution {
+            if !game_args.iter().any(|a| a == "--width") {
+                game_args.extend(["--width".into(), w.to_string()]);
+            }
+            if !game_args.iter().any(|a| a == "--height") {
+                game_args.extend(["--height".into(), h.to_string()]);
+            }
         }
     }
 
@@ -3091,26 +3195,38 @@ pub struct JavaModItem {
     pub icon_data_url: Option<String>,
 }
 
+/// Mods always live with the instance they were installed for; there is no
+/// shared `<root>/mods` folder, because the game only reads the mods folder of
+/// the game directory it is launched with.
 pub fn resolve_java_mods_dir(root: &Path, version_id: &str) -> PathBuf {
-    let ver_mods = root.join("versions").join(version_id).join("mods");
-    if ver_mods.is_dir() {
-        return ver_mods;
+    root.join("versions").join(version_id).join("mods")
+}
+
+/// Drop the launcher's old shared `mods` folder once it is empty.
+///
+/// Downloads used to fall back to `<root>/mods` when no instance matched a
+/// file. Every mod now goes to `versions/<id>/mods`, so the shared folder is
+/// dead weight; jars still sitting in it belong to the player and are left
+/// alone.
+fn prune_legacy_global_mods(root: &Path) {
+    let legacy = root.join("mods");
+    if !legacy.is_dir() {
+        return;
     }
-    let global_mods = root.join("mods");
-    if global_mods.is_dir() {
-        return global_mods;
+    let empty = std::fs::read_dir(&legacy)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false);
+    if empty {
+        let _ = std::fs::remove_dir(&legacy);
     }
-    ver_mods
 }
 
 pub fn get_java_mods(root: &Path, version_id: &str) -> Result<Vec<JavaModItem>, String> {
     let mut mods = Vec::new();
     let mut seen_files = HashSet::new();
 
-    let dirs = [
-        root.join("versions").join(version_id).join("mods"),
-        root.join("mods"),
-    ];
+    prune_legacy_global_mods(root);
+    let dirs = [root.join("versions").join(version_id).join("mods")];
 
     for dir in &dirs {
         if !dir.is_dir() {
@@ -3267,8 +3383,9 @@ fn read_jar_mod_metadata(archive: &mut zip::ZipArchive<std::fs::File>) -> JarMod
             meta.id = json_string(&v, "id");
             meta.name = json_string(&v, "name");
             meta.version = json_string(&v, "version");
-            meta.description =
-                json_string(&v, "description").map(|d| normalize_mod_description(&d));
+            meta.description = json_string(&v, "description")
+                .map(|d| normalize_mod_description(&d))
+                .filter(|d| !d.is_empty());
             meta.icon_path = json_icon_path(v.get("icon"));
             return meta;
         }
@@ -3283,7 +3400,8 @@ fn read_jar_mod_metadata(archive: &mut zip::ZipArchive<std::fs::File>) -> JarMod
                 if let Some(metadata) = q.get("metadata") {
                     meta.name = json_string(metadata, "name");
                     meta.description = json_string(metadata, "description")
-                        .map(|d| normalize_mod_description(&d));
+                        .map(|d| normalize_mod_description(&d))
+                        .filter(|d| !d.is_empty());
                     meta.icon_path = json_icon_path(metadata.get("icon"));
                 }
             }
@@ -3320,7 +3438,8 @@ fn read_jar_mod_metadata(archive: &mut zip::ZipArchive<std::fs::File>) -> JarMod
                 meta.name = json_string(&entry, "name");
                 meta.version = json_string(&entry, "version");
                 meta.description = json_string(&entry, "description")
-                    .map(|d| normalize_mod_description(&d));
+                    .map(|d| normalize_mod_description(&d))
+                    .filter(|d| !d.is_empty());
                 meta.icon_path = json_string(&entry, "logoFile");
             }
         }
@@ -3623,10 +3742,7 @@ pub fn toggle_java_mod(
     file_name: &str,
     enable: bool,
 ) -> Result<(), String> {
-    let dirs = [
-        root.join("versions").join(version_id).join("mods"),
-        root.join("mods"),
-    ];
+    let dirs = [resolve_java_mods_dir(root, version_id)];
 
     for dir in &dirs {
         let target = dir.join(file_name);
@@ -3660,10 +3776,7 @@ pub fn toggle_java_mod(
 }
 
 pub fn delete_java_mod(root: &Path, version_id: &str, file_name: &str) -> Result<(), String> {
-    let dirs = [
-        root.join("versions").join(version_id).join("mods"),
-        root.join("mods"),
-    ];
+    let dirs = [resolve_java_mods_dir(root, version_id)];
 
     for dir in &dirs {
         let target = dir.join(file_name);
@@ -3714,6 +3827,84 @@ mod tests {
         );
         assert_eq!(substitute("${missing}", &vars), "");
         assert_eq!(substitute("plain", &vars), "plain");
+    }
+
+    fn version_from(json: serde_json::Value) -> VersionDetail {
+        serde_json::from_value(json).expect("version detail")
+    }
+
+    #[test]
+    fn window_size_is_only_passed_to_versions_that_accept_it() {
+        let beta = version_from(serde_json::json!({
+            "id": "b1.7.3",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "${auth_player_name} ${auth_session} --gameDir ${game_directory} --assetsDir ${game_assets}"
+        }));
+        assert!(!window_size_supported(&beta));
+
+        let old = version_from(serde_json::json!({
+            "id": "1.5.2",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "${auth_player_name} ${auth_session} --gameDir ${game_directory} --assetsDir ${game_assets}"
+        }));
+        assert!(!window_size_supported(&old));
+
+        let newer = version_from(serde_json::json!({
+            "id": "1.7.10",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "--username ${auth_player_name} --version ${version_name}"
+        }));
+        assert!(window_size_supported(&newer));
+
+        let snapshot = version_from(serde_json::json!({
+            "id": "13w16a",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "--username ${auth_player_name}"
+        }));
+        assert!(window_size_supported(&snapshot));
+
+        let older_snapshot = version_from(serde_json::json!({
+            "id": "12w40a",
+            "mainClass": "net.minecraft.client.Minecraft",
+            "minecraftArguments": "--username ${auth_player_name}"
+        }));
+        assert!(!window_size_supported(&older_snapshot));
+
+        let modern = version_from(serde_json::json!({
+            "id": "inf-20100227-1433",
+            "mainClass": "uk.betacraft.legacyfix.LegacyFixLauncher",
+            "arguments": { "game": [], "jvm": [] }
+        }));
+        assert!(window_size_supported(&modern));
+    }
+
+    #[test]
+    fn strips_empty_window_arguments_from_legacy_metadata() {
+        let mut args: Vec<String> = [
+            "--username",
+            "Steve",
+            "--width",
+            "",
+            "--height",
+            "",
+            "--version",
+            "1.5.2",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+        strip_empty_window_args(&mut args);
+        assert_eq!(args, vec!["--username", "Steve", "--version", "1.5.2"]);
+    }
+
+    #[test]
+    fn keeps_a_custom_window_size() {
+        let mut args: Vec<String> = ["--width", "1280", "--height", "720"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        strip_empty_window_args(&mut args);
+        assert_eq!(args, vec!["--width", "1280", "--height", "720"]);
     }
 
     #[test]

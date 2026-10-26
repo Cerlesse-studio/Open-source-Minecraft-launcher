@@ -4,8 +4,10 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronRight,
   Coffee,
   FolderOpen,
+  HardDrive,
   LayoutDashboard,
   Layers3,
   LoaderCircle,
@@ -18,6 +20,7 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
+  Tag,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -28,6 +31,7 @@ import type {
   InstalledVersion,
   JavaInstall,
   JavaModItem,
+  GameEdition,
   LauncherVisibility,
   ProcessPriority,
   VersionIsolation,
@@ -64,11 +68,14 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { GrassBlock, PageHeader, TypeBadge } from "./ui";
+import { BedrockPackManager } from "./BedrockPackManager";
 
 interface VersionSettingsViewProps {
   manifest: VersionManifest | null;
   installed: InstalledVersion[];
   selectedVersion: string;
+  /** The edition switch lives in App, so Bedrock detection needs it here. */
+  edition?: GameEdition;
   gameRoot: string;
   javaInstalls: JavaInstall[];
   javaPath: string;
@@ -664,10 +671,12 @@ function ModIconTile({
   iconUrl,
   name,
   enabled,
+  className,
 }: {
   iconUrl?: string | null;
   name: string;
   enabled: boolean;
+  className?: string;
 }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const url = iconUrl?.trim() ?? "";
@@ -679,6 +688,7 @@ function ModIconTile({
       className={cn(
         "relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted/20 transition-colors",
         enabled ? "border-border/70" : "border-border/40 bg-muted/10",
+        className,
       )}
     >
       {showImage ? (
@@ -694,7 +704,7 @@ function ModIconTile({
           onError={() => setFailedUrl(url)}
         />
       ) : (
-        <span className="select-none text-[15px] font-semibold text-muted-foreground/60">
+        <span className="select-none text-[17px] font-semibold text-muted-foreground/60">
           {initial}
         </span>
       )}
@@ -1066,102 +1076,104 @@ function JavaModManagerPanel({
           </div>
         </Card>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           {filteredMods.map((mod) => {
             const isToggling = togglingFile === mod.fileName;
             return (
               <Card
                 key={mod.fileName}
                 className={cn(
-                  "group relative flex items-center gap-3 overflow-hidden border p-2.5 transition-all",
-                  mod.enabled
-                    ? "border-border/70 bg-card/70 hover:border-primary/45 hover:bg-card/90"
-                    : "border-border/35 bg-muted/10 hover:border-border/60",
+                  "group flex flex-row items-center gap-3.5 rounded-xl border-border/70 bg-card/55 p-3.5 transition-all hover:border-primary/45 hover:bg-card/85",
+                  !mod.enabled && "border-border/45 bg-muted/[0.06] hover:border-border/60",
                 )}
               >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "absolute inset-y-2 left-0 w-[2px] rounded-full",
-                    mod.enabled ? "bg-emerald-500/60" : "bg-transparent",
-                  )}
-                />
+                <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                  <ModIconTile
+                    iconUrl={mod.iconDataUrl}
+                    name={mod.name}
+                    enabled={mod.enabled}
+                    className="size-14 rounded-xl"
+                  />
 
-                <ModIconTile iconUrl={mod.iconDataUrl} name={mod.name} enabled={mod.enabled} />
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span
-                      className={cn(
-                        "max-w-full truncate text-[12.5px] font-semibold",
-                        mod.enabled ? "text-foreground" : "text-muted-foreground",
-                      )}
-                      title={mod.name}
-                    >
-                      {mod.name}
-                    </span>
-                    {mod.version ? (
-                      <span className="shrink-0 rounded border border-border/50 bg-muted/25 px-1 font-mono text-[9.5px] leading-4 text-muted-foreground">
-                        v{mod.version}
-                      </span>
-                    ) : null}
-                    {mod.modLoader ? (
-                      <Badge
-                        variant="outline"
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3
                         className={cn(
-                          "h-4 shrink-0 border px-1.5 font-mono text-[8.5px]",
-                          loaderTone(mod.modLoader),
+                          "max-w-full truncate text-[14.5px] font-semibold tracking-tight",
+                          mod.enabled ? "text-foreground" : "text-muted-foreground",
                         )}
+                        title={mod.name}
                       >
-                        {mod.modLoader}
-                      </Badge>
-                    ) : null}
-                    <span
-                      className={cn(
-                        "flex shrink-0 items-center gap-1 text-[9.5px]",
-                        mod.enabled ? "text-emerald-400" : "text-muted-foreground/70",
+                        {mod.name}
+                      </h3>
+                      {mod.version ? (
+                        <span className="shrink-0 rounded border border-border/50 bg-muted/25 px-1 font-mono text-[9.5px] leading-4 text-muted-foreground">
+                          v{mod.version}
+                        </span>
+                      ) : null}
+                      {mod.modLoader ? (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "h-4 shrink-0 border px-1.5 font-mono text-[9px] font-normal",
+                            loaderTone(mod.modLoader),
+                          )}
+                        >
+                          {mod.modLoader}
+                        </Badge>
+                      ) : null}
+                      {mod.enabled ? (
+                        <Badge className="h-4 border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                          已启用
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="h-4 border-border/60 bg-muted/20 px-1.5 text-[9px] font-normal text-muted-foreground"
+                        >
+                          已停用
+                        </Badge>
                       )}
-                    >
-                      <span
-                        className={cn(
-                          "size-1.5 rounded-full",
-                          mod.enabled ? "bg-emerald-400" : "bg-muted-foreground/40",
-                        )}
-                      />
-                      {mod.enabled ? "已启用" : "已停用"}
-                    </span>
-                  </div>
+                      {mod.id ? (
+                        <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+                          <Tag className="size-3 shrink-0" />
+                          <span className="truncate font-mono text-[10px]" title={mod.id}>
+                            {mod.id}
+                          </span>
+                        </span>
+                      ) : null}
+                    </div>
 
-                    <p
-                      className={cn(
-                        "mt-0.5 line-clamp-1 text-[10.5px] leading-4",
-                        mod.enabled ? "text-muted-foreground/85" : "text-muted-foreground/60",
-                      )}
-                    >
+                    <p className="truncate text-[12px] leading-5 text-muted-foreground">
                       {mod.description || "此模组未提供简介"}
                     </p>
 
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9.5px] font-mono text-muted-foreground/70">
-                      <span className="max-w-[240px] truncate" title={mod.fileName}>
+                    <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-muted-foreground/80">
+                      <span className="flex items-center gap-1 font-mono">
+                        <HardDrive className="size-3 text-primary/80" />
+                        {formatBytes(mod.size)}
+                      </span>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span className="flex items-center gap-1">
+                        <CalendarDays className="size-3 text-primary/70" />
+                        {mod.modifiedTime}
+                      </span>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span
+                        className="max-w-[280px] truncate font-mono text-muted-foreground/60"
+                        title={mod.fileName}
+                      >
                         {mod.fileName}
                       </span>
-                      <span className="text-border">·</span>
-                      <span>{formatBytes(mod.size)}</span>
-                      <span className="text-border">·</span>
-                      <span>{mod.modifiedTime}</span>
                     </div>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex shrink-0 items-center gap-2">
                   <Button
-                    variant={mod.enabled ? "default" : "outline"}
+                    variant="outline"
                     size="sm"
-                    className={cn(
-                      "h-7 gap-1 px-2.5 text-[11px] transition-colors",
-                      mod.enabled
-                        ? "bg-emerald-600 text-white hover:bg-emerald-500"
-                        : "border-border/70 text-muted-foreground hover:bg-muted/30 hover:text-foreground",
-                    )}
+                    className="h-9 gap-1.5 whitespace-nowrap rounded-lg border-border/80 px-3.5 text-[11.5px] text-muted-foreground transition-colors group-hover:border-primary/45 group-hover:bg-primary/10 group-hover:text-primary"
                     disabled={isToggling}
                     onClick={() => void handleToggle(mod)}
                   >
@@ -1171,6 +1183,7 @@ function JavaModManagerPanel({
                       <Power className="size-3" />
                     )}
                     {mod.enabled ? "停用" : "启用"}
+                    <ChevronRight className="size-3 transition-transform group-hover:translate-x-0.5" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -1247,6 +1260,7 @@ function VersionOverviewPanel({
   launchSettings,
   hasOverride,
   isModded,
+  isBedrock,
   onGoToLaunch,
   onGoToMods,
   onOpenFolder,
@@ -1259,6 +1273,7 @@ function VersionOverviewPanel({
   launchSettings: VersionLaunchSettings;
   hasOverride: boolean;
   isModded: boolean;
+  isBedrock: boolean;
   onGoToLaunch: () => void;
   onGoToMods: () => void;
   onOpenFolder: (path: string) => void;
@@ -1280,7 +1295,9 @@ function VersionOverviewPanel({
               当前配置版本：<span className="font-mono text-primary font-bold">{versionId}</span> 专属档案
             </p>
             <p className="text-[11px] text-muted-foreground mt-0.5">
-              此版本已建立独立启动与模组配置，此处所有修改仅对本版本生效。
+              {isBedrock
+                ? "此版本使用基岩版附加包（资源包 / 行为包），不加载 Java 模组。"
+                : "此版本已建立独立启动与模组配置，此处所有修改仅对本版本生效。"}
             </p>
           </div>
         </div>
@@ -1438,10 +1455,10 @@ function VersionOverviewPanel({
               <Wrench className="size-3.5" />
               调整专属启动设置
             </Button>
-            {isModded ? (
+            {isModded || isBedrock ? (
               <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs text-primary border-primary/30" onClick={onGoToMods}>
                 <Package className="size-3.5" />
-                管理本版本模组
+                {isBedrock ? "管理本版本附加包" : "管理本版本模组"}
               </Button>
             ) : null}
           </div>
@@ -1455,6 +1472,7 @@ export function VersionSettingsView({
   manifest,
   installed,
   selectedVersion,
+  edition,
   gameRoot,
   javaInstalls,
   javaPath,
@@ -1475,6 +1493,16 @@ export function VersionSettingsView({
   const isLatest = Boolean(manifest && manifest.latest.release === selectedVersion);
   const versionType = installedVersion?.type ?? summary?.type ?? "release";
 
+  // Bedrock packs live in `com.mojang`, so the Java `versions/<id>/mods` panel
+  // would show an empty folder for these ids and manage the wrong thing.
+  const isBedrockVersion =
+    edition === "bedrock" ||
+    selectedVersion === "uwp" ||
+    selectedVersion === "bedrock-uwp" ||
+    selectedVersion.startsWith("bedrock:") ||
+    selectedVersion.startsWith("bedrock-") ||
+    selectedVersion.includes("基岩版");
+
   const isModded = Boolean(
     installedVersion?.loader ||
     installedVersion?.optifineVersion ||
@@ -1488,13 +1516,14 @@ export function VersionSettingsView({
 
   const [lastAutoLoadedVersion, setLastAutoLoadedVersion] = useState<string | null>(null);
 
-  // Automatically load the Mod Manager if the selected Java version is a modded version
+  // Open the manager that matches the platform: mods for a modded Java
+  // version, packs for a Bedrock version.
   useEffect(() => {
-    if (isModded && lastAutoLoadedVersion !== selectedVersion) {
+    if ((isModded || isBedrockVersion) && lastAutoLoadedVersion !== selectedVersion) {
       setSection("mods");
       setLastAutoLoadedVersion(selectedVersion);
     }
-  }, [selectedVersion, isModded, lastAutoLoadedVersion]);
+  }, [selectedVersion, isModded, isBedrockVersion, lastAutoLoadedVersion]);
 
   return (
     <div className="space-y-5">
@@ -1645,9 +1674,13 @@ export function VersionSettingsView({
                       section === "mods" ? "text-primary" : "text-muted-foreground/75",
                     )}
                   />
-                  <span>模组管理</span>
+                  <span>{isBedrockVersion ? "附加包管理" : "模组管理"}</span>
                 </div>
-                {isModded ? (
+                {isBedrockVersion ? (
+                  <Badge className="h-3.5 rounded px-1 text-[8.5px] font-mono border-0 bg-primary/20 text-primary">
+                    Pack
+                  </Badge>
+                ) : isModded ? (
                   <Badge className="h-3.5 rounded px-1 text-[8.5px] font-mono border-0 bg-primary/20 text-primary">
                     Mod
                   </Badge>
@@ -1690,6 +1723,7 @@ export function VersionSettingsView({
                 launchSettings={launchSettings}
                 hasOverride={hasOverride}
                 isModded={isModded}
+                isBedrock={isBedrockVersion}
                 onGoToLaunch={() => setSection("launch")}
                 onGoToMods={() => setSection("mods")}
                 onOpenFolder={onOpenFolder}
@@ -1715,6 +1749,12 @@ export function VersionSettingsView({
                 gameRoot={gameRoot}
                 javaInstalls={javaInstalls}
                 defaultJavaPath={javaPath}
+              />
+            ) : isBedrockVersion ? (
+              <BedrockPackManager
+                gameRoot={gameRoot}
+                onOpenFolder={onOpenFolder}
+                onNotify={onNotify}
               />
             ) : (
               <JavaModManagerPanel

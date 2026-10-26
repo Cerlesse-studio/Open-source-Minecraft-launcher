@@ -1,7 +1,9 @@
 pub mod bedrock;
+pub mod bedrock_store;
 pub mod content;
 pub mod java;
 pub mod loaders;
+pub mod mcmod;
 pub mod minecraft;
 mod net;
 
@@ -144,14 +146,54 @@ fn get_installed_versions(root: String) -> Result<Vec<InstalledVersion>, String>
     minecraft::list_installed(&PathBuf::from(root))
 }
 
+/// Skins are always PNG, but the same command feeds the custom wallpaper, which
+/// may be a JPEG/WebP/GIF. Tagging those bytes as `image/png` makes stricter
+/// webviews (WKWebView) refuse to paint the image, so the type comes from the
+/// file's magic bytes instead of the extension.
+fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else {
+        "image/png"
+    }
+}
+
 #[tauri::command]
 async fn read_skin_as_data_url(path: String) -> Result<String, String> {
     use base64::Engine;
     let bytes = tokio::fs::read(&path)
         .await
-        .map_err(|e| format!("无法读取皮肤文件: {e}"))?;
+        .map_err(|e| format!("无法读取图片文件: {e}"))?;
+    let mime = image_mime_from_bytes(&bytes);
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:image/png;base64,{b64}"))
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_mime_from_bytes;
+
+    #[test]
+    fn wallpaper_data_urls_declare_the_real_image_type() {
+        assert_eq!(image_mime_from_bytes(&[0x89, b'P', b'N', b'G', 0x0D]), "image/png");
+        assert_eq!(image_mime_from_bytes(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
+        assert_eq!(image_mime_from_bytes(b"GIF89a"), "image/gif");
+        assert_eq!(
+            image_mime_from_bytes(b"RIFF\0\0\0\0WEBPVP8 "),
+            "image/webp"
+        );
+        assert_eq!(image_mime_from_bytes(b"BM6\0\0\0"), "image/bmp");
+        // Unknown payloads keep the historical PNG tag (skin uploads).
+        assert_eq!(image_mime_from_bytes(b"not an image"), "image/png");
+    }
 }
 
 #[tauri::command]
@@ -840,6 +882,67 @@ fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     }
 }
 
+/// Open an http(s) link in the user's default browser.
+///
+/// The frontend only ever passes project pages it built itself (Modrinth,
+/// CurseForge, MC 百科), so the scheme check is a guard against a malformed
+/// or malicious value rather than a general-purpose URL allowlist.
+/// Look up the MC 百科 page of a Java project.
+///
+/// Returns `None` when the search page has no entry whose English name matches
+/// the project, so the UI can fall back to the search URL instead of opening an
+/// unrelated mod page.
+#[tauri::command]
+async fn resolve_mcmod_entry(
+    title: String,
+    slug: String,
+    project_type: String,
+) -> Result<Option<mcmod::WikiEntry>, String> {
+    Ok(mcmod::find_entry(&title, &slug, &project_type).await)
+}
+
+#[tauri::command]
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("链接为空".to_string());
+    }
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("仅支持打开 http/https 链接".to_string());
+    }
+
+    if app.opener().open_url(trimmed, None::<&str>).is_ok() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+        return Ok(());
+    }
+}
+
 #[tauri::command]
 async fn delete_version(
     app: AppHandle,
@@ -955,6 +1058,58 @@ fn install_bedrock_mod_file(
 }
 
 #[tauri::command]
+fn get_bedrock_packs(
+    app: AppHandle,
+    root: Option<String>,
+) -> Result<Vec<bedrock::BedrockPackItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    Ok(bedrock::get_bedrock_packs(&p))
+}
+
+#[tauri::command]
+fn set_bedrock_pack_enabled(
+    app: AppHandle,
+    path: String,
+    enabled: bool,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::set_bedrock_pack_enabled(&p, &path, enabled)
+}
+
+#[tauri::command]
+fn delete_bedrock_pack(
+    app: AppHandle,
+    path: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::delete_bedrock_pack(&p, &path)
+}
+
+#[tauri::command]
+fn import_bedrock_pack_file(
+    app: AppHandle,
+    file_path: String,
+    root: Option<String>,
+) -> Result<bedrock::InstallPackResult, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::install_bedrock_pack_from_file(&p, &file_path)
+}
+
+#[tauri::command]
 fn get_java_mods(
     app: AppHandle,
     version_id: String,
@@ -1033,6 +1188,8 @@ pub fn run() {
             launch_game,
             stop_game,
             open_folder,
+            open_url,
+            resolve_mcmod_entry,
             get_bedrock_status,
             get_bedrock_versions,
             get_bedrock_content,
@@ -1054,6 +1211,10 @@ pub fn run() {
             toggle_bedrock_mod,
             delete_bedrock_mod,
             install_bedrock_mod_file,
+            get_bedrock_packs,
+            set_bedrock_pack_enabled,
+            delete_bedrock_pack,
+            import_bedrock_pack_file,
             get_java_mods,
             toggle_java_mod,
             delete_java_mod,

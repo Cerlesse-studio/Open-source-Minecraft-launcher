@@ -1,86 +1,29 @@
-import type { LauncherSettings, ThemeColorPreset } from "./types";
+import type { LauncherSettings } from "./types";
 
-export interface ThemePresetInfo {
-  id: Exclude<ThemeColorPreset, "custom">;
-  label: string;
-  name: string;
-  color: string;
-  fg: string;
-  description: string;
+/** Accent used until someone picks their own color. Kept in one place so the
+ * DOM theme and the settings preview can never disagree. */
+export const DEFAULT_ACCENT = "#9bdd6b";
+
+const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function accentHex(value?: string): string {
+  const clean = (value ?? "").trim();
+  return HEX_PATTERN.test(clean) ? clean : DEFAULT_ACCENT;
 }
 
-export const THEME_COLOR_PRESETS: ThemePresetInfo[] = [
-  {
-    id: "emerald",
-    label: "绿宝石",
-    name: "Emerald",
-    color: "#9bdd6b",
-    fg: "#0b1408",
-    description: "经典 Minecraft 原生翠绿，护眼清新",
-  },
-  {
-    id: "sapphire",
-    label: "群青蓝",
-    name: "Sapphire",
-    color: "#38bdf8",
-    fg: "#081420",
-    description: "青空与深邃海洋，现代极客风格",
-  },
-  {
-    id: "amethyst",
-    label: "紫水晶",
-    name: "Amethyst",
-    color: "#c084fc",
-    fg: "#150820",
-    description: "紫晶裂隙与下界之影，神秘幽雅",
-  },
-  {
-    id: "blaze",
-    label: "烈焰橙",
-    name: "Blaze",
-    color: "#fb923c",
-    fg: "#1f0b03",
-    description: "岩浆与烈焰核心，明亮热烈",
-  },
-  {
-    id: "ruby",
-    label: "红石绯",
-    name: "Ruby",
-    color: "#f43f5e",
-    fg: "#1f050b",
-    description: "红石能量与宝石光泽，醒目炽诚",
-  },
-  {
-    id: "gold",
-    label: "纯金锭",
-    name: "Gold",
-    color: "#facc15",
-    fg: "#1c1503",
-    description: "下界黄金与日光微尘，璀璨华丽",
-  },
-  {
-    id: "prismarine",
-    label: "海晶石",
-    name: "Prismarine",
-    color: "#2dd4bf",
-    fg: "#031815",
-    description: "海底遗迹与青碧水波，温润通透",
-  },
-];
+function readableForeground(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  return brightness > 150 ? "#0b1408" : "#ffffff";
+}
 
-export function getEffectivePrimaryColor(settings: LauncherSettings): { color: string; fg: string } {
-  if (settings.themeColor === "custom" && settings.customThemeColor) {
-    const hex = settings.customThemeColor;
-    const cleanHex = hex.startsWith("#") ? hex.slice(1) : hex;
-    const r = parseInt(cleanHex.slice(0, 2) || "ff", 16);
-    const g = parseInt(cleanHex.slice(2, 4) || "ff", 16);
-    const b = parseInt(cleanHex.slice(4, 6) || "ff", 16);
-    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-    const fg = brightness > 150 ? "#0b1408" : "#ffffff";
-    return { color: hex, fg };
-  }
-  const preset = THEME_COLOR_PRESETS.find((p) => p.id === settings.themeColor) ?? THEME_COLOR_PRESETS[0];
-  return { color: preset.color, fg: preset.fg };
+export function getEffectivePrimaryColor(
+  settings: Pick<LauncherSettings, "customThemeColor">,
+): { color: string; fg: string } {
+  const color = accentHex(settings.customThemeColor);
+  return { color, fg: readableForeground(color) };
 }
 
 export function applyThemeToDom(settings: LauncherSettings): void {
@@ -122,21 +65,39 @@ export function applyThemeToDom(settings: LauncherSettings): void {
   } else if (settings.fontFamily === "system") {
     document.body.style.fontFamily =
       'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif';
+  } else if (settings.fontFamily === "serif") {
+    document.body.style.fontFamily =
+      'Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "SimSun", serif';
   } else {
     document.body.style.fontFamily = "";
   }
 
-  // 4. Animation toggle
+  // 4. Text weight & letter spacing
+  document.body.style.fontWeight = settings.fontWeight === "medium" ? "500" : "400";
+  document.body.style.letterSpacing =
+    settings.letterSpacing === "tight"
+      ? "-0.012em"
+      : settings.letterSpacing === "wide"
+        ? "0.028em"
+        : "";
+
+  // 5. Animation toggle
   if (settings.enableAnimation === false) {
     root.classList.add("reduce-motion");
   } else {
     root.classList.remove("reduce-motion");
   }
 
-  // 5. Mica Glassmorphism
+  // 6. Mica Glassmorphism
   if (settings.enableMica !== false) {
     root.classList.add("mica-enabled");
   } else {
     root.classList.remove("mica-enabled");
   }
+
+  // 7. Surface opacity: scales the derived panel tokens in styles.css, so the
+  //    slider fades every card, popover, input, the sidebar and the page
+  //    backdrop together. Clamped so text never floats on nothing.
+  const surfaceAlpha = Math.min(1, Math.max(0.3, (settings.uiOpacity ?? 100) / 100));
+  root.style.setProperty("--surface-alpha", String(surfaceAlpha));
 }

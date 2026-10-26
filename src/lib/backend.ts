@@ -28,12 +28,17 @@ import {
   demoToggleBedrockMod,
   demoDeleteBedrockMod,
   demoInstallBedrockModFile,
+  demoGetBedrockPacks,
+  demoSetBedrockPackEnabled,
+  demoDeleteBedrockPack,
+  demoImportBedrockPackFile,
 } from "./demo";
 import type {
   BedrockContentItem,
   BedrockFullDependencyReport,
   BedrockLoadersCatalog,
   BedrockModItem,
+  BedrockPackItem,
   BedrockRuntimeStatus,
   BedrockStatus,
   BedrockVersionItem,
@@ -54,6 +59,7 @@ import type {
   LoaderSelection,
   SearchContentResult,
   SystemInfo,
+  WikiEntry,
   VersionLoadersCatalog,
   VersionManifest,
 } from "./types";
@@ -227,6 +233,40 @@ export async function openFolderPath(path: string): Promise<void> {
   await invoke("open_folder", { path });
 }
 export const openFolder = openFolderPath;
+
+/**
+ * Open an http(s) link in the default browser.
+ *
+ * The desktop build hands the URL to the OS through the Tauri command so the
+ * link leaves the webview; the browser preview (demo mode) just opens a tab.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!isDesktop) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  await invoke("open_url", { url });
+}
+
+/**
+ * Resolve the MC 百科 page of a Java project.
+ *
+ * The backend searches mcmod.cn and only accepts an entry whose English name
+ * matches the project, so `null` means "no exact page" — the UI then links the
+ * site's search page instead of a possibly unrelated mod page.
+ */
+export async function resolveMcmodEntry(
+  title: string,
+  slug: string,
+  projectType: ContentProjectType,
+): Promise<WikiEntry | null> {
+  if (!isDesktop) return null;
+  return invoke<WikiEntry | null>("resolve_mcmod_entry", {
+    title,
+    slug,
+    projectType,
+  });
+}
 
 export async function getBedrockStatus(root?: string): Promise<BedrockStatus> {
   if (!isDesktop) return demoGetBedrockStatus();
@@ -421,7 +461,49 @@ export async function getJavaMods(
   versionId: string,
   root?: string,
 ): Promise<JavaModItem[]> {
-  if (!isDesktop) return [];
+  // TEMP-VERIFY
+  if (!isDesktop)
+    return [
+      {
+        id: "xaerominimap",
+        name: "Xaero's Minimap",
+        fileName: "xaerominimap-forge-1.21.8-26.6.0.jar",
+        path: "",
+        enabled: true,
+        size: 2154725,
+        modifiedTime: "2026-10-26 00:59",
+        version: "26.6.0",
+        description: "The most vanilla-looking minimap for Minecraft.",
+        modLoader: "Forge",
+        iconDataUrl: "https://cdn.modrinth.com/data/1IjD5062/icon.png",
+      },
+      {
+        id: "jei",
+        name: "Just Enough Items",
+        fileName: "jei-1.21.1-19.2.0.2.jar.disabled",
+        path: "",
+        enabled: false,
+        size: 1345678,
+        modifiedTime: "2026-10-25 12:04",
+        version: "19.2.0.2",
+        description: "",
+        modLoader: "Fabric",
+        iconDataUrl: "https://cdn.modrinth.com/data/u6dRKJwZ/4a3f18ac0d096c9f8e9176984c44be4e58f94c89_96.webp",
+      },
+      {
+        id: "create",
+        name: "Create",
+        fileName: "create-1.20.1-0.5.1.f.jar",
+        path: "",
+        enabled: true,
+        size: 8765432,
+        modifiedTime: "2026-10-24 09:12",
+        version: "0.5.1.f",
+        description: "Aesthetic technology mod with kinetic power and automation.",
+        modLoader: "NeoForge",
+        iconDataUrl: null,
+      },
+    ];
   return invoke<JavaModItem[]>("get_java_mods", { versionId, root });
 }
 
@@ -451,5 +533,39 @@ export async function installJavaModFile(
 ): Promise<string> {
   if (!isDesktop) return "模拟安装成功";
   return invoke<string>("install_java_mod_file", { versionId, filePath, root });
+}
+
+/**
+ * Bedrock packs live in `com.mojang` (resource/behavior/skin packs), not in a
+ * Java `versions/<id>/mods` folder, so they get their own manager commands.
+ */
+export async function getBedrockPacks(root?: string): Promise<BedrockPackItem[]> {
+  if (!isDesktop) return demoGetBedrockPacks();
+  return invoke<BedrockPackItem[]>("get_bedrock_packs", { root });
+}
+
+export async function setBedrockPackEnabled(
+  path: string,
+  enabled: boolean,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return demoSetBedrockPackEnabled(path, enabled);
+  return invoke<void>("set_bedrock_pack_enabled", { path, enabled, root });
+}
+
+export async function deleteBedrockPack(
+  path: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return demoDeleteBedrockPack(path);
+  return invoke<void>("delete_bedrock_pack", { path, root });
+}
+
+export async function importBedrockPackFile(
+  filePath: string,
+  root?: string,
+): Promise<InstallPackResult> {
+  if (!isDesktop) return demoImportBedrockPackFile(filePath);
+  return invoke<InstallPackResult>("import_bedrock_pack_file", { filePath, root });
 }
 

@@ -1,6 +1,37 @@
-import type { LauncherSettings } from "./types";
+import type { BackgroundType, LauncherSettings } from "./types";
 
 const STORAGE_KEY = "cobble.settings.v1";
+
+const BACKGROUND_TYPES: BackgroundType[] = ["default", "custom"];
+
+/**
+ * Older builds shipped named accent presets (and five scenic wallpapers).
+ * Their accent color is kept as the custom color so upgrading does not lose it;
+ * their wallpaper name falls back to the plain backdrop.
+ */
+const LEGACY_ACCENTS: Record<string, string> = {
+  emerald: "#9bdd6b",
+  sapphire: "#38bdf8",
+  amethyst: "#c084fc",
+  blaze: "#fb923c",
+  ruby: "#f43f5e",
+  gold: "#facc15",
+  prismarine: "#2dd4bf",
+};
+
+function resolveAccentColor(parsed: Record<string, unknown>): string {
+  const legacy = typeof parsed.themeColor === "string" ? LEGACY_ACCENTS[parsed.themeColor] : undefined;
+  if (legacy) return legacy;
+  const custom = typeof parsed.customThemeColor === "string" ? parsed.customThemeColor.trim() : "";
+  return /^#[0-9a-fA-F]{6}$/.test(custom) ? custom : defaultSettings.customThemeColor;
+}
+
+function isBackgroundType(value: unknown): value is BackgroundType {
+  return (
+    typeof value === "string" &&
+    (BACKGROUND_TYPES as readonly string[]).includes(value)
+  );
+}
 
 export const defaultSettings: LauncherSettings = {
   playerName: "Steve",
@@ -24,18 +55,22 @@ export const defaultSettings: LauncherSettings = {
   launcherVisibility: "keep",
   processPriority: "normal",
   windowSize: "default",
-  themeColor: "emerald",
   customThemeColor: "#9bdd6b",
   themeMode: "dark",
   backgroundType: "default",
   customBackgroundPath: "",
   backgroundBlur: 0,
   backgroundOpacity: 60,
+  uiOpacity: 100,
   enableMica: true,
   enableAnimation: true,
   showWorldGrid: true,
   customSlogan: "",
   fontFamily: "default",
+  fontWeight: "regular",
+  letterSpacing: "normal",
+  statusText: "",
+  launchButtonText: "",
 };
 
 export function loadSettings(): LauncherSettings {
@@ -108,30 +143,14 @@ export function loadSettings(): LauncherSettings {
         parsed.windowSize === "fullscreen" || parsed.windowSize === "custom"
           ? parsed.windowSize
           : "default",
-      themeColor:
-        parsed.themeColor === "sapphire" ||
-        parsed.themeColor === "amethyst" ||
-        parsed.themeColor === "blaze" ||
-        parsed.themeColor === "ruby" ||
-        parsed.themeColor === "gold" ||
-        parsed.themeColor === "prismarine" ||
-        parsed.themeColor === "custom"
-          ? parsed.themeColor
-          : "emerald",
-      customThemeColor:
-        typeof parsed.customThemeColor === "string" && parsed.customThemeColor.startsWith("#")
-          ? parsed.customThemeColor
-          : defaultSettings.customThemeColor,
+      customThemeColor: resolveAccentColor(parsed as Record<string, unknown>),
       themeMode:
         parsed.themeMode === "light" || parsed.themeMode === "system"
           ? parsed.themeMode
           : "dark",
-      backgroundType:
-        parsed.backgroundType === "dirt" ||
-        parsed.backgroundType === "stone" ||
-        parsed.backgroundType === "custom"
-          ? parsed.backgroundType
-          : "default",
+      backgroundType: isBackgroundType(parsed.backgroundType)
+        ? parsed.backgroundType
+        : "default",
       customBackgroundPath:
         typeof parsed.customBackgroundPath === "string" ? parsed.customBackgroundPath : "",
       backgroundBlur:
@@ -142,15 +161,32 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.backgroundOpacity === "number"
           ? Math.min(100, Math.max(10, Math.round(parsed.backgroundOpacity)))
           : defaultSettings.backgroundOpacity,
+      uiOpacity:
+        typeof parsed.uiOpacity === "number"
+          ? Math.min(100, Math.max(30, Math.round(parsed.uiOpacity)))
+          : defaultSettings.uiOpacity,
       enableMica: parsed.enableMica !== false,
       enableAnimation: parsed.enableAnimation !== false,
       showWorldGrid: parsed.showWorldGrid !== false,
       customSlogan:
         typeof parsed.customSlogan === "string" ? parsed.customSlogan : "",
       fontFamily:
-        parsed.fontFamily === "pixel" || parsed.fontFamily === "system"
+        parsed.fontFamily === "pixel" ||
+        parsed.fontFamily === "system" ||
+        parsed.fontFamily === "serif"
           ? parsed.fontFamily
           : "default",
+      fontWeight: parsed.fontWeight === "medium" ? "medium" : "regular",
+      letterSpacing:
+        parsed.letterSpacing === "tight" || parsed.letterSpacing === "wide"
+          ? parsed.letterSpacing
+          : "normal",
+      statusText:
+        typeof parsed.statusText === "string" ? parsed.statusText.slice(0, 40) : "",
+      launchButtonText:
+        typeof parsed.launchButtonText === "string"
+          ? parsed.launchButtonText.slice(0, 20)
+          : "",
     };
   } catch {
     return { ...defaultSettings };

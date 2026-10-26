@@ -4,7 +4,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How many builds the version picker shows.
-const VERSION_LIST_LIMIT: usize = 50;
+///
+/// The picker groups files by loader and Minecraft version and lists every
+/// version the project supports as a pill, so the window has to reach back far
+/// enough to cover older Minecraft releases: at 50 files a fast-moving mod only
+/// exposed its newest two Minecraft versions. 200 files is ~400 KB of JSON for
+/// the busiest projects, still well inside the body timeout below.
+const VERSION_LIST_LIMIT: usize = 200;
 /// A fetched version list is reused for this long before the API is queried again.
 const VERSION_LIST_TTL: Duration = Duration::from_secs(10 * 60);
 /// Upper bound on cached lists so a long session cannot grow without limit.
@@ -79,6 +85,13 @@ pub struct DownloadContentRequest {
     pub sha1: Option<String>,
     pub size: Option<u64>,
     pub title: String,
+    /// Minecraft versions this build was published for. Used to pick the local
+    /// instance the mod belongs to when the caller names none.
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    /// Loader family of the file ("fabric", "forge", …) when known.
+    #[serde(default)]
+    pub loader: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +100,12 @@ pub struct DownloadContentResult {
     pub success: bool,
     pub file_path: String,
     pub bytes: u64,
+    /// Instance the file ended up in (explicit or auto-detected).
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    /// True when no instance was requested and a matching local one was found.
+    #[serde(default)]
+    pub auto_matched: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -123,55 +142,6 @@ struct ModrinthRawHit {
     project_type: String,
 }
 
-async fn get_bedrock_hits(query: &str, project_type: &str) -> Vec<ContentHit> {
-    let all = crate::bedrock::get_bedrock_content_async(None).await;
-    let q = query.trim().to_lowercase();
-    all.into_iter()
-        .filter(|item| {
-            let type_match = if project_type == "resourcepack" {
-                item.content_type == "resourcepack" || item.content_type == "shader"
-            } else if project_type == "shader" {
-                item.content_type == "shader" || item.content_type == "resourcepack"
-            } else {
-                item.content_type == project_type
-            };
-            if !type_match {
-                return false;
-            }
-            if !q.is_empty() {
-                if !item.title.to_lowercase().contains(&q)
-                    && !item.description.to_lowercase().contains(&q)
-                    && !item.author.to_lowercase().contains(&q)
-                    && !item.tags.iter().any(|t| t.to_lowercase().contains(&q))
-                {
-                    return false;
-                }
-            }
-            true
-        })
-        .map(|item| ContentHit {
-            project_id: item.id.clone(),
-            slug: item.id,
-            author: item.author,
-            title: item.title,
-            description: item.description,
-            categories: {
-                let mut cats = vec!["bedrock".to_string(), "基岩版".to_string()];
-                cats.extend(item.tags);
-                cats
-            },
-            versions: vec!["1.21+".to_string(), "基岩版".to_string()],
-            downloads: item.downloads,
-            follows: item.downloads / 10,
-            icon_url: item.icon_url,
-            date_created: Some("2024-01-01T00:00:00Z".to_string()),
-            date_modified: Some("2024-12-01T00:00:00Z".to_string()),
-            latest_version: Some(item.version),
-            project_type: item.content_type,
-        })
-        .collect()
-}
-
 pub async fn search_content(
     query: String,
     project_type: String,
@@ -189,70 +159,18 @@ pub async fn search_content(
         || game_version.as_deref() == Some("基岩版");
 
     if is_bedrock {
-        let bedrock_local_hits = get_bedrock_hits(&query, &project_type).await;
-
-        // Query Modrinth API in real time for Bedrock-compatible items
-        let modrinth_query = if query.trim().is_empty() {
-            "bedrock".to_string()
-        } else if !query.to_lowercase().contains("bedrock") {
-            format!("{} bedrock", query.trim())
-        } else {
-            query.clone()
-        };
-
-        let mut facets: Vec<Vec<String>> = Vec::new();
-        facets.push(vec![format!("project_type:{project_type}")]);
-        let facets_json = serde_json::to_string(&facets).unwrap_or_else(|_| "[]".to_string());
-
-        let url = format!(
-            "https://api.modrinth.com/v2/search?query={}&facets={}&index={}&offset={}&limit={}",
-            urlencoding(&modrinth_query),
-            urlencoding(&facets_json),
-            "downloads",
-            0,
-            limit
-        );
-
-        let mut combined_hits = bedrock_local_hits;
-        let client = net::client();
-        if let Ok(resp) = client.get(&url).timeout(Duration::from_secs(6)).send().await {
-            if resp.status().is_success() {
-                if let Ok(raw) = resp.json::<ModrinthSearchResponse>().await {
-                    for h in raw.hits {
-                        if !combined_hits.iter().any(|c| c.project_id == h.project_id || c.slug == h.slug) {
-                            combined_hits.push(ContentHit {
-                                project_id: h.project_id,
-                                slug: h.slug,
-                                author: h.author,
-                                title: h.title,
-                                description: h.description,
-                                categories: h.categories,
-                                versions: h.versions,
-                                downloads: h.downloads,
-                                follows: h.follows,
-                                icon_url: h.icon_url,
-                                date_created: h.date_created,
-                                date_modified: h.date_modified,
-                                latest_version: h.latest_version,
-                                project_type: h.project_type,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        let total = combined_hits.len() as u32;
-        let start = (offset as usize).min(combined_hits.len());
-        let end = (start + limit as usize).min(combined_hits.len());
-        let paged_hits = combined_hits[start..end].to_vec();
-
-        return Ok(SearchContentResult {
-            hits: paged_hits,
+        // Bedrock content is browsed through CurseForge, the catalogue
+        // BedrockBoot-DM uses: add-ons and texture packs with real download
+        // counts, icons and per-file CDN links.
+        return crate::bedrock_store::search_bedrock(
+            &query,
+            &project_type,
             offset,
             limit,
-            total_hits: total,
-        });
+            sort.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("搜索基岩版资源失败: {e}"));
     }
 
     let index = match sort.as_deref() {
@@ -291,7 +209,7 @@ pub async fn search_content(
         .await
         .map_err(|e| format!("搜索 Modrinth 失败: {e}"))?;
 
-    let mut hits: Vec<ContentHit> = raw
+    let hits: Vec<ContentHit> = raw
         .hits
         .into_iter()
         .map(|h| ContentHit {
@@ -311,16 +229,6 @@ pub async fn search_content(
             project_type: h.project_type,
         })
         .collect();
-
-    // Include Bedrock hits in first page if no specific loader or all loaders
-    if offset == 0 && (loader.is_none() || loader.as_deref() == Some("all")) {
-        let bedrock_hits = get_bedrock_hits(&query, &project_type).await;
-        if !bedrock_hits.is_empty() {
-            let mut combined = bedrock_hits;
-            combined.extend(hits);
-            hits = combined;
-        }
-    }
 
     Ok(SearchContentResult {
         hits,
@@ -366,28 +274,33 @@ pub async fn get_content_versions(
     game_version: Option<String>,
     loader: Option<String>,
 ) -> Result<Vec<ContentVersionItem>, String> {
-    // Check if it's a bedrock curated project. Use the cache-only view: this
-    // runs before every version list, and waiting on the remote catalog here
-    // added seconds to each open when its mirrors were unreachable.
-    let bedrock_items = crate::bedrock::get_bedrock_content_cached();
-    if let Some(item) = bedrock_items.into_iter().find(|i| i.id == project_id_or_slug) {
-        return Ok(vec![ContentVersionItem {
-            id: format!("{}-v1", item.id),
-            name: format!("{} (基岩版推荐)", item.version),
-            version_number: item.version,
-            game_versions: vec!["1.21+".to_string(), "基岩版".to_string()],
-            loaders: vec!["bedrock".to_string()],
-            date_published: Some("2024-12-01T00:00:00Z".to_string()),
-            downloads: item.downloads,
-            files: vec![ContentFile {
-                url: item.download_url,
-                filename: item.file_name,
-                primary: true,
-                size: 2_500_000,
-                sha1: None,
-            }],
-        }]);
+    // Bedrock projects live on CurseForge: their id carries the `cfb:` prefix
+    // and their file list is the set of downloadable pack archives.
+    if let Some(raw_id) = project_id_or_slug.strip_prefix(crate::bedrock_store::PROJECT_PREFIX) {
+        let mod_id: u32 = raw_id
+            .trim()
+            .parse()
+            .map_err(|_| format!("无效的基岩版项目 ID: {project_id_or_slug}"))?;
+        let cache_key = format!("cfb:{mod_id}");
+        if let Ok(cache) = version_list_cache().lock() {
+            if let Some((fetched_at, cached)) = cache.get(&cache_key) {
+                if fetched_at.elapsed() < VERSION_LIST_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+        let items = crate::bedrock_store::bedrock_project_files(mod_id)
+            .await
+            .map_err(|e| format!("获取基岩版项目文件失败: {e}"))?;
+        if let Ok(mut cache) = version_list_cache().lock() {
+            if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(cache_key, (Instant::now(), items.clone()));
+        }
+        return Ok(items);
     }
+
     // Reopening the same project/filter combination is served from memory: the
     // version list is immutable enough that a 10 minute window is safe.
     let cache_key = format!(
@@ -450,9 +363,9 @@ pub async fn get_content_versions(
 
 /// Compose the Modrinth version list URL for one project and filter set.
 ///
-/// `limit` keeps the response to the page the picker actually renders. Without
-/// it a popular project returns its entire history (Fabric API: 1216 versions,
-/// 1.2 MB of JSON, ~35s on a slow link) to show 50 rows.
+/// `limit` keeps the response to a bounded recent window. Without it a popular
+/// project returns its entire history (Fabric API: 1216 versions, 1.2 MB of
+/// JSON, ~35s on a slow link) for a picker that only groups a few hundred rows.
 fn build_version_list_url(
     project_id_or_slug: &str,
     game_version: Option<&str>,
@@ -478,7 +391,7 @@ fn build_version_list_url(
     )
 }
 
-fn urlencoding(input: &str) -> String {
+pub(crate) fn urlencoding(input: &str) -> String {
     let mut encoded = String::with_capacity(input.len());
     for b in input.bytes() {
         if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
@@ -494,6 +407,105 @@ fn urlencoding(input: &str) -> String {
 // File Download & Placement
 // ---------------------------------------------------------------------------
 
+/// Directory a downloaded content file is written to.
+///
+/// Mods are installed into the instance they were built for: the game reads
+/// `versions/<id>/mods` for the version it launches, never a shared
+/// `<root>/mods`, so `None` means the caller has to resolve an instance (or
+/// explain why it cannot). The other types keep a root folder for the case
+/// where no instance matches.
+fn content_target_dir(
+    root: &Path,
+    project_type: &str,
+    instance_id: Option<&str>,
+) -> Option<PathBuf> {
+    let instance = instance_id.filter(|s| !s.trim().is_empty());
+    let per_instance = |folder: &str| match instance {
+        Some(id) => Some(root.join("versions").join(id).join(folder)),
+        None => Some(root.join(folder)),
+    };
+    match project_type {
+        "mod" => instance.map(|id| root.join("versions").join(id).join("mods")),
+        "shader" => per_instance("shaderpacks"),
+        "datapack" => per_instance("datapacks"),
+        "resourcepack" => per_instance("resourcepacks"),
+        "modpack" => Some(root.join("modpacks")),
+        _ => Some(root.join("downloads")),
+    }
+}
+
+/// Normalize a Minecraft version label for comparisons.
+fn normalize_mc_version(value: &str) -> String {
+    value.trim().trim_start_matches('v').to_lowercase()
+}
+
+/// Pick the installed Java version a downloaded mod belongs in.
+///
+/// A mod is built for one Minecraft version and one loader family. Dropping a
+/// 1.20.1 Forge jar into the shared `<root>/mods` directory silently does
+/// nothing for the instance the player actually launches, so when the caller
+/// does not name an instance we look for a local version whose Minecraft
+/// version matches the file — preferring one with the same loader.
+///
+/// Returns the newest matching instance, or `None` when the local setup has no
+/// version the file was built for.
+pub fn pick_mod_instance(
+    installed: &[crate::minecraft::InstalledVersion],
+    game_versions: &[String],
+    loader: Option<&str>,
+) -> Option<crate::minecraft::InstalledVersion> {
+    let wanted: Vec<String> = game_versions
+        .iter()
+        .map(|v| normalize_mc_version(v))
+        .filter(|v| !v.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        return None;
+    }
+
+    let candidates: Vec<&crate::minecraft::InstalledVersion> = installed
+        .iter()
+        .filter(|inst| match inst.mc_version.as_deref() {
+            Some(mc) => {
+                let mc = normalize_mc_version(mc);
+                wanted.iter().any(|want| *want == mc)
+            }
+            None => false,
+        })
+        .collect();
+
+    let wanted_loader = loader
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty() && l != "all");
+    // Same loader first; a vanilla instance still beats the shared mods folder
+    // when it is the only install for that Minecraft version.
+    let narrowed: Vec<&crate::minecraft::InstalledVersion> = match wanted_loader {
+        Some(ref want) => {
+            let same_loader: Vec<&crate::minecraft::InstalledVersion> = candidates
+                .iter()
+                .copied()
+                .filter(|inst| {
+                    inst.loader
+                        .as_deref()
+                        .map(|have| have.eq_ignore_ascii_case(want))
+                        .unwrap_or(false)
+                })
+                .collect();
+            if same_loader.is_empty() {
+                candidates
+            } else {
+                same_loader
+            }
+        }
+        None => candidates,
+    };
+
+    narrowed
+        .into_iter()
+        .max_by_key(|inst| inst.installed_at)
+        .cloned()
+}
+
 pub async fn download_content_file(
     request: DownloadContentRequest,
 ) -> Result<DownloadContentResult, String> {
@@ -505,49 +517,78 @@ pub async fn download_content_file(
         .to_string();
 
     // Check if it's a bedrock pack or targeted for bedrock
+    let lower_name = filename.to_lowercase();
     if request.instance_id.as_deref() == Some("bedrock")
-        || filename.ends_with(".mcpack")
-        || filename.ends_with(".mcaddon")
+        || lower_name.ends_with(".mcpack")
+        || lower_name.ends_with(".mcaddon")
+        || lower_name.ends_with(".mcworld")
     {
         let res = crate::bedrock::install_bedrock_pack(&root, &request.url, &filename).await?;
         return Ok(DownloadContentResult {
             success: true,
             file_path: res.target_path,
             bytes: request.size.unwrap_or(0),
+            instance_id: None,
+            auto_matched: false,
         });
     }
 
-    let target_dir: PathBuf = match request.project_type.as_str() {
-        "mod" => {
-            if let Some(ref inst) = request.instance_id.filter(|s| !s.trim().is_empty()) {
-                root.join("versions").join(inst).join("mods")
-            } else {
-                root.join("mods")
-            }
+    // Java mods are version- and loader-bound: resolve the instance before the
+    // target directory is chosen so the jar lands where the game reads it.
+    let mut instance_id = request
+        .instance_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let mut auto_matched = false;
+    if instance_id.is_none()
+        && request.project_type == "mod"
+        && !request.game_versions.is_empty()
+    {
+        let installed = crate::minecraft::list_installed(&root).unwrap_or_default();
+        if let Some(found) = pick_mod_instance(
+            &installed,
+            &request.game_versions,
+            request.loader.as_deref(),
+        ) {
+            instance_id = Some(found.id);
+            auto_matched = true;
         }
-        "shader" => {
-            if let Some(ref inst) = request.instance_id.filter(|s| !s.trim().is_empty()) {
-                root.join("versions").join(inst).join("shaderpacks")
+    }
+
+    let target_dir = match content_target_dir(
+        &root,
+        &request.project_type,
+        instance_id.as_deref(),
+    ) {
+        Some(dir) => dir,
+        None => {
+            // No local instance was built for this file: refuse instead of
+            // dropping it into a shared folder the game never reads.
+            let versions = request
+                .game_versions
+                .iter()
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            let wanted = if versions.is_empty() {
+                "该模组支持的游戏版本".to_string()
             } else {
-                root.join("shaderpacks")
-            }
+                versions
+            };
+            let loader = request
+                .loader
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && *l != "all")
+                .map(|l| format!(" {l}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "本地没有与 {wanted}{loader} 匹配的游戏版本，模组只会安装到对应版本的 mods 目录。请先在版本列表里安装该版本，再回来下载。"
+            ));
         }
-        "datapack" => {
-            if let Some(ref inst) = request.instance_id.filter(|s| !s.trim().is_empty()) {
-                root.join("versions").join(inst).join("datapacks")
-            } else {
-                root.join("datapacks")
-            }
-        }
-        "resourcepack" => {
-            if let Some(ref inst) = request.instance_id.filter(|s| !s.trim().is_empty()) {
-                root.join("versions").join(inst).join("resourcepacks")
-            } else {
-                root.join("resourcepacks")
-            }
-        }
-        "modpack" => root.join("modpacks"),
-        _ => root.join("downloads"),
     };
 
     tokio::fs::create_dir_all(&target_dir)
@@ -571,6 +612,8 @@ pub async fn download_content_file(
         success: true,
         file_path: dest.to_string_lossy().to_string(),
         bytes,
+        instance_id,
+        auto_matched,
     })
 }
 
@@ -578,11 +621,97 @@ pub async fn download_content_file(
 mod tests {
     use super::*;
 
+    fn instance(
+        id: &str,
+        mc_version: Option<&str>,
+        loader: Option<&str>,
+        installed_at: u64,
+    ) -> crate::minecraft::InstalledVersion {
+        crate::minecraft::InstalledVersion {
+            id: id.to_string(),
+            version_type: "release".to_string(),
+            installed_at,
+            mc_version: mc_version.map(str::to_string),
+            loader: loader.map(str::to_string),
+            loader_version: None,
+            optifine_version: None,
+            fabric_api_version: None,
+        }
+    }
+
+    #[test]
+    fn target_dir_prefers_the_resolved_instance() {
+        let root = PathBuf::from("/game");
+        assert_eq!(
+            content_target_dir(&root, "mod", Some("1.20.1-forge")),
+            Some(
+                PathBuf::from("/game")
+                    .join("versions")
+                    .join("1.20.1-forge")
+                    .join("mods")
+            )
+        );
+        // Mods never fall back to the shared `<root>/mods` folder.
+        assert_eq!(content_target_dir(&root, "mod", None), None);
+        // An empty instance id must not create a version folder named "".
+        assert_eq!(content_target_dir(&root, "mod", Some("   ")), None);
+        // Shaders and the other types keep their root folder.
+        assert_eq!(
+            content_target_dir(&root, "shader", None),
+            Some(PathBuf::from("/game").join("shaderpacks"))
+        );
+    }
+
+    #[test]
+    fn mod_instance_matches_minecraft_version() {
+        let installed = vec![
+            instance("1.21.4-fabric", Some("1.21.4"), Some("fabric"), 10),
+            instance("1.20.1-forge", Some("1.20.1"), Some("forge"), 20),
+        ];
+        let picked = pick_mod_instance(&installed, &["1.20.1".to_string()], Some("forge"))
+            .expect("1.20.1 install exists");
+        assert_eq!(picked.id, "1.20.1-forge");
+    }
+
+    #[test]
+    fn mod_instance_prefers_the_requested_loader() {
+        let installed = vec![
+            instance("1.20.1-vanilla", Some("1.20.1"), None, 30),
+            instance("1.20.1-fabric", Some("1.20.1"), Some("fabric"), 10),
+        ];
+        let picked = pick_mod_instance(&installed, &["1.20.1".to_string()], Some("Fabric"))
+            .expect("fabric install exists");
+        assert_eq!(picked.id, "1.20.1-fabric");
+    }
+
+    #[test]
+    fn mod_instance_falls_back_to_any_build_of_that_version() {
+        let installed = vec![instance("1.20.1-vanilla", Some("1.20.1"), None, 30)];
+        let picked = pick_mod_instance(&installed, &["1.20.1".to_string()], Some("forge"))
+            .expect("a 1.20.1 install exists");
+        assert_eq!(picked.id, "1.20.1-vanilla");
+    }
+
+    #[test]
+    fn mod_instance_ignores_other_game_versions() {
+        let installed = vec![instance("1.21.4-fabric", Some("1.21.4"), Some("fabric"), 10)];
+        assert!(pick_mod_instance(&installed, &["1.20.1".to_string()], Some("fabric")).is_none());
+        assert!(pick_mod_instance(&installed, &[], Some("fabric")).is_none());
+    }
+
+    #[test]
+    fn mod_instance_matches_through_qualified_labels() {
+        let installed = vec![instance("1.20.1-fabric", Some("v1.20.1"), Some("fabric"), 5)];
+        let picked = pick_mod_instance(&installed, &[" 1.20.1 ".to_string()], None)
+            .expect("labels are normalized before comparing");
+        assert_eq!(picked.id, "1.20.1-fabric");
+    }
+
     #[test]
     fn version_url_requests_only_the_visible_page() {
         assert_eq!(
             build_version_list_url("fabric-api", None, None),
-            "https://api.modrinth.com/v2/project/fabric-api/version?limit=50"
+            "https://api.modrinth.com/v2/project/fabric-api/version?limit=200"
         );
     }
 
@@ -591,7 +720,7 @@ mod tests {
         let url = build_version_list_url("fabric-api", Some("1.20.1"), Some("Fabric"));
         assert!(url.contains("game_versions=%5B%221.20.1%22%5D"), "{url}");
         assert!(url.contains("loaders=%5B%22fabric%22%5D"), "{url}");
-        assert!(url.ends_with("&limit=50"), "{url}");
+        assert!(url.ends_with("&limit=200"), "{url}");
     }
 
     #[test]
@@ -599,7 +728,7 @@ mod tests {
         for value in ["all", "bedrock", "", "   "] {
             assert_eq!(
                 build_version_list_url("pack", Some(value), Some(value)),
-                "https://api.modrinth.com/v2/project/pack/version?limit=50",
+                "https://api.modrinth.com/v2/project/pack/version?limit=200",
                 "value {value:?} should not become a filter"
             );
         }

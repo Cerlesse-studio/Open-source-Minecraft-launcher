@@ -22,19 +22,19 @@
 :root {
   color-scheme: dark;
   accent-color: var(--primary);
-  --background: #080b09;
+  --background-solid: #080b09;
   --foreground: #e9efe6;
-  --card: #101511;
+  --card-solid: #101511;
   --card-foreground: #e9efe6;
-  --popover: #141a15;
+  --popover-solid: #141a15;
   --popover-foreground: #e9efe6;
   --primary: #9bdd6b;
   --primary-foreground: #0b1408;
-  --secondary: #1b231d;
+  --secondary-solid: #1b231d;
   --secondary-foreground: #dce6da;
-  --muted: #171e19;
+  --muted-solid: #171e19;
   --muted-foreground: #93a395;
-  --accent: #1f2a21;
+  --accent-solid: #1f2a21;
   --accent-foreground: #f0f5ec;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
@@ -47,41 +47,41 @@
   --chart-4: #e59b68;
   --chart-5: #9d8be0;
   --radius: 0.75rem;
-  --sidebar: #0c100d;
+  --sidebar-solid: #0c100d;
   --sidebar-foreground: #e9efe6;
   --sidebar-primary: #9bdd6b;
   --sidebar-primary-foreground: #0b1408;
-  --sidebar-accent: #182019;
+  --sidebar-accent-solid: #182019;
   --sidebar-accent-foreground: #f0f5ec;
   --sidebar-border: #232d26;
   --sidebar-ring: #9bdd6b;
 }
 
 .dark {
-  --background: #080b09;
+  --background-solid: #080b09;
   --foreground: #e9efe6;
-  --card: #101511;
+  --card-solid: #101511;
   --card-foreground: #e9efe6;
-  --popover: #141a15;
+  --popover-solid: #141a15;
   --popover-foreground: #e9efe6;
   --primary: #9bdd6b;
   --primary-foreground: #0b1408;
-  --secondary: #1b231d;
+  --secondary-solid: #1b231d;
   --secondary-foreground: #dce6da;
-  --muted: #171e19;
+  --muted-solid: #171e19;
   --muted-foreground: #93a395;
-  --accent: #1f2a21;
+  --accent-solid: #1f2a21;
   --accent-foreground: #f0f5ec;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
   --border: #26312a;
   --input: #2a352d;
   --ring: #9bdd6b;
-  --sidebar: #0c100d;
+  --sidebar-solid: #0c100d;
   --sidebar-foreground: #e9efe6;
   --sidebar-primary: #9bdd6b;
   --sidebar-primary-foreground: #0b1408;
-  --sidebar-accent: #182019;
+  --sidebar-accent-solid: #182019;
   --sidebar-accent-foreground: #f0f5ec;
   --sidebar-border: #232d26;
   --sidebar-ring: #9bdd6b;
@@ -89,27 +89,44 @@
 
 .light {
   color-scheme: light;
-  --background: #f6f8f5;
+  --background-solid: #f6f8f5;
   --foreground: #151e16;
-  --card: #ffffff;
+  --card-solid: #ffffff;
   --card-foreground: #151e16;
-  --popover: #ffffff;
+  --popover-solid: #ffffff;
   --popover-foreground: #151e16;
-  --secondary: #eef3ed;
+  --secondary-solid: #eef3ed;
   --secondary-foreground: #1f2a21;
-  --muted: #eef3ed;
+  --muted-solid: #eef3ed;
   --muted-foreground: #5a6e5e;
-  --accent: #e2ede1;
+  --accent-solid: #e2ede1;
   --accent-foreground: #151e16;
   --destructive: #e05243;
   --destructive-foreground: #ffffff;
   --border: #d4e0d3;
   --input: #d4e0d3;
-  --sidebar: #f0f5ee;
+  --sidebar-solid: #f0f5ee;
   --sidebar-foreground: #151e16;
-  --sidebar-accent: #e4eee2;
+  --sidebar-accent-solid: #e4eee2;
   --sidebar-accent-foreground: #151e16;
   --sidebar-border: #d4e0d3;
+}
+
+/* Surfaces.
+   Every panel, popover, input and the page backdrop derive from the solid
+   tokens above, so one setting (--surface-alpha, written by lib/theme.ts) can
+   fade every component at once without touching component classes. At 1 it
+   resolves to the exact solid color. */
+:root {
+  --surface-alpha: 1;
+  --background: color-mix(in oklab, var(--background-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --card: color-mix(in oklab, var(--card-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --popover: color-mix(in oklab, var(--popover-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --secondary: color-mix(in oklab, var(--secondary-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --muted: color-mix(in oklab, var(--muted-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --accent: color-mix(in oklab, var(--accent-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --sidebar: color-mix(in oklab, var(--sidebar-solid) calc(var(--surface-alpha) * 100%), transparent);
+  --sidebar-accent: color-mix(in oklab, var(--sidebar-accent-solid) calc(var(--surface-alpha) * 100%), transparent);
 }
 
 .reduce-motion,

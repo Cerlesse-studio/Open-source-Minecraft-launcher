@@ -11,7 +11,7 @@ use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 pub const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.1.0";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.0.7";
 
 /// Files at or above 1 MB are eligible for multi-segment HTTP Range downloading.
 const MIN_MULTITHREAD_SIZE: u64 = 1_048_576;

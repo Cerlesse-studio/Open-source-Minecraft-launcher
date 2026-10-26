@@ -2,6 +2,7 @@ import type {
   BedrockContentItem,
   BedrockLoadersCatalog,
   BedrockModItem,
+  BedrockPackItem,
   BedrockStatus,
   BedrockVersionItem,
   ContentHit,
@@ -80,8 +81,20 @@ const VERSIONS: Array<[string, string, string]> = [
 ];
 
 let installed: InstalledVersion[] = [
-  { id: "1.21.8", type: "release", installedAt: Date.parse("2026-10-22T09:20:00Z") / 1000 },
-  { id: "1.20.1", type: "release", installedAt: Date.parse("2026-09-03T18:42:00Z") / 1000 },
+  {
+    id: "1.21.8",
+    type: "release",
+    installedAt: Date.parse("2026-10-22T09:20:00Z") / 1000,
+    mcVersion: "1.21.8",
+    loader: "fabric",
+  },
+  {
+    id: "1.20.1",
+    type: "release",
+    installedAt: Date.parse("2026-09-03T18:42:00Z") / 1000,
+    mcVersion: "1.20.1",
+    loader: "forge",
+  },
 ];
 
 const javaInstalls: JavaInstall[] = [
@@ -127,7 +140,7 @@ export function demoSystemInfo(): SystemInfo {
     arch: "x86_64",
     javaInstalls: javaInstalls.map((java) => ({ ...java })),
     gameRunning,
-    launcherVersion: "0.1.0",
+    launcherVersion: "0.0.7",
   };
 }
 
@@ -1059,10 +1072,22 @@ export async function demoDownloadContentFile(
   request: DownloadContentRequest,
 ): Promise<DownloadContentResult> {
   await sleep(400);
+  const wanted = new Set(
+    (request.gameVersions ?? []).map((v) => v.trim().toLowerCase()),
+  );
+  const matched = installed.find(
+    (iv) => iv.mcVersion && wanted.has(iv.mcVersion.toLowerCase()),
+  );
+  const instanceId = request.instanceId || matched?.id;
+  const folder = instanceId
+    ? `versions\\${instanceId}\\${request.projectType}s`
+    : `${request.projectType}s`;
   return {
     success: true,
-    filePath: `C:\\Users\\you\\.cobble\\versions\\${request.instanceId || "default"}\\${request.projectType}s\\${request.filename}`,
+    filePath: `C:\\Users\\you\\.cobble\\${folder}\\${request.filename}`,
     bytes: request.size ?? 2_048_000,
+    instanceId,
+    autoMatched: !request.instanceId && Boolean(matched),
   };
 }
 
@@ -1370,5 +1395,103 @@ export async function demoInstallBedrockModFile(
 ): Promise<string> {
   await sleep(300);
   return `模组文件已成功导入到基岩版实例 ${versionId}`;
+}
+
+let demoPacks: BedrockPackItem[] = [
+  {
+    id: "9c7f2a51-1f3e-4b8a-9a44-3b0e6a1f2c11",
+    name: "Stay True 基础材质",
+    description: "柔和的手绘风格资源包，覆盖方块、物品与界面。",
+    version: "1.4.2",
+    packType: "resource",
+    folder: "StayTrue_9c7f2a51",
+    path: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang\\resource_packs\\StayTrue_9c7f2a51",
+    enabled: true,
+    size: 18_432_000,
+    modifiedTime: "2026-10-26T09:14:00Z",
+    icon: null,
+    location: "启动器便携目录",
+    locationPath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+  },
+  {
+    id: "c2f3d5a0-77b1-4c62-8fd8-5a1e7c4b9d02",
+    name: "More Tools 更多工具",
+    description: "新增一批实用工具与合成配方，需要开启测试版玩法。",
+    version: "2.0.1",
+    packType: "behavior",
+    folder: "MoreTools_c2f3d5a0",
+    path: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang\\behavior_packs\\MoreTools_c2f3d5a0",
+    enabled: true,
+    size: 524_288,
+    modifiedTime: "2026-10-25T17:02:00Z",
+    icon: null,
+    location: "启动器便携目录",
+    locationPath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+  },
+  {
+    id: "51a0b8e4-6c9d-4f21-b0aa-7d2e1f8c3b45",
+    name: "Crisp UI 界面优化",
+    description: "把背包与设置界面换成扁平化风格。",
+    version: "0.9.6",
+    packType: "resource",
+    folder: "CrispUI_51a0b8e4",
+    path: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang\\cobble_disabled_packs\\resource_packs\\CrispUI_51a0b8e4",
+    enabled: false,
+    size: 3_145_728,
+    modifiedTime: "2026-10-23T11:48:00Z",
+    icon: null,
+    location: "启动器便携目录",
+    locationPath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+  },
+];
+
+export async function demoGetBedrockPacks(): Promise<BedrockPackItem[]> {
+  await sleep(120);
+  return demoPacks.map((pack) => ({ ...pack }));
+}
+
+export async function demoSetBedrockPackEnabled(
+  path: string,
+  enabled: boolean,
+): Promise<void> {
+  await sleep(90);
+  demoPacks = demoPacks.map((pack) =>
+    pack.path === path ? { ...pack, enabled } : pack,
+  );
+}
+
+export async function demoDeleteBedrockPack(path: string): Promise<void> {
+  await sleep(150);
+  demoPacks = demoPacks.filter((pack) => pack.path !== path);
+}
+
+export async function demoImportBedrockPackFile(
+  filePath: string,
+): Promise<InstallPackResult> {
+  await sleep(600);
+  const name = filePath.split(/[\\/]/).pop()?.replace(/\.(mcpack|mcaddon|mcworld|zip)$/i, "") || "新附加包";
+  const pack: BedrockPackItem = {
+    id: `demo-${demoPacks.length + 1}`,
+    name,
+    description: "从本地文件导入的附加包。",
+    version: "1.0.0",
+    packType: "resource",
+    folder: `${name}_demo`,
+    path: `C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang\\resource_packs\\${name}_demo`,
+    enabled: true,
+    size: 1_048_576,
+    modifiedTime: new Date().toISOString(),
+    icon: null,
+    location: "启动器便携目录",
+    locationPath: "C:\\Users\\you\\.cobble\\bedrock\\games\\com.mojang",
+  };
+  demoPacks = [...demoPacks, pack];
+  return {
+    success: true,
+    packName: name,
+    packType: "resource_packs",
+    targetPath: pack.path,
+    message: `本地导入 — 已安装：${name}（resource_packs），写入 1 个游戏数据目录。`,
+  };
 }
 
