@@ -393,6 +393,8 @@ pub async fn search_bedrock(
         offset,
         limit,
         total_hits,
+        // The launcher fills this in after substituting English keywords.
+        translated_query: None,
     })
 }
 

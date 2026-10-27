@@ -776,9 +776,7 @@ export function DownloadsView({
                   <span
                     className={cn(
                       "flex size-10 shrink-0 items-center justify-center rounded-xl border p-1",
-                      getTaskEdition(installingVersion) === "bedrock"
-                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
-                        : "border-primary/40 bg-primary/10 text-primary",
+                      "border-primary/40 bg-primary/10 text-primary",
                     )}
                   >
                     <img
@@ -801,9 +799,7 @@ export function DownloadsView({
                         variant="outline"
                         className={cn(
                           "h-5 shrink-0 px-1.5 text-[10px] font-normal",
-                          getTaskEdition(installingVersion) === "bedrock"
-                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
-                            : "border-primary/30 bg-primary/10 text-primary",
+                          "border-primary/30 bg-primary/10 text-primary",
                         )}
                       >
                         {getTaskEdition(installingVersion) === "bedrock"
@@ -1132,9 +1128,7 @@ export function DownloadsView({
                     className={cn(
                       "flex size-9 shrink-0 items-center justify-center rounded-lg border p-1",
                       isSuccess
-                        ? isBedrock
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                          : "border-primary/30 bg-primary/10 text-primary"
+                        ? "border-primary/30 bg-primary/10 text-primary"
                         : isPaused
                           ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
                           : "border-destructive/30 bg-destructive/10 text-destructive",
@@ -1170,9 +1164,7 @@ export function DownloadsView({
                         variant="outline"
                         className={cn(
                           "h-4.5 shrink-0 px-1.5 text-[9.5px] font-normal",
-                          isBedrock
-                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                            : "border-primary/25 bg-primary/10 text-primary",
+                          "border-primary/25 bg-primary/10 text-primary",
                         )}
                       >
                         {isBedrock ? "基岩版 BDS" : "Java 版"}

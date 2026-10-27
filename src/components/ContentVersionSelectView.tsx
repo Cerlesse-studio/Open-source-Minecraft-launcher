@@ -236,7 +236,7 @@ function loaderMeta(raw?: string | null, bedrock = false): LoaderMeta {
       key: "bedrock",
       label: "基岩版",
       short: "BE",
-      tile: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+      tile: "border-primary/30 bg-primary/10 text-primary",
     };
   }
   switch (key) {
@@ -741,7 +741,7 @@ export function ContentVersionSelectView({
                   {projectTypeLabel(projectType)}
                 </Badge>
                 {isCurseForgeBedrock ? (
-                  <Badge className="h-4 border-0 bg-emerald-500/15 px-1.5 text-[9.5px] font-medium text-emerald-400">
+                  <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
                     CurseForge · 基岩版
                   </Badge>
                 ) : null}
@@ -833,7 +833,7 @@ export function ContentVersionSelectView({
                   className="h-8 gap-1.5 rounded-lg border-border/70 bg-background/40 px-3 text-[11.5px] font-medium text-muted-foreground shadow-xs hover:bg-accent/60 hover:text-foreground"
                 >
                   {copiedName ? (
-                    <Check className="size-3.5 text-emerald-400" />
+                    <Check className="size-3.5 text-success" />
                   ) : (
                     <Copy className="size-3.5" />
                   )}
@@ -1071,7 +1071,7 @@ export function ContentVersionSelectView({
                       ) : null}
                     </span>
                     {group.hasLocal ? (
-                      <Badge className="h-4 shrink-0 border-0 bg-emerald-500/15 px-1.5 text-[9px] font-medium text-emerald-400">
+                      <Badge className="h-4 shrink-0 border-0 bg-success/15 px-1.5 text-[9px] font-medium text-success">
                         本地已安装
                       </Badge>
                     ) : null}
@@ -1169,7 +1169,7 @@ export function ContentVersionSelectView({
                           {isJavaMod ? (
                             matchedInstance ? (
                               <span
-                                className="hidden shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-1 font-mono text-[9.5px] text-emerald-400 lg:flex"
+                                className="hidden shrink-0 items-center gap-1 rounded-md border border-success/25 bg-success/10 px-1.5 py-1 font-mono text-[9.5px] text-success lg:flex"
                                 title={`将自动安装到 versions/${matchedInstance.id}/mods`}
                               >
                                 <CircleCheck className="size-3" />

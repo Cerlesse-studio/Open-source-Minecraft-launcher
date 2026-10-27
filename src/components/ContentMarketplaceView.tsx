@@ -13,6 +13,7 @@ import {
   Download,
   FolderOpen,
   Heart,
+  Languages,
   LoaderCircle,
   PackageOpen,
   RefreshCw,
@@ -164,6 +165,8 @@ export function ContentMarketplaceView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [totalHits, setTotalHits] = useState(0);
+  // English keywords the backend substituted for a non-English query.
+  const [translatedQuery, setTranslatedQuery] = useState<string | null>(null);
 
   // Pagination states
   const [page, setPage] = useState(1);
@@ -247,6 +250,7 @@ export function ContentMarketplaceView({
       });
       setHits(res.hits);
       setTotalHits(res.totalHits);
+      setTranslatedQuery(res.translatedQuery ?? null);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -311,17 +315,17 @@ export function ContentMarketplaceView({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={
                 isBedrockSource
-                  ? "在 CurseForge 搜索基岩版附加包 (行为包 / 材质光影 / 地图)…"
+                  ? "在 CurseForge 搜索基岩版附加包 (支持中文，如 家具/枪械/空岛)…"
                   : `在 Modrinth 搜索${
                       projectType === "mod"
-                        ? "模组 (如 JEI, Sodium, Create)…"
+                        ? "模组 (JEI、Sodium，支持中文，如 钠/机械动力)…"
                         : projectType === "shader"
-                          ? "光影包 (如 Complementary, BSL)…"
+                          ? "光影包 (Complementary、BSL，支持中文，如 光影)…"
                           : projectType === "datapack"
-                            ? "数据包 (如 Terralith, Incendium)…"
+                            ? "数据包 (Terralith、Incendium，支持中文)…"
                             : projectType === "modpack"
-                              ? "整合包 (如 Fabulously Optimized)…"
-                              : "资源包…"
+                              ? "整合包 (支持中文，如 空岛/科技)…"
+                              : "资源包 (支持中文，如 材质/卡通)…"
                     }`
               }
               className="h-10 rounded-xl border-border/70 bg-background/60 pl-9 pr-9 text-xs shadow-xs focus-visible:ring-1"
@@ -425,7 +429,7 @@ export function ContentMarketplaceView({
             ) : (
               <Badge
                 variant="outline"
-                className="h-8 gap-1.5 rounded-lg border-emerald-500/35 bg-emerald-500/10 px-2.5 text-[11px] font-normal text-emerald-400"
+                className="h-8 gap-1.5 rounded-lg border-primary/35 bg-primary/10 px-2.5 text-[11px] font-normal text-primary"
               >
                 CurseForge · 基岩版全版本
               </Badge>
@@ -536,6 +540,19 @@ export function ContentMarketplaceView({
             </code>
           </button>
         </div>
+
+        {/* Multilingual search: the backend maps Chinese/Japanese/Korean/Russian
+            keywords to English before querying, and reports what it used. */}
+        {translatedQuery ? (
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-2 text-[10.5px] text-muted-foreground">
+            <Languages className="size-3.5 shrink-0 text-primary/80" />
+            <span>已识别为多语言关键词，按英文</span>
+            <code className="rounded border border-border/60 bg-background/60 px-1.5 py-px font-mono text-[10px] text-foreground/85">
+              {translatedQuery}
+            </code>
+            <span>搜索；若没有结果会自动改用原文。</span>
+          </div>
+        ) : null}
       </Card>
 
       {/* Results Header */}
@@ -543,7 +560,7 @@ export function ContentMarketplaceView({
         <span>
           找到约 <strong className="font-mono text-foreground">{totalHits}</strong> 个资源
           {isBedrockSource ? (
-            <span className="ml-1.5 text-emerald-400/85">
+            <span className="ml-1.5 text-primary/85">
               · 数据来源 CurseForge（基岩版 gameId 78022）
             </span>
           ) : null}
@@ -604,7 +621,7 @@ export function ContentMarketplaceView({
                       {hit.title}
                     </h3>
                     {isBedrock ? (
-                      <Badge className="h-4 border-0 bg-emerald-500/15 px-1.5 text-[9px] font-medium text-emerald-400">
+                      <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9px] font-medium text-primary">
                         基岩版
                       </Badge>
                     ) : null}

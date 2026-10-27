@@ -42,10 +42,13 @@ import type {
   BedrockRuntimeStatus,
   BedrockStatus,
   BedrockVersionItem,
+  BedrockWorldItem,
   ContentProjectType,
   ContentVersionItem,
   DownloadContentRequest,
   DownloadContentResult,
+  DownloadSourceId,
+  DownloadSourceProbe,
   GameExitPayload,
   GameLogPayload,
   GameStatus,
@@ -55,6 +58,8 @@ import type {
   InstalledVersion,
   JavaInstall,
   JavaModItem,
+  JavaPackItem,
+  JavaWorldItem,
   LaunchRequest,
   LoaderSelection,
   SearchContentResult,
@@ -120,6 +125,42 @@ export async function getBetacraftManifest(
     return { latest: { release: "1.7.10", snapshot: "b1.8.1" }, versions: [] };
   }
   return invoke<VersionManifest>("get_betacraft_manifest", { root, force });
+}
+
+/** Push the chosen Java download source into the Rust side so the mirror
+ * ordering used by downloads matches the settings page. */
+export async function setDownloadPreference(
+  source: DownloadSourceId,
+  customUrl?: string,
+  threads = 16,
+): Promise<void> {
+  if (!isDesktop) return;
+  await invoke("set_download_preference", {
+    source,
+    customUrl: customUrl || null,
+    threads,
+  });
+}
+
+/** Time each source's version-manifest request. Demo mode returns plausible
+ * numbers so the settings page can be exercised in a browser. */
+export async function probeDownloadSources(
+  customUrl?: string,
+): Promise<DownloadSourceProbe[]> {
+  if (!isDesktop) {
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    const probes: DownloadSourceProbe[] = [
+      { source: "official_ap", ok: true, latencyMs: 238 },
+      { source: "bmclapi", ok: true, latencyMs: 46 },
+    ];
+    if (customUrl?.trim()) {
+      probes.push({ source: "custom", ok: true, latencyMs: 89 });
+    }
+    return probes;
+  }
+  return invoke<DownloadSourceProbe[]>("probe_download_sources", {
+    customUrl: customUrl?.trim() || null,
+  });
 }
 
 export async function getInstalledVersions(root: string): Promise<InstalledVersion[]> {
@@ -536,6 +577,155 @@ export async function installJavaModFile(
 }
 
 /**
+ * Java resource packs and saves live in the game directory the instance is
+ * launched with, so every call carries the version isolation mode: turning
+ * isolation off points the manager back at the shared root folder.
+ */
+export async function getJavaResourcePacks(
+  versionId: string,
+  isolation?: string,
+  root?: string,
+): Promise<JavaPackItem[]> {
+  if (!isDesktop) {
+    return [
+      {
+        id: "Faithful32x.zip",
+        name: "Faithful 32x",
+        fileName: "Faithful32x.zip",
+        path: "",
+        enabled: true,
+        size: 18_334_208,
+        modifiedTime: "2026-10-25 21:12",
+        description: "A double-resolution texture pack that keeps the vanilla look.",
+        packFormat: 34,
+        iconDataUrl: null,
+        isDir: false,
+      },
+      {
+        id: "Stay_True",
+        name: "Stay True",
+        fileName: "Stay_True",
+        path: "",
+        enabled: false,
+        size: 42_991_616,
+        modifiedTime: "2026-10-23 10:40",
+        description: "干净柔和的写实风格材质包。",
+        packFormat: 22,
+        iconDataUrl: null,
+        isDir: true,
+      },
+    ];
+  }
+  return invoke<JavaPackItem[]>("get_java_resource_packs", {
+    versionId,
+    isolation,
+    root,
+  });
+}
+
+export async function toggleJavaResourcePack(
+  versionId: string,
+  fileName: string,
+  enabled: boolean,
+  isolation?: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("toggle_java_resource_pack", {
+    versionId,
+    fileName,
+    enabled,
+    isolation,
+    root,
+  });
+}
+
+export async function deleteJavaResourcePack(
+  versionId: string,
+  fileName: string,
+  isolation?: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("delete_java_resource_pack", {
+    versionId,
+    fileName,
+    isolation,
+    root,
+  });
+}
+
+export async function installJavaResourcePackFile(
+  versionId: string,
+  filePath: string,
+  isolation?: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return "模拟导入成功";
+  return invoke<string>("install_java_resource_pack_file", {
+    versionId,
+    filePath,
+    isolation,
+    root,
+  });
+}
+
+export async function getJavaWorlds(
+  versionId: string,
+  isolation?: string,
+  root?: string,
+): Promise<JavaWorldItem[]> {
+  if (!isDesktop) {
+    return [
+      {
+        id: "新的世界",
+        name: "新的世界",
+        folder: "新的世界",
+        path: "",
+        size: 27_512_832,
+        modifiedTime: "2026-10-26 09:18",
+        iconDataUrl: null,
+      },
+      {
+        id: "Skyblock",
+        name: "空岛生存",
+        folder: "Skyblock",
+        path: "",
+        size: 64_225_280,
+        modifiedTime: "2026-10-24 23:51",
+        iconDataUrl: null,
+      },
+    ];
+  }
+  return invoke<JavaWorldItem[]>("get_java_worlds", { versionId, isolation, root });
+}
+
+export async function deleteJavaWorld(
+  versionId: string,
+  folder: string,
+  isolation?: string,
+  root?: string,
+): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("delete_java_world", { versionId, folder, isolation, root });
+}
+
+export async function installJavaWorldFile(
+  versionId: string,
+  filePath: string,
+  isolation?: string,
+  root?: string,
+): Promise<string> {
+  if (!isDesktop) return "模拟导入成功";
+  return invoke<string>("install_java_world_file", {
+    versionId,
+    filePath,
+    isolation,
+    root,
+  });
+}
+
+/**
  * Bedrock packs live in `com.mojang` (resource/behavior/skin packs), not in a
  * Java `versions/<id>/mods` folder, so they get their own manager commands.
  */
@@ -567,5 +757,49 @@ export async function importBedrockPackFile(
 ): Promise<InstallPackResult> {
   if (!isDesktop) return demoImportBedrockPackFile(filePath);
   return invoke<InstallPackResult>("import_bedrock_pack_file", { filePath, root });
+}
+
+/** Bedrock worlds are stored next to the packs, one folder per world. */
+export async function getBedrockWorlds(root?: string): Promise<BedrockWorldItem[]> {
+  if (!isDesktop) {
+    return [
+      {
+        id: "SkyblockBedrock",
+        name: "空岛生存",
+        folder: "SkyblockBedrock",
+        path: "",
+        size: 88_604_672,
+        modifiedTime: "2026-10-25 19:02:11",
+        icon: null,
+        location: "启动器便携目录",
+        locationPath: "",
+      },
+      {
+        id: "SurvivalBedrock",
+        name: "生存世界",
+        folder: "SurvivalBedrock",
+        path: "",
+        size: 210_763_776,
+        modifiedTime: "2026-10-21 13:44:09",
+        icon: null,
+        location: "UWP 客户端",
+        locationPath: "",
+      },
+    ];
+  }
+  return invoke<BedrockWorldItem[]>("get_bedrock_worlds", { root });
+}
+
+export async function deleteBedrockWorld(path: string, root?: string): Promise<void> {
+  if (!isDesktop) return;
+  return invoke<void>("delete_bedrock_world", { path, root });
+}
+
+export async function importBedrockWorldFile(
+  filePath: string,
+  root?: string,
+): Promise<InstallPackResult> {
+  if (!isDesktop) return demoImportBedrockPackFile(filePath);
+  return invoke<InstallPackResult>("import_bedrock_world_file", { filePath, root });
 }
 

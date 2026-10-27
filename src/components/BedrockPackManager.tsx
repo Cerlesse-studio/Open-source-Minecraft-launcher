@@ -33,6 +33,11 @@ import { Switch } from "@/components/ui/switch";
 
 interface BedrockPackManagerProps {
   gameRoot: string;
+  /**
+   * When set, the panel is scoped to one pack kind (the version settings page
+   * shows a dedicated 资源包 manager next to the all-kinds add-on manager).
+   */
+  fixedType?: string;
   onOpenFolder: (path: string) => void;
   onNotify?: (
     level: "info" | "success" | "error",
@@ -48,6 +53,8 @@ type PackTypeInfo = {
   icon: typeof Boxes;
   tint: string;
   dot: string;
+  /** Where the game lets the user switch this kind on. */
+  enableHint: string;
 };
 
 /**
@@ -61,8 +68,12 @@ const PACK_TYPES: PackTypeInfo[] = [
     label: "资源包",
     folder: "resource_packs",
     icon: Paintbrush,
-    tint: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
-    dot: "bg-emerald-400",
+    // The four kinds share one legend, so each needs its own hue. Green is
+    // avoided here: it is the state colour (启用/完成), and a green chip in the
+    // theme panel reads as "the launcher is themed green again".
+    tint: "border-violet-400/25 bg-violet-400/10 text-violet-300",
+    dot: "bg-violet-400",
+    enableHint: "启动游戏后在「设置 → 全局资源 → 我的包」中启用。",
   },
   {
     key: "behavior",
@@ -71,6 +82,9 @@ const PACK_TYPES: PackTypeInfo[] = [
     icon: Wrench,
     tint: "border-sky-400/25 bg-sky-400/10 text-sky-300",
     dot: "bg-sky-400",
+    // Behaviour packs never appear in 全局资源 — that screen only lists
+    // resource packs, which is why an installed addon can look "not loaded".
+    enableHint: "行为包不出现在「全局资源」里：进入某个存档，在「设置 → 行为包」中启用。",
   },
   {
     key: "skin",
@@ -79,6 +93,7 @@ const PACK_TYPES: PackTypeInfo[] = [
     icon: UserRound,
     tint: "border-rose-400/25 bg-rose-400/10 text-rose-300",
     dot: "bg-rose-400",
+    enableHint: "启动游戏后在「更衣室 → 经典皮肤」中启用。",
   },
   {
     key: "template",
@@ -87,6 +102,7 @@ const PACK_TYPES: PackTypeInfo[] = [
     icon: Boxes,
     tint: "border-amber-400/25 bg-amber-400/10 text-amber-300",
     dot: "bg-amber-400",
+    enableHint: "新建世界时从「世界模板」中选择。",
   },
 ];
 
@@ -99,8 +115,55 @@ function packTypeInfo(type: string): PackTypeInfo {
       icon: Package,
       tint: "border-border/70 bg-muted/30 text-muted-foreground",
       dot: "bg-muted-foreground",
+      enableHint: "启动游戏后按包类型在对应的管理界面启用。",
     }
   );
+}
+
+/** `1.18.3104` / `1.21` -> comparable triple. */
+function parseCoreVersion(text?: string | null): [number, number, number] | null {
+  if (!text) return null;
+  const parts = text.trim().split(/[.\-_ ]/).slice(0, 3);
+  const numbers: number[] = [];
+  for (const part of parts) {
+    const digits = /^\d+/.exec(part)?.[0];
+    numbers.push(digits === undefined ? 0 : Number(digits));
+  }
+  if (numbers.length === 0 || numbers.every((value) => Number.isNaN(value))) return null;
+  return [numbers[0] ?? 0, numbers[1] ?? 0, numbers[2] ?? 0];
+}
+
+function compareCoreVersion(
+  a: [number, number, number],
+  b: [number, number, number],
+): number {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+/** Highest core the launcher deployed; packs are shared, so it is the yardstick. */
+function newestCoreVersion(status: BedrockStatus | null): [number, number, number] | null {
+  let best: [number, number, number] | null = null;
+  for (const id of status?.installedVersions ?? []) {
+    const parsed = parseCoreVersion(id);
+    if (!parsed) continue;
+    if (!best || compareCoreVersion(parsed, best) > 0) best = parsed;
+  }
+  return best;
+}
+
+/**
+ * Minecraft silently drops packs whose `min_engine_version` is newer than the
+ * running core, so an installed pack can look like a failed install.
+ */
+function engineIsTooNew(
+  pack: BedrockPackItem,
+  newest: [number, number, number] | null,
+): boolean {
+  const required = parseCoreVersion(pack.engineVersion);
+  return Boolean(required && newest && compareCoreVersion(required, newest) > 0);
 }
 
 function PackIcon({ pack }: { pack: BedrockPackItem }) {
@@ -138,6 +201,7 @@ function PackIcon({ pack }: { pack: BedrockPackItem }) {
 
 export function BedrockPackManager({
   gameRoot,
+  fixedType,
   onOpenFolder,
   onNotify,
 }: BedrockPackManagerProps) {
@@ -147,7 +211,10 @@ export function BedrockPackManager({
   const [busyPath, setBusyPath] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [query, setQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>(fixedType ?? "all");
+  const scopedType = fixedType
+    ? (PACK_TYPES.find((entry) => entry.key === fixedType) ?? null)
+    : null;
   const [deleting, setDeleting] = useState<BedrockPackItem | null>(null);
   const requestId = useRef(0);
 
@@ -178,21 +245,28 @@ export function BedrockPackManager({
     void load();
   }, [load]);
 
+  // A scoped panel (资源包 manager) works on one pack kind only: counts, bulk
+  // actions and the list itself must not leak the other kinds.
+  const scopedPacks = useMemo(
+    () => (fixedType ? packs.filter((pack) => pack.packType === fixedType) : packs),
+    [packs, fixedType],
+  );
+
   const counts = useMemo(() => {
     const byType = new Map<string, number>();
     let enabled = 0;
     let size = 0;
-    for (const pack of packs) {
+    for (const pack of scopedPacks) {
       byType.set(pack.packType, (byType.get(pack.packType) ?? 0) + 1);
       if (pack.enabled) enabled += 1;
       size += pack.size;
     }
-    return { byType, enabled, disabled: packs.length - enabled, size };
-  }, [packs]);
+    return { byType, enabled, disabled: scopedPacks.length - enabled, size };
+  }, [scopedPacks]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return packs.filter((pack) => {
+    return scopedPacks.filter((pack) => {
       if (typeFilter !== "all" && pack.packType !== typeFilter) return false;
       if (!needle) return true;
       return (
@@ -202,19 +276,27 @@ export function BedrockPackManager({
         pack.id.toLowerCase().includes(needle)
       );
     });
-  }, [packs, query, typeFilter]);
+  }, [scopedPacks, query, typeFilter]);
 
   const groups = useMemo(
     () =>
-      PACK_TYPES.map((info) => ({
-        info,
-        items: visible.filter((pack) => pack.packType === info.key),
-      })).filter((group) => group.items.length > 0),
-    [visible],
+      PACK_TYPES.filter((info) => !fixedType || info.key === fixedType)
+        .map((info) => ({
+          info,
+          items: visible.filter((pack) => pack.packType === info.key),
+        }))
+        .filter((group) => group.items.length > 0),
+    [visible, fixedType],
   );
 
   const dataDir =
     status?.portablePath || status?.comMojangPath || "";
+
+  const newestCore = useMemo(() => newestCoreVersion(status), [status]);
+  const tooNew = useMemo(
+    () => visible.filter((pack) => engineIsTooNew(pack, newestCore)),
+    [visible, newestCore],
+  );
 
   const togglePack = useCallback(
     async (pack: BedrockPackItem) => {
@@ -291,7 +373,7 @@ export function BedrockPackManager({
 
   const bulkToggle = useCallback(
     async (enabled: boolean) => {
-      const targets = packs.filter((pack) => pack.enabled !== enabled);
+      const targets = scopedPacks.filter((pack) => pack.enabled !== enabled);
       if (targets.length === 0) return;
       setBusyPath("__bulk__");
       try {
@@ -311,11 +393,11 @@ export function BedrockPackManager({
         setBusyPath(null);
       }
     },
-    [gameRoot, load, onNotify, packs],
+    [gameRoot, load, onNotify, scopedPacks],
   );
 
   const stats = [
-    { label: "全部", value: packs.length },
+    { label: "全部", value: scopedPacks.length },
     { label: "已启用", value: counts.enabled },
     { label: "已停用", value: counts.disabled },
   ];
@@ -331,15 +413,15 @@ export function BedrockPackManager({
             </span>
             <div className="min-w-0">
               <p className="text-xs font-semibold text-foreground">
-                基岩版附加包管理器
+                {scopedType ? `基岩版${scopedType.label}管理器` : "基岩版附加包管理器"}
                 <Badge className="ml-2 h-4 border-0 bg-primary/20 px-1.5 text-[9px] font-normal text-primary">
-                  .mcpack / .mcaddon
+                  {scopedType ? scopedType.folder : ".mcpack / .mcaddon"}
                 </Badge>
               </p>
               <p className="mt-0.5 max-w-xl text-[11px] leading-5 text-muted-foreground">
-                资源包、行为包与皮肤包直接写入 <span className="font-mono">com.mojang</span>，
-                启动游戏后在「设置 → 存储」中即可看到；附加包由所有基岩版实例共用，不按版本隔离。Java 的{" "}
-                <span className="font-mono">.jar</span> 模组不适用于基岩版。
+                {scopedType
+                  ? `只显示 ${scopedType.label}，存放在 com.mojang/${scopedType.folder}；启用状态通过目录切换，游戏启动时读取。${scopedType.enableHint}`
+                  : "资源包、行为包与皮肤包直接写入 com.mojang。资源包在「设置 → 全局资源 → 我的包」启用；行为包只对单个存档生效，需进入存档后在「设置 → 行为包」启用；皮肤包在更衣室启用。附加包由所有基岩版实例共用，不按版本隔离，Java 的 .jar 模组不适用于基岩版。"}
               </p>
             </div>
           </div>
@@ -357,6 +439,29 @@ export function BedrockPackManager({
         </div>
       </div>
 
+      {/* A pack newer than the installed core is invisible in game; say why. */}
+      {tooNew.length > 0 ? (
+        <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3.5 py-3">
+          <ShieldAlert className="mt-px size-4 shrink-0 text-amber-300" />
+          <div className="min-w-0 text-[11px] leading-5 text-amber-100/85">
+            <p className="font-semibold text-amber-200">
+              {tooNew.length} 个附加包要求的引擎版本高于当前核心，游戏会直接忽略它们
+            </p>
+            <p className="mt-0.5 text-amber-100/75">
+              {tooNew
+                .slice(0, 4)
+                .map((pack) => `${pack.name}（需 ${pack.engineVersion}）`)
+                .join("、")}
+              {tooNew.length > 4 ? ` 等 ${tooNew.length} 个` : ""}
+              。当前最高核心为{" "}
+              <span className="font-mono">{newestCore?.join(".")}</span>，请先下载{" "}
+              <span className="font-mono">{tooNew[0]?.engineVersion}</span>{" "}
+              或更新版本的核心再启动游戏。
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/70 bg-card/55 p-2.5">
         <div className="relative min-w-[180px] flex-1">
@@ -369,40 +474,48 @@ export function BedrockPackManager({
           />
         </div>
 
-        <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-background/40 p-0.5">
-          <button
-            type="button"
-            onClick={() => setTypeFilter("all")}
-            className={cn(
-              "h-7 rounded-md px-2 text-[11px] transition-colors",
-              typeFilter === "all"
-                ? "bg-primary/15 text-primary"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            全部
-            <span className="ml-1 font-mono text-[10px] opacity-70">{packs.length}</span>
-          </button>
-          {PACK_TYPES.map((info) => (
+        {scopedType ? (
+          <span className="flex h-8 items-center gap-1.5 rounded-lg border border-primary/25 bg-primary/10 px-2.5 text-[11px] text-primary">
+            <scopedType.icon className="size-3" />
+            {scopedType.label}
+            <span className="font-mono text-[10px] opacity-70">{scopedPacks.length}</span>
+          </span>
+        ) : (
+          <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-background/40 p-0.5">
             <button
-              key={info.key}
               type="button"
-              onClick={() => setTypeFilter(info.key)}
+              onClick={() => setTypeFilter("all")}
               className={cn(
-                "flex h-7 items-center gap-1 rounded-md px-2 text-[11px] transition-colors",
-                typeFilter === info.key
+                "h-7 rounded-md px-2 text-[11px] transition-colors",
+                typeFilter === "all"
                   ? "bg-primary/15 text-primary"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <info.icon className="size-3" />
-              {info.label}
-              <span className="font-mono text-[10px] opacity-70">
-                {counts.byType.get(info.key) ?? 0}
-              </span>
+              全部
+              <span className="ml-1 font-mono text-[10px] opacity-70">{packs.length}</span>
             </button>
-          ))}
-        </div>
+            {PACK_TYPES.map((info) => (
+              <button
+                key={info.key}
+                type="button"
+                onClick={() => setTypeFilter(info.key)}
+                className={cn(
+                  "flex h-7 items-center gap-1 rounded-md px-2 text-[11px] transition-colors",
+                  typeFilter === info.key
+                    ? "bg-primary/15 text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <info.icon className="size-3" />
+                {info.label}
+                <span className="font-mono text-[10px] opacity-70">
+                  {counts.byType.get(info.key) ?? 0}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
           <Button
@@ -470,23 +583,28 @@ export function BedrockPackManager({
         </div>
       </div>
 
-      {loading && packs.length === 0 ? (
+      {loading && scopedPacks.length === 0 ? (
         <div className="rounded-xl border border-border/70 bg-card/40 p-3">
           <div className="flex items-center justify-center gap-2 py-10 text-[11.5px] text-muted-foreground">
             <LoaderCircle className="size-4 animate-spin" />
             正在扫描基岩版附加包目录…
           </div>
         </div>
-      ) : packs.length === 0 ? (
+      ) : scopedPacks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border/70 bg-card/30 px-5 py-12 text-center">
           <div className="mx-auto flex size-11 items-center justify-center rounded-xl border border-border/70 bg-background/50 text-muted-foreground">
             <Boxes className="size-5" />
           </div>
-          <p className="mt-3 text-xs font-medium text-foreground">还没有安装任何基岩版附加包</p>
+          <p className="mt-3 text-xs font-medium text-foreground">
+            {scopedType
+              ? `还没有安装任何基岩版${scopedType.label}`
+              : "还没有安装任何基岩版附加包"}
+          </p>
           <p className="mx-auto mt-1 max-w-sm text-[11px] leading-5 text-muted-foreground">
             导入 <span className="font-mono">.mcpack</span> /{" "}
             <span className="font-mono">.mcaddon</span> 文件，启动器会解包并写入所有已存在的{" "}
-            <span className="font-mono">com.mojang</span> 目录。
+            <span className="font-mono">com.mojang</span> 目录
+            {scopedType ? `，${scopedType.label}会进入 ${scopedType.folder}` : ""}。
           </p>
           <Button
             size="sm"
@@ -510,7 +628,7 @@ export function BedrockPackManager({
             className="mt-4 h-8 gap-1.5 text-[11px]"
             onClick={() => {
               setQuery("");
-              setTypeFilter("all");
+              setTypeFilter(fixedType ?? "all");
             }}
           >
             <CircleSlash2 className="size-3.5" />
@@ -556,6 +674,19 @@ export function BedrockPackManager({
                           {pack.version ? (
                             <span className="rounded border border-border/60 bg-background/50 px-1 py-px font-mono text-[9.5px] text-muted-foreground">
                               v{pack.version}
+                            </span>
+                          ) : null}
+                          {pack.engineVersion ? (
+                            <span
+                              title={`要求 Minecraft ${pack.engineVersion} 或更高`}
+                              className={cn(
+                                "rounded border px-1 py-px font-mono text-[9.5px]",
+                                engineIsTooNew(pack, newestCore)
+                                  ? "border-amber-400/35 bg-amber-400/10 text-amber-300"
+                                  : "border-border/60 bg-background/50 text-muted-foreground",
+                              )}
+                            >
+                              ≥ {pack.engineVersion}
                             </span>
                           ) : null}
                           {!pack.enabled ? (

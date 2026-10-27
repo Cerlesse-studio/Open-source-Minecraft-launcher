@@ -173,18 +173,25 @@ export function Sidebar({
         collapsed ? "w-[72px] px-2" : "w-[232px] px-3",
       )}
     >
+      {/* Collapsed, every control becomes a rounded square of the same size so
+          the rail reads as one column instead of alternating wide/round rows. */}
       <button
         className={cn(
-          "group flex w-full items-center rounded-xl border border-sidebar-border bg-sidebar-accent/40 text-left transition-colors hover:bg-sidebar-accent",
-          collapsed ? "justify-center p-2" : "gap-3 p-2.5",
+          "group flex items-center rounded-xl border border-sidebar-border bg-sidebar-accent/40 text-left transition-colors hover:bg-sidebar-accent",
+          collapsed ? "mx-auto size-12 justify-center p-0" : "w-full gap-3 p-2.5",
         )}
         onClick={() => onNavigate("settings")}
         title={collapsed ? `${playerName} · 打开启动器设置` : "打开启动器设置"}
       >
-        <div className="overflow-hidden rounded-lg border border-border/70 bg-background">
+        <div
+          className={cn(
+            "overflow-hidden border border-border/70 bg-background",
+            collapsed ? "rounded-xl" : "rounded-lg",
+          )}
+        >
           <Avatar
             name={playerName}
-            size={collapsed ? 36 : 38}
+            size={collapsed ? 40 : 38}
             skinType={skinType}
             customSkinPath={customSkinPath}
             mojangSkinName={mojangSkinName}
@@ -231,8 +238,10 @@ export function Sidebar({
             <button
               key={item.id}
               className={cn(
-                "group relative flex items-center rounded-lg text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                collapsed ? "h-10 justify-center px-0" : "h-9 gap-2.5 px-3",
+                "group relative flex items-center text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                collapsed
+                  ? "mx-auto size-12 justify-center rounded-xl"
+                  : "h-9 gap-2.5 rounded-lg px-3",
                 active && "bg-sidebar-accent text-sidebar-accent-foreground",
               )}
               onClick={() => onNavigate(item.id)}
@@ -241,7 +250,12 @@ export function Sidebar({
               title={collapsed ? `${item.label} — ${item.hint}` : item.hint}
             >
               {active ? (
-                <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" />
+                <span
+                  className={cn(
+                    "absolute top-2 bottom-2 w-0.5 rounded-full bg-primary",
+                    collapsed ? "left-1" : "left-0",
+                  )}
+                />
               ) : null}
               <Icon
                 className={cn(
@@ -288,7 +302,7 @@ export function Sidebar({
 
       {collapsed ? (
         <div
-          className="flex flex-col items-center gap-2 rounded-xl border border-sidebar-border bg-sidebar-accent/30 py-3"
+          className="mx-auto flex size-12 flex-col items-center justify-center gap-1 rounded-xl border border-sidebar-border bg-sidebar-accent/30"
           title={`${javaLabel} — ${javaDetail}`}
         >
           <Coffee className="size-4 text-gold" />
@@ -318,8 +332,10 @@ export function Sidebar({
       <button
         type="button"
         className={cn(
-          "mt-2 flex h-8 items-center rounded-lg text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          collapsed ? "justify-center px-0" : "gap-2 px-2.5",
+          "mt-2 flex items-center text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+          collapsed
+            ? "mx-auto size-12 justify-center rounded-xl"
+            : "h-8 gap-2 rounded-lg px-2.5",
         )}
         onClick={onToggleCollapsed}
         aria-label={toggleLabel}

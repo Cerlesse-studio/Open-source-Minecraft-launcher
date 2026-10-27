@@ -33,6 +33,7 @@ import {
   launchGame,
   openFolderPath,
   readSkinAsDataUrl,
+  setDownloadPreference,
   stopGame,
   subscribe,
 } from "./lib/backend";
@@ -207,6 +208,18 @@ export default function App() {
     settings.enableAnimation,
     settings.uiOpacity,
   ]);
+
+  // The mirror preference is process state on the Rust side: push it whenever
+  // it changes so downloads really start from the selected source.
+  useEffect(() => {
+    setDownloadPreference(
+      settings.downloadSource,
+      settings.customSourceUrl || "",
+      settings.downloadThreads,
+    ).catch((error) => {
+      console.warn("无法同步下载设置", error);
+    });
+  }, [settings.downloadSource, settings.customSourceUrl, settings.downloadThreads]);
 
   useEffect(() => {
     let alive = true;
@@ -1088,6 +1101,7 @@ export default function App() {
           processPriority: launchSettings.processPriority,
           windowSize: launchSettings.windowSize,
           jvmArgs: launchSettings.jvmArgs || null,
+          language: launchSettings.language || null,
         });
         // Java may have been installed during launch; reflect it in the UI.
         void detectJavaForRoot(settingsRef.current.gameRoot);

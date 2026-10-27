@@ -82,7 +82,7 @@ interface HomeViewProps {
 
 function NewsFallback({ size = 28 }: { size?: number }) {
   return (
-    <div className="relative grid h-full w-full place-items-center overflow-hidden bg-[#0b110c]">
+    <div className="media-surface relative grid h-full w-full place-items-center overflow-hidden">
       <div className="world-grid absolute inset-0 opacity-40" />
       <GrassBlock size={size} className="relative opacity-75" />
     </div>
@@ -109,7 +109,7 @@ function NewsCover({
   }
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#0b110c]">
+    <div className="media-surface relative h-full w-full overflow-hidden">
       {!loaded ? (
         <div className="absolute inset-0">
           <NewsFallback size={eager ? 52 : 22} />
@@ -464,7 +464,7 @@ export function HomeView({
                 <article className="border-b border-border/60">
                   <div className="relative h-[260px] w-full overflow-hidden bg-muted">
                     <NewsCover note={activeNews} eager />
-                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#070b08] via-[#070b08]/45 to-transparent" />
+                    <div className="media-surface-fade pointer-events-none absolute inset-0" />
                     <div className="absolute inset-x-0 bottom-0 p-5">
                       <div className="flex flex-wrap items-center gap-2">
                         <TypeBadge
@@ -608,7 +608,7 @@ export function HomeView({
                   : undefined
               }
               className={cn(
-                "group relative size-[168px] overflow-hidden rounded-xl border border-border/80 bg-[#0a0f0b] grass-glow select-none transition-all",
+                "group relative size-[168px] overflow-hidden rounded-xl border border-border/80 media-surface grass-glow select-none transition-all",
                 isOffline &&
                   "cursor-pointer hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
               )}
@@ -808,9 +808,7 @@ export function HomeView({
                       "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
                       isRunning
                         ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-                        : isBedrock
-                          ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_18px_44px_-24px_rgba(16,185,129,0.5)]"
-                          : "shadow-[0_18px_44px_-24px_var(--primary)]",
+                        : "shadow-[0_18px_44px_-24px_var(--primary)]",
                       (isLaunching || bedrockLaunching) && "disabled:opacity-100",
                     )}
                   >
@@ -846,8 +844,17 @@ export function HomeView({
               );
             })()}
 
-            {/* Quick action buttons */}
-            <div className="grid grid-cols-2 gap-2.5">
+            {/* Quick action buttons. Version settings only make sense for a
+                version that exists on disk: the launcher preselects the newest
+                release from the version manifest, which may never have been
+                downloaded, and with nothing installed there is nothing to
+                configure. */}
+            <div
+              className={cn(
+                "grid gap-2.5",
+                effectiveInstalled ? "grid-cols-2" : "grid-cols-1",
+              )}
+            >
               <Button
                 variant="outline"
                 className="h-11 justify-start gap-2 rounded-lg border-border/80 bg-background/35 px-3 text-[12px] font-normal"
@@ -857,14 +864,16 @@ export function HomeView({
                 版本选择
               </Button>
 
-              <Button
-                variant="outline"
-                className="h-11 justify-start gap-2 rounded-lg border-border/80 bg-background/35 px-3 text-[12px] font-normal"
-                onClick={onOpenVersionSettings}
-              >
-                <SlidersHorizontal className="size-3.5 text-muted-foreground" />
-                版本设置
-              </Button>
+              {effectiveInstalled ? (
+                <Button
+                  variant="outline"
+                  className="h-11 justify-start gap-2 rounded-lg border-border/80 bg-background/35 px-3 text-[12px] font-normal"
+                  onClick={onOpenVersionSettings}
+                >
+                  <SlidersHorizontal className="size-3.5 text-muted-foreground" />
+                  版本设置
+                </Button>
+              ) : null}
             </div>
 
             {/* Unified Stats Footer */}

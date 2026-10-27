@@ -79,6 +79,9 @@ pub struct BedrockPackItem {
     /// `resource` | `behavior` | `skin` | `template`
     pub pack_type: String,
     pub version: String,
+    /// `min_engine_version` from the manifest, e.g. `1.21.0`.
+    #[serde(default)]
+    pub engine_version: Option<String>,
     pub path: String,
     #[serde(default)]
     pub folder: String,
@@ -141,6 +144,10 @@ pub struct InstallPackResult {
     pub pack_type: String,
     pub target_path: String,
     pub message: String,
+    /// Lowest engine version the pack declares (`min_engine_version`), when it
+    /// declares one. The UI uses it to explain why an old core ignores a pack.
+    #[serde(default)]
+    pub engine_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,6 +244,50 @@ pub fn get_uwp_mojang_dir() -> Option<PathBuf> {
 
 static UWP_CACHE: std::sync::Mutex<Option<(Instant, bool)>> = std::sync::Mutex::new(None);
 
+/// A real Microsoft Store client — not the launcher's own development-mode
+/// deployment, and not an empty `%LOCALAPPDATA%\Packages\...` data folder.
+///
+/// The previous check accepted any of those, so a locally deployed core (or a
+/// folder the launcher created while installing packs) showed up in the version
+/// list as a second, unlaunchable "Minecraft for Windows (正版 UWP)" entry.
+#[cfg(target_os = "windows")]
+fn store_client_installed() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    for name in ["Microsoft.MinecraftUWP", "Microsoft.MinecraftWindowsBeta"] {
+        let script = format!(
+            "$p = Get-AppxPackage -Name '{name}' | Where-Object {{ -not $_.IsDevelopmentMode }} | Select-Object -First 1; if ($p) {{ $p.InstallLocation }}"
+        );
+        let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        else {
+            continue;
+        };
+        let location = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if location.is_empty() {
+            continue;
+        }
+        // Loose-Appx cores deployed by this launcher live under
+        // `<game_root>\bedrock\versions\<id>`; they are listed separately.
+        let lower = location.to_lowercase().replace('/', "\\");
+        if lower.contains("\\bedrock\\versions\\") {
+            continue;
+        }
+        if Path::new(&location).is_dir() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn store_client_installed() -> bool {
+    false
+}
+
 pub fn is_uwp_installed() -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -248,37 +299,7 @@ pub fn is_uwp_installed() -> bool {
             }
         }
 
-        let installed = (|| {
-            // 1. Check if package directory exists (Standard or Preview)
-            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-                let packages_dir = PathBuf::from(&local_appdata).join("Packages");
-                if packages_dir.join("Microsoft.MinecraftUWP_8wekyb3d8bbwe").is_dir()
-                    || packages_dir.join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe").is_dir()
-                {
-                    return true;
-                }
-            }
-            // 2. GDK builds (1.21.120+) keep shared data under %APPDATA%\Minecraft Bedrock
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                if PathBuf::from(appdata).join("Minecraft Bedrock").is_dir() {
-                    return true;
-                }
-            }
-
-            // 3. Fast check registry for protocol registration (minecraft: or minecraft-preview:)
-            use std::os::windows::process::CommandExt;
-            for proto in ["HKCR\\minecraft", "HKCR\\minecraft-preview"] {
-                let mut cmd = Command::new("reg");
-                cmd.args(["query", proto, "/ve"]);
-                cmd.creation_flags(0x0800_0000);
-                if let Ok(output) = cmd.output() {
-                    if output.status.success() {
-                        return true;
-                    }
-                }
-            }
-            false
-        })();
+        let installed = store_client_installed();
 
         if let Ok(mut guard) = UWP_CACHE.lock() {
             *guard = Some((Instant::now(), installed));
@@ -485,32 +506,29 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
 
 pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
     let uwp_installed = is_uwp_installed();
-    let uwp_dir = get_uwp_mojang_dir();
-    let portable_dir = game_root.join("bedrock").join("games").join("com.mojang");
+    let portable_dir = portable_mojang_dir(game_root);
+    let data_dirs = bedrock_game_data_dirs(game_root);
 
-    let active_dir = match &uwp_dir {
-        Some(d) if d.is_dir() => d.clone(),
-        _ => portable_dir.clone(),
-    };
+    // Prefer a real client folder; the portable folder is only a staging area.
+    let portable_key = portable_dir.to_string_lossy().to_lowercase();
+    let active_dir = data_dirs
+        .iter()
+        .find(|dir| dir.to_string_lossy().to_lowercase() != portable_key)
+        .cloned()
+        .unwrap_or_else(|| portable_dir.clone());
 
-    let count_entries = |subdir: &str| -> usize {
-        let mut count = 0;
-        if let Some(ref uwp) = uwp_dir {
-            let p = uwp.join(subdir);
-            if let Ok(entries) = std::fs::read_dir(p) {
-                count += entries.flatten().count();
-            }
-        }
-        let p_portable = portable_dir.join(subdir);
-        if let Ok(entries) = std::fs::read_dir(p_portable) {
-            count += entries.flatten().count();
-        }
-        count
-    };
-
-    let resource_packs_count = count_entries("resource_packs");
-    let behavior_packs_count = count_entries("behavior_packs");
-    let worlds_count = count_entries("minecraftWorlds");
+    // Counts are merged by identity: one pack installed into several data
+    // folders is still one pack to the user.
+    let packs = get_bedrock_packs(game_root);
+    let resource_packs_count = packs
+        .iter()
+        .filter(|pack| pack.pack_type == "resource")
+        .count();
+    let behavior_packs_count = packs
+        .iter()
+        .filter(|pack| pack.pack_type == "behavior")
+        .count();
+    let worlds_count = get_bedrock_worlds(game_root).len();
 
     // Check installed versions in <game_root>/bedrock/versions
     let bedrock_versions_dir = game_root.join("bedrock").join("versions");
@@ -526,14 +544,13 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
                 let insp = inspect_bedrock_version_dir(&dir);
                 if insp.is_valid {
                     standalone_installed = true;
+                    // One entry per folder: that is the id every launcher path
+                    // resolves and launches. Adding the manifest version as a
+                    // second id used to list the same core twice, and the extra
+                    // row pointed at a `versions/<manifest version>` folder that
+                    // does not exist, so it could never start.
                     if !installed_versions.contains(&name) {
                         installed_versions.push(name.clone());
-                    }
-                    if !insp.version_id.is_empty()
-                        && insp.version_id != name
-                        && !installed_versions.contains(&insp.version_id)
-                    {
-                        installed_versions.push(insp.version_id.clone());
                     }
 
                     let pkg_ext = insp.package_file.as_ref().and_then(|p| {
@@ -2033,6 +2050,10 @@ fn invalidate_runtime_cache() {
     if let Ok(mut guard) = RUNTIME_CACHE.lock() {
         *guard = None;
     }
+    // A client installed or removed since the last probe must not stay cached.
+    if let Ok(mut guard) = UWP_CACHE.lock() {
+        *guard = None;
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2601,6 +2622,23 @@ fn installed_minecraft_pfn() -> Option<String> {
     None
 }
 
+/// Last resort: activate whatever Minecraft package Windows has registered,
+/// including a core the user side-loaded themselves. `None` when nothing is
+/// registered at all.
+#[cfg(target_os = "windows")]
+fn launch_registered_client() -> Option<Result<String, String>> {
+    let pfn = installed_minecraft_pfn()?;
+    Some(
+        launch_uwp_package(Some(pfn.as_str()), "App")
+            .map(|_| "已唤起本机已注册的 Minecraft 基岩版".to_string()),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_registered_client() -> Option<Result<String, String>> {
+    None
+}
+
 /// Activates a registered Minecraft package by its app model id.
 ///
 /// There is deliberately no `minecraft:` protocol fallback: when no package
@@ -2630,12 +2668,22 @@ fn launch_uwp_package(
 /// manifest registration, then activation of exactly that package. Nothing here
 /// touches the Microsoft Store or its license.
 #[cfg(target_os = "windows")]
-fn launch_appx_core(manifest: &Path, exe: Option<&Path>, label: &str) -> Result<String, String> {
+fn launch_appx_core(
+    manifest: &Path,
+    exe: Option<&Path>,
+    label: &str,
+    game_root: &Path,
+) -> Result<String, String> {
     if let Some(exe) = exe {
         clean_exe_run_as_admin(exe);
     }
     let dir = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
     let (pfn, stripped) = register_loose_appx(&dir, manifest)?;
+    // Registration is what gives the package its data folder. Packs and worlds
+    // imported before that folder existed are still in the staging area, so move
+    // them in now — the sync at the start of the launch runs too early for the
+    // very first launch and the game would see an empty pack list.
+    let seeded = seed_package_data_dir(&pfn, game_root);
     let app_id = appx_application_id(manifest).unwrap_or_else(|| "App".to_string());
     launch_uwp_package(Some(pfn.as_str()), &app_id)?;
     let mut message = format!(
@@ -2647,15 +2695,20 @@ fn launch_appx_core(manifest: &Path, exe: Option<&Path>, label: &str) -> Result<
             stripped.join("、")
         ));
     }
+    if seeded > 0 {
+        message.push_str(&format!(
+            "；已把 {seeded} 个此前导入的附加包/存档同步进游戏数据目录"
+        ));
+    }
     Ok(message)
 }
 
 #[cfg(target_os = "windows")]
-fn install_and_launch_appx(pkg: &Path, label: &str) -> Result<String, String> {
+fn install_and_launch_appx(pkg: &Path, label: &str, game_root: &Path) -> Result<String, String> {
     let dir = pkg.parent().unwrap_or(pkg);
     let manifest = dir.join("AppxManifest.xml");
     if manifest.is_file() {
-        return launch_appx_core(&manifest, None, label);
+        return launch_appx_core(&manifest, None, label, game_root);
     }
     Err(format!(
         "{label} 的 AppX 安装包还没有完成本地部署。请回到“下载”页面重新安装该版本，\
@@ -2807,7 +2860,7 @@ fn spawn_gdk_auto_provision(
 #[cfg(target_os = "windows")]
 fn auto_handle_msixvc_package(
     app: Option<&tauri::AppHandle>,
-    game_root: &Path,
+    _game_root: &Path,
     version_id: &str,
 ) -> Result<String, String> {
     ensure_gaming_services_running(app);
@@ -2830,12 +2883,11 @@ fn auto_handle_msixvc_package(
     }
 
     spawn_gdk_auto_provision(app.cloned(), true, false);
-    // Encrypted GDK packages can only be carried by the Store client. When it is
-    // missing, keep the launch from dead-ending by deploying the login-free BDS
-    // core as a fallback in the background.
-    let _ = start_bds_core_deployment(app, game_root, version_id);
+    // Deliberately no background BDS deployment here: the user already owns this
+    // core, and silently pulling a second full game download looks like the
+    // launcher fetching the game twice. Point at the playable option instead.
     Ok(format!(
-        "{version_id} 为 Xbox GDK 加密包 (.msixvc)，需由微软官方客户端承载运行。\n✔ 自动程序已启动：正在检查并激活 Xbox 与游戏服务环境（不会自动打开 Microsoft Store 安装游戏）；\n✔ 同时已在后台部署免密 BDS 独立核心作为备选，完成后再次点击「启动」即可进入游戏；\n✔ 也可在版本页选择 UWP / AppX 核心，启动器会解包并在本机以开发模式注册后直接启动，全程不经过 Microsoft Store。"
+        "{version_id} 为 Xbox GDK 加密包 (.msixvc)，必须由微软官方客户端承载，启动器无法直接解包运行。\n✔ 已自动检查 Xbox 与游戏服务环境，不会打开 Microsoft Store 安装游戏；\n✔ 请改选同版本的「UWP / AppX 核心」：启动器会解包并在本机以开发模式注册后直接启动，不经过 Microsoft Store；\n✔ 本次没有额外下载任何核心，以免重复占用磁盘。"
     ))
 }
 
@@ -3205,6 +3257,7 @@ fn launch_installed_client_core(
             manifest,
             insp.main_executable.as_deref(),
             &insp.folder_name,
+            game_root,
         ));
     }
 
@@ -3215,7 +3268,7 @@ fn launch_installed_client_core(
             .unwrap_or("")
             .to_lowercase();
         if ext == "appx" || ext == "msix" {
-            return Some(install_and_launch_appx(pkg, &insp.folder_name));
+            return Some(install_and_launch_appx(pkg, &insp.folder_name, game_root));
         }
         if ext == "msixvc" {
             return Some(auto_handle_msixvc_package(
@@ -3301,6 +3354,11 @@ pub fn launch_bedrock_edition(
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
+        // Packs and worlds imported before the client's data folder existed are
+        // staged in the portable folder; deploy them before the game starts so
+        // the first launch already sees them.
+        let _ = sync_portable_content_to_clients(game_root);
+
         let bedrock_versions_dir = game_root.join("bedrock").join("versions");
 
         // 1. If explicit UWP is requested
@@ -3335,7 +3393,12 @@ pub fn launch_bedrock_edition(
                 // BedrockBoot-style AppxManifest package registration: boot the
                 // exact UWP/AppX core the user selected, offline account or not.
                 if let Some(manifest) = insp.manifest_path.clone() {
-                    return launch_appx_core(&manifest, insp.main_executable.as_deref(), clean_vid);
+                    return launch_appx_core(
+                        &manifest,
+                        insp.main_executable.as_deref(),
+                        clean_vid,
+                        game_root,
+                    );
                 }
 
                 if let Some(exe) = insp.main_executable {
@@ -3352,7 +3415,7 @@ pub fn launch_bedrock_edition(
                         .unwrap_or("")
                         .to_lowercase();
                     if ext == "appx" || ext == "msix" {
-                        return install_and_launch_appx(&pkg, clean_vid);
+                        return install_and_launch_appx(&pkg, clean_vid, game_root);
                     } else if ext == "msixvc" {
                         // Xbox GDK encrypted package: provision the Xbox runtime and
                         // boot the Store client automatically instead of failing.
@@ -3371,6 +3434,15 @@ pub fn launch_bedrock_edition(
                 return ensure_and_launch_uwp(app);
             }
 
+            // Any core this launcher deployed starts with its package identity,
+            // and a package registered by other means is still activatable.
+            if let Some(result) = launch_installed_client_core(app, game_root, "") {
+                return result;
+            }
+            if let Some(result) = launch_registered_client() {
+                return result;
+            }
+
             return Err(format!(
                 "未找到基岩版版本 {clean_vid} 的核心执行文件。请前往“下载”页面下载对应版本核心。"
             ));
@@ -3383,9 +3455,16 @@ pub fn launch_bedrock_edition(
             return launch_offline_bedrock_core(app, game_root, "");
         }
 
-        // If UWP is installed, prioritize launching UWP
+        // If a real Store client is installed, prioritize launching it
         if is_uwp_installed() {
             return ensure_and_launch_uwp(app);
+        }
+
+        // A core this launcher deployed is not a Store install, so it is not
+        // covered by the check above. Boot it the way the version-specific path
+        // does: an unpacked AppX core needs its package identity, not a bare exe.
+        if let Some(result) = launch_installed_client_core(app, game_root, "") {
+            return result;
         }
 
         // Otherwise, launch the first/latest available standalone version
@@ -3432,6 +3511,12 @@ pub fn launch_bedrock_edition(
             if let Some(vid) = gdk_package {
                 return auto_handle_msixvc_package(app, game_root, &vid);
             }
+        }
+
+        // A package registered outside our folder (for example a development
+        // sideload) can still be activated directly.
+        if let Some(result) = launch_registered_client() {
+            return result;
         }
 
         // Nothing installed yet: run the first-launch dependency bootstrap instead of failing
@@ -3518,7 +3603,7 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
         }
     }
 
-    // 5. Endstone metadata fallback (for BDS or release metadata)
+    // 5. Endstone metadata fallback (BDS versions only; see the guard below)
     let meta_endpoints = [
         format!("https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/release/{version_id}/metadata.json"),
         format!("https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/preview/{version_id}/metadata.json"),
@@ -3530,19 +3615,30 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
         format!("https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/master/preview/{version_id}/metadata.json"),
     ];
 
+    // 5. Endstone metadata only resolves BDS (server) packages. Never append one
+    //    to a client download: if every client mirror failed, the install used to
+    //    fall through to a ~500 MB server zip and unpack it into the version
+    //    folder, which is a second, unusable "game file".
+    let has_client_package = candidate_urls.iter().any(|url| {
+        let lower = url.to_lowercase();
+        lower.contains(".msixvc") || lower.contains(".appx") || lower.contains(".msix")
+    });
+
     let client = net::client();
-    for meta_url in meta_endpoints {
-        if let Ok(resp) = client.get(&meta_url).timeout(std::time::Duration::from_secs(3)).send().await {
-            if resp.status().is_success() {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(win_url) = json.pointer("/binary/windows/url").and_then(|u| u.as_str()) {
-                        let azure_variant = win_url.replace(
-                            "https://www.minecraft.net/bedrockdedicatedserver",
-                            "https://minecraft.azureedge.net",
-                        );
-                        candidate_urls.push(azure_variant);
-                        candidate_urls.push(win_url.to_string());
-                        break;
+    if !has_client_package {
+        for meta_url in meta_endpoints {
+            if let Ok(resp) = client.get(&meta_url).timeout(std::time::Duration::from_secs(3)).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(win_url) = json.pointer("/binary/windows/url").and_then(|u| u.as_str()) {
+                            let azure_variant = win_url.replace(
+                                "https://www.minecraft.net/bedrockdedicatedserver",
+                                "https://minecraft.azureedge.net",
+                            );
+                            candidate_urls.push(azure_variant);
+                            candidate_urls.push(win_url.to_string());
+                            break;
+                        }
                     }
                 }
             }
@@ -4352,18 +4448,23 @@ pub async fn clean_download_cache(game_root: &Path) -> Result<u64, String> {
 
 #[derive(Deserialize)]
 struct PackManifest {
+    #[serde(default)]
     header: Option<PackHeader>,
+    #[serde(default)]
     modules: Option<Vec<PackModule>>,
 }
 
 #[derive(Deserialize)]
 struct PackHeader {
+    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     uuid: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    min_engine_version: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -4382,6 +4483,8 @@ struct PackSpec {
     name: String,
     /// `resource_packs` / `behavior_packs`, one string per module kind found.
     target_kinds: Vec<&'static str>,
+    /// `min_engine_version` from the manifest, when it declares one.
+    min_engine: Option<(u32, u32, u32)>,
 }
 
 #[derive(Default)]
@@ -4391,6 +4494,8 @@ struct InstalledPacks {
     world_names: Vec<String>,
     dest_dirs: Vec<PathBuf>,
     target_roots: Vec<PathBuf>,
+    /// Highest `min_engine_version` among the installed packs.
+    min_engine: Option<(u32, u32, u32)>,
 }
 
 impl InstalledPacks {
@@ -4416,6 +4521,15 @@ impl InstalledPacks {
     fn note_target(&mut self, dir: PathBuf) {
         if !self.target_roots.iter().any(|d| d == &dir) {
             self.target_roots.push(dir);
+        }
+    }
+
+    fn note_engine(&mut self, engine: Option<(u32, u32, u32)>) {
+        let Some(engine) = engine else {
+            return;
+        };
+        if self.min_engine.map_or(true, |current| engine > current) {
+            self.min_engine = Some(engine);
         }
     }
 
@@ -4481,50 +4595,168 @@ fn sanitize_pack_folder(raw: &str) -> String {
 /// Every Bedrock data directory this machine actually has.
 ///
 /// The portable folder always exists (it is created on demand); the Store/GDK
-/// folders are only used when they are already present, so installing a pack
-/// never fabricates a package directory for a client that is not installed.
+/// The launcher's portable data folder (staging area for imports).
+fn portable_mojang_dir(game_root: &Path) -> PathBuf {
+    game_root.join("bedrock").join("games").join("com.mojang")
+}
+
+/// `com.mojang` folders of every Bedrock client installed on this machine.
+///
+/// The *client* is what decides where packs must go, so the folder is derived
+/// from the installed package (UWP) or data root (GDK) rather than only from
+/// directories that already contain a `com.mojang`. `create` materialises the
+/// folder for a client that has never been launched: without that, packs
+/// imported before the first launch landed only in the portable staging folder
+/// and the game — which reads its own `LocalState` / `Users` folder — never saw
+/// them. Nothing is created for a client that is not installed.
+/// `Identity Name` of every unpacked AppX core stored under
+/// `<game_root>/bedrock/versions`.
+///
+/// The identity decides which package family the core runs as, and therefore
+/// which `Packages\<PFN>\LocalState` folder holds its `com.mojang`. Knowing it
+/// lets an import reach the game *before* the core has ever been registered or
+/// started — the window in which Windows has not created the folder yet.
+#[cfg(target_os = "windows")]
+fn local_core_identity_names(game_root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(game_root.join("bedrock").join("versions")) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Some(manifest) = inspect_bedrock_version_dir(&entry.path()).manifest_path else {
+            continue;
+        };
+        if let Some(name) = appx_identity_attr(&manifest, "Name") {
+            if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+#[cfg(target_os = "windows")]
+fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    // A deployed core makes its package data folder the install target even on a
+    // machine where the game has never run: Windows creates `Packages\<PFN>` on
+    // registration, so an import that only reached the staging folder before that
+    // was never seen by the game (empty resource-pack list on first launch).
+    let local_identities = local_core_identity_names(game_root);
+
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        for package in [
+            "Microsoft.MinecraftUWP_8wekyb3d8bbwe",
+            "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
+        ] {
+            let base = PathBuf::from(&local).join("Packages").join(package);
+            let package_name = package.split('_').next().unwrap_or(package);
+            let deployed_here = local_identities
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(package_name));
+            if !base.is_dir() && !(create && deployed_here) {
+                continue;
+            }
+            let candidate = base
+                .join("LocalState")
+                .join("games")
+                .join("com.mojang");
+            if create {
+                if std::fs::create_dir_all(&candidate).is_ok() {
+                    dirs.push(candidate);
+                }
+            } else if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        for base_name in ["Minecraft Bedrock", "Minecraft Bedrock Preview"] {
+            let base = PathBuf::from(&appdata).join(base_name);
+            if !base.is_dir() {
+                continue;
+            }
+            let users = base.join("Users");
+            let mut user_dirs = 0usize;
+            if let Ok(entries) = std::fs::read_dir(&users) {
+                for entry in entries.flatten() {
+                    if !entry.path().is_dir() {
+                        continue;
+                    }
+                    let candidate = entry.path().join("games").join("com.mojang");
+                    if create {
+                        if std::fs::create_dir_all(&candidate).is_ok() {
+                            dirs.push(candidate);
+                            user_dirs += 1;
+                        }
+                    } else if candidate.is_dir() {
+                        dirs.push(candidate);
+                        user_dirs += 1;
+                    }
+                }
+            }
+            // GDK keeps shared pack data under `Users\Shared` even for
+            // per-user installs (Microsoft's documented location), so make
+            // sure it exists for pack installs.
+            if create || user_dirs == 0 {
+                let shared = users.join("Shared").join("games").join("com.mojang");
+                if create {
+                    if std::fs::create_dir_all(&shared).is_ok() {
+                        dirs.push(shared);
+                    }
+                } else if shared.is_dir() {
+                    dirs.push(shared);
+                }
+            }
+        }
+    }
+
+    dirs
+}
+
+#[cfg(not(target_os = "windows"))]
+fn client_mojang_dirs(_game_root: &Path, _create: bool) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn dedupe_dirs(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    dirs.sort();
+    dirs.dedup();
+    // Windows paths are case-insensitive; `sort`/`dedup` alone would keep
+    // `Users` and `users` copies of the same folder.
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.to_string_lossy().to_lowercase()));
+    dirs
+}
+
+/// Data folders that currently exist, for listing and status reads.
 fn bedrock_game_data_dirs(game_root: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    let portable = game_root.join("bedrock").join("games").join("com.mojang");
+    let portable = portable_mojang_dir(game_root);
+    if portable.is_dir() {
+        dirs.push(portable);
+    }
+    dirs.extend(client_mojang_dirs(game_root, false));
+    dedupe_dirs(dirs)
+}
+
+/// Targets an install must write to.
+///
+/// Unlike the read-side list this also creates the `com.mojang` folder of an
+/// installed client that has not been launched yet, so imported packs are in
+/// place the first time the game starts.
+fn bedrock_install_dirs(game_root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let portable = portable_mojang_dir(game_root);
     if std::fs::create_dir_all(&portable).is_ok() {
         dirs.push(portable);
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let base = PathBuf::from(appdata).join("Minecraft Bedrock");
-            for users in ["users", "Users"] {
-                if let Ok(entries) = std::fs::read_dir(base.join(users)) {
-                    for entry in entries.flatten() {
-                        let candidate = entry.path().join("games").join("com.mojang");
-                        if candidate.is_dir() {
-                            dirs.push(candidate);
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            for package in [
-                "Microsoft.MinecraftUWP_8wekyb3d8bbwe",
-                "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
-            ] {
-                let base = PathBuf::from(&local).join("Packages").join(package);
-                if base.is_dir() {
-                    let candidate = base.join("LocalState").join("games").join("com.mojang");
-                    if candidate.is_dir() {
-                        dirs.push(candidate);
-                    }
-                }
-            }
-        }
-    }
-
-    dirs.sort();
-    dirs.dedup();
-    dirs
+    dirs.extend(client_mojang_dirs(game_root, true));
+    dedupe_dirs(dirs)
 }
 
 fn zip_entry_names(path: &Path) -> Result<Vec<String>, String> {
@@ -4607,7 +4839,11 @@ fn discover_packs(file_path: &Path, names: &[String], file_stem: &str) -> Result
         }
 
         let content = read_zip_entry(file_path, index)?;
-        let Ok(manifest) = serde_json::from_str::<PackManifest>(&content) else {
+        // Manifests in the wild sometimes start with a BOM or a comment line;
+        // the game tolerates that, so the installer must too.
+        let trimmed = content.trim_start_matches('\u{feff}').trim();
+        let json = &trimmed[trimmed.find('{').unwrap_or(0)..];
+        let Ok(manifest) = serde_json::from_str::<PackManifest>(json) else {
             continue;
         };
         let Some(header) = manifest.header else {
@@ -4642,6 +4878,10 @@ fn discover_packs(file_path: &Path, names: &[String], file_stem: &str) -> Result
             prefix,
             name: display,
             target_kinds: module_target_kinds(manifest.modules.as_ref()),
+            min_engine: header
+                .min_engine_version
+                .as_ref()
+                .and_then(parse_version_triple),
         });
     }
 
@@ -4816,6 +5056,7 @@ fn install_archive(
             }
         }
         outcome.note_name(&spec.name);
+        outcome.note_engine(spec.min_engine);
         for kind in &spec.target_kinds {
             outcome.note_kind(if *kind == "behavior_packs" {
                 "行为包"
@@ -4891,12 +5132,14 @@ pub async fn install_bedrock_pack(
         || source_path_or_url.starts_with("https://")
     {
         let dest = cache_dir.join(&safe_file_name);
-        net::download_file_multithreaded(
+        // Addons share the unified downloader: source preference, mirror
+        // fallback, retries and the configured thread count.
+        net::download_file_with_mirrors(
             source_path_or_url,
             &dest,
             None,
             None,
-            6,
+            net::download_threads(),
             None,
             None,
         )
@@ -4927,9 +5170,57 @@ pub async fn install_bedrock_pack(
 /// Shared by the online install (after the download lands in the cache) and by
 /// the pack manager's "import from disk" action.
 fn install_pack_archive(root: &Path, local_pack_path: &Path) -> Result<InstallPackResult, String> {
-    let targets = bedrock_game_data_dirs(root);
+    let targets = bedrock_install_dirs(root);
+    let mut result = install_pack_archive_to(local_pack_path, &targets)?;
+    if let Some(warning) = engine_requirement_warning(root, result.engine_version.as_deref()) {
+        result.message.push_str(&warning);
+    }
+    Ok(result)
+}
+
+/// Highest version among the locally deployed Bedrock cores.
+fn newest_installed_core(root: &Path) -> Option<(u32, u32, u32)> {
+    let versions = root.join("bedrock").join("versions");
+    let entries = std::fs::read_dir(versions).ok()?;
+    let mut best: Option<(u32, u32, u32)> = None;
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(version) = parse_version_text(&name) else {
+            continue;
+        };
+        if best.map_or(true, |current| version > current) {
+            best = Some(version);
+        }
+    }
+    best
+}
+
+/// Minecraft silently ignores packs whose `min_engine_version` is newer than
+/// the running core, which looks exactly like "the launcher did not install
+/// anything". Say it out loud instead.
+fn engine_requirement_warning(root: &Path, required: Option<&str>) -> Option<String> {
+    let required = parse_version_text(required?)?;
+    let installed = newest_installed_core(root)?;
+    if installed >= required {
+        return None;
+    }
+    Some(format!(
+        " 注意：该附加包要求 Minecraft {} 或更高，当前已安装的最高核心为 {}，游戏会直接忽略它。请先下载 {} 或更新版本的核心再启动。",
+        format_version_triple(required),
+        format_version_triple(installed),
+        format_version_triple(required),
+    ))
+}
+
+fn install_pack_archive_to(
+    local_pack_path: &Path,
+    targets: &[PathBuf],
+) -> Result<InstallPackResult, String> {
     let mut outcome = InstalledPacks::default();
-    install_archive(local_pack_path, &targets, 0, &mut outcome)?;
+    install_archive(local_pack_path, targets, 0, &mut outcome)?;
 
     if outcome.is_empty() {
         return Err("附加包内没有可安装的包".to_string());
@@ -4953,14 +5244,25 @@ fn install_pack_archive(root: &Path, local_pack_path: &Path) -> Result<InstallPa
         .map(|dir| dir.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let location_hint = if outcome.world_names.is_empty() {
-        "启动游戏后在「设置 → 存储 → 资源包 / 行为包」中启用即可。"
-    } else {
+    // Global Resources lists *resource* packs only. Sending a behaviour-pack
+    // user there is how "the pack does not load" reports start: the pack is
+    // installed correctly but is enabled per world, somewhere else entirely.
+    let has_resource = outcome.pack_kinds.iter().any(|kind| *kind == "资源包");
+    let has_behavior = outcome.pack_kinds.iter().any(|kind| *kind == "行为包");
+    let location_hint = if !outcome.world_names.is_empty() {
         "启动游戏后在「游戏 → 世界」列表中即可看到导入的世界。"
+    } else if has_resource && has_behavior {
+        "资源包在「设置 → 全局资源 → 我的包」中启用；行为包只对单个存档生效，需进入存档后在「设置 → 行为包」中启用。"
+    } else if has_resource {
+        "启动游戏后在「设置 → 全局资源 → 我的包」中启用即可。"
+    } else if has_behavior {
+        "行为包只对单个存档生效：进入存档后打开「设置 → 行为包」启用；带脚本（script）的附加包还需在世界设置里开启实验性玩法。"
+    } else {
+        "启动游戏后在「设置 → 存储」中即可看到。"
     };
 
     let message = format!(
-        "已安装：{names}（{pack_type}），写入 {} 个游戏数据目录。{location_hint}",
+        "已安装：{names}（{pack_type}），写入 {} 个游戏数据目录。{location_hint} 若游戏正在运行，请完全退出后重新启动。",
         outcome.target_roots.len()
     );
 
@@ -4970,6 +5272,7 @@ fn install_pack_archive(root: &Path, local_pack_path: &Path) -> Result<InstallPa
         pack_type,
         target_path: primary_dir,
         message,
+        engine_version: outcome.min_engine.map(format_version_triple),
     })
 }
 
@@ -5015,6 +5318,53 @@ struct PackManagerHeader {
     uuid: Option<String>,
     #[serde(default)]
     version: Option<serde_json::Value>,
+    #[serde(default)]
+    min_engine_version: Option<serde_json::Value>,
+}
+
+/// Manifest engine versions appear both as `[1, 21, 0]` and as `"1.21.0"`.
+fn parse_version_triple(value: &serde_json::Value) -> Option<(u32, u32, u32)> {
+    match value {
+        serde_json::Value::Array(parts) => {
+            let mut numbers = [0u32; 3];
+            let mut found = false;
+            for (index, part) in parts.iter().take(3).enumerate() {
+                if let Some(number) = part.as_u64() {
+                    numbers[index] = number as u32;
+                    found = true;
+                }
+            }
+            found.then_some((numbers[0], numbers[1], numbers[2]))
+        }
+        serde_json::Value::String(text) => parse_version_text(text),
+        serde_json::Value::Number(number) => {
+            number.as_u64().map(|value| (value as u32, 0, 0))
+        }
+        _ => None,
+    }
+}
+
+/// `1.18.3104`, `1.21`, `1.21.0-beta` -> comparable triple.
+fn parse_version_text(text: &str) -> Option<(u32, u32, u32)> {
+    let mut numbers = [0u32; 3];
+    let mut found = false;
+    for (index, part) in text.trim().split(['.', '-', '_', ' ']).take(3).enumerate() {
+        let digits: String = part.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+        if let Ok(value) = digits.parse::<u32>() {
+            numbers[index] = value;
+            found = true;
+        }
+    }
+    found.then_some((numbers[0], numbers[1], numbers[2]))
+}
+
+fn format_version_triple((major, minor, patch): (u32, u32, u32)) -> String {
+    format!("{major}.{minor}.{patch}")
+}
+
+fn manifest_engine_version(header: Option<&PackManagerHeader>) -> Option<String> {
+    let value = header?.min_engine_version.as_ref()?;
+    parse_version_triple(value).map(format_version_triple)
 }
 
 fn pack_manifest_of(dir: &Path) -> Option<PackManagerManifest> {
@@ -5128,8 +5478,10 @@ fn pack_location_label(data_dir: &Path) -> String {
         "UWP 预览版".to_string()
     } else if text.contains("Microsoft.MinecraftUWP") {
         "UWP 客户端".to_string()
-    } else if text.contains("Minecraft Bedrock/") {
-        "GDK 共享目录".to_string()
+    } else if text.contains("Minecraft Bedrock Preview") {
+        "GDK 预览版".to_string()
+    } else if text.contains("Minecraft Bedrock") {
+        "GDK 客户端".to_string()
     } else {
         "启动器便携目录".to_string()
     }
@@ -5169,6 +5521,7 @@ fn collect_packs_from(
             .and_then(|h| h.version.as_ref())
             .map(manifest_version_text)
             .unwrap_or_default();
+        let engine_version = manifest_engine_version(header);
         let modified_time = entry
             .metadata()
             .and_then(|meta| meta.modified())
@@ -5187,6 +5540,7 @@ fn collect_packs_from(
             name,
             description: manifest_description_text(header.and_then(|h| h.description.as_ref())),
             version,
+            engine_version,
             pack_type: pack_type_from_modules(Some(&manifest), fallback_type),
             folder,
             path: path.to_string_lossy().to_string(),
@@ -5220,6 +5574,10 @@ pub fn get_bedrock_packs(game_root: &Path) -> Vec<BedrockPackItem> {
 
     // Installs write the same pack into every data directory that exists, so
     // merge on (type, UUID) and keep the enabled copy when the copies disagree.
+    // Between two enabled copies prefer the client folder: that is the copy the
+    // game reads, and the one the user expects the row to point at.
+    let portable_key = portable_mojang_dir(&root).to_string_lossy().to_lowercase();
+    let is_staging = |item: &BedrockPackItem| item.location_path.to_lowercase() == portable_key;
     let mut merged: Vec<BedrockPackItem> = Vec::with_capacity(found.len());
     for item in found {
         match merged
@@ -5227,7 +5585,12 @@ pub fn get_bedrock_packs(game_root: &Path) -> Vec<BedrockPackItem> {
             .find(|existing| existing.pack_type == item.pack_type && existing.id == item.id)
         {
             Some(existing) => {
-                if !existing.enabled && item.enabled {
+                let better = if !existing.enabled && item.enabled {
+                    true
+                } else {
+                    existing.enabled == item.enabled && is_staging(existing) && !is_staging(&item)
+                };
+                if better {
                     *existing = item;
                 }
             }
@@ -5280,6 +5643,49 @@ fn resolve_pack_location(
     Err("该路径不在基岩版附加包目录内，已拒绝操作".to_string())
 }
 
+/// Every physical copy of one pack, one per data directory.
+///
+/// `get_bedrock_packs` merges copies for display, so it can never be used to
+/// find the other `com.mojang` folders. Disabling or deleting only the copy the
+/// user clicked would leave the game loading the pack from another folder.
+fn pack_copy_paths(data_dirs: &[PathBuf], id: &str, pack_type: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for data_dir in data_dirs {
+        for base in [data_dir.clone(), data_dir.join(DISABLED_PACKS_DIR)] {
+            for (folder, kind) in PACK_KINDS {
+                if kind != pack_type {
+                    continue;
+                }
+                let Ok(entries) = std::fs::read_dir(base.join(folder)) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let manifest = pack_manifest_of(&path);
+                    let uuid = manifest
+                        .as_ref()
+                        .and_then(|manifest| manifest.header.as_ref())
+                        .and_then(|header| header.uuid.as_deref())
+                        .map(|uuid| uuid.trim().to_string())
+                        .filter(|uuid| !uuid.is_empty());
+                    let matched = match uuid {
+                        Some(uuid) => uuid == id,
+                        // Packs without a UUID are listed by folder name.
+                        None => entry.file_name().to_string_lossy() == id,
+                    };
+                    if matched && !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
 pub fn set_bedrock_pack_enabled(game_root: &Path, path: &str, enabled: bool) -> Result<(), String> {
     let root = net::absolute_path(game_root);
     let source = net::absolute_path(Path::new(path));
@@ -5295,15 +5701,18 @@ pub fn set_bedrock_pack_enabled(game_root: &Path, path: &str, enabled: bool) -> 
     // Installs write one copy into every data directory that exists. Move all
     // of them, otherwise an untouched copy in another `com.mojang` folder would
     // keep loading and the next refresh would flip the switch back.
-    let mut candidates: Vec<PathBuf> = packs
-        .iter()
-        .filter(|pack| {
-            pack.id == target.id
-                && pack.pack_type == target.pack_type
-                && pack.enabled == target.enabled
-        })
-        .map(|pack| net::absolute_path(Path::new(&pack.path)))
-        .collect();
+    let mut candidates: Vec<PathBuf> = pack_copy_paths(
+        &bedrock_game_data_dirs(&root),
+        &target.id,
+        &target.pack_type,
+    )
+    .into_iter()
+    .filter(|copy| {
+        resolve_pack_location(&root, copy)
+            .map(|(_, _, _, copy_enabled)| copy_enabled == target.enabled)
+            .unwrap_or(false)
+    })
+    .collect();
     if candidates.is_empty() {
         candidates.push(source.clone());
     }
@@ -5362,9 +5771,8 @@ pub fn delete_bedrock_pack(game_root: &Path, path: &str) -> Result<(), String> {
         .map(|pack| (pack.id.clone(), pack.pack_type.clone()));
     let mut paths = vec![target_path.clone()];
     if let Some((id, pack_type)) = identity {
-        for pack in &packs {
-            let candidate = net::absolute_path(Path::new(&pack.path));
-            if pack.id == id && pack.pack_type == pack_type && candidate != target_path {
+        for candidate in pack_copy_paths(&bedrock_game_data_dirs(&root), &id, &pack_type) {
+            if !paths.contains(&candidate) {
                 paths.push(candidate);
             }
         }
@@ -5408,6 +5816,365 @@ pub fn install_bedrock_pack_from_file(
     let mut result = install_pack_archive(&root, &source)?;
     result.message = format!("本地导入 — {}", result.message);
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Bedrock World Manager (存档)
+// ---------------------------------------------------------------------------
+//
+// Bedrock keeps every world in `<data dir>/minecraftWorlds/<id>`, one folder per
+// world with `level.dat`, `levelname.txt` and `world_icon.jpeg`. The launcher
+// writes packs into every `com.mojang` folder that exists, so an imported world
+// can appear in more than one of them; the list merges the copies by world id
+// and the delete action removes all of them.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockWorldItem {
+    /// World folder id (`minecraftWorlds/<id>`), unique per machine copy.
+    pub id: String,
+    pub name: String,
+    pub folder: String,
+    pub path: String,
+    pub size: u64,
+    pub modified_time: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Which data folder this copy lives in: portable, GDK or UWP.
+    pub location: String,
+    pub location_path: String,
+}
+
+fn world_icon_data_url(dir: &Path) -> Option<String> {
+    use base64::Engine;
+
+    let png_magic: &[u8] = &[0x89, b'P', b'N', b'G'];
+    let jpeg_magic: &[u8] = &[0xFF, 0xD8];
+    for (file_name, mime, magic) in [
+        ("world_icon.jpeg", "image/jpeg", jpeg_magic),
+        ("world_icon.jpg", "image/jpeg", jpeg_magic),
+        ("world_icon.png", "image/png", png_magic),
+    ] {
+        let path = dir.join(file_name);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_PACK_ICON_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if !bytes.starts_with(magic) {
+            continue;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Some(format!("data:{mime};base64,{encoded}"));
+    }
+
+    None
+}
+
+pub fn get_bedrock_worlds(game_root: &Path) -> Vec<BedrockWorldItem> {
+    let root = net::absolute_path(game_root);
+    let mut found: Vec<BedrockWorldItem> = Vec::new();
+
+    for data_dir in bedrock_game_data_dirs(&root) {
+        let Ok(entries) = std::fs::read_dir(data_dir.join("minecraftWorlds")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || !path.join("level.dat").is_file() {
+                continue;
+            }
+            let folder = entry.file_name().to_string_lossy().to_string();
+            let name = std::fs::read_to_string(path.join("levelname.txt"))
+                .map(|text| strip_minecraft_formatting(&text).trim().to_string())
+                .ok()
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| folder.clone());
+            let modified_time = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(|time| {
+                    format_iso8601_utc(
+                        time.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    )
+                })
+                .unwrap_or_default();
+
+            let item = BedrockWorldItem {
+                id: folder.clone(),
+                name,
+                folder,
+                path: path.to_string_lossy().to_string(),
+                size: pack_dir_size(&path, 0),
+                modified_time,
+                icon: world_icon_data_url(&path),
+                location: pack_location_label(&data_dir),
+                location_path: data_dir.to_string_lossy().to_string(),
+            };
+
+            match found.iter_mut().find(|world| world.id == item.id) {
+                Some(existing) => {
+                    if existing.modified_time < item.modified_time {
+                        *existing = item;
+                    }
+                }
+                None => found.push(item),
+            }
+        }
+    }
+
+    found.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
+    found
+}
+
+/// Splits a world path into `(world id, all installed copies)`.
+///
+/// Only paths directly under a known `minecraftWorlds` folder are accepted, so
+/// a world row can never delete something outside the game data.
+fn resolve_world_copies(root: &Path, path: &Path) -> Result<Vec<PathBuf>, String> {
+    let normalized = net::absolute_path(path);
+    let mut folder = None;
+    for data_dir in bedrock_game_data_dirs(root) {
+        if let Ok(rest) = normalized.strip_prefix(data_dir.join("minecraftWorlds")) {
+            if rest.components().count() == 1 {
+                folder = Some(rest.to_string_lossy().to_string());
+                break;
+            }
+        }
+    }
+    let folder = folder
+        .ok_or_else(|| "该路径不在基岩版存档目录内，已拒绝操作".to_string())?;
+
+    let mut copies = Vec::new();
+    for data_dir in bedrock_game_data_dirs(root) {
+        let candidate = data_dir.join("minecraftWorlds").join(&folder);
+        if candidate.is_dir() {
+            copies.push(candidate);
+        }
+    }
+    Ok(copies)
+}
+
+pub fn delete_bedrock_world(game_root: &Path, path: &str) -> Result<(), String> {
+    let root = net::absolute_path(game_root);
+    let target = net::absolute_path(Path::new(path));
+    let copies = resolve_world_copies(&root, &target)?;
+    if copies.is_empty() {
+        return Err("存档目录已不存在".to_string());
+    }
+
+    let hint = "（若游戏正在运行，请先完全关闭游戏）";
+    for candidate in copies {
+        force_remove_dir_all(&candidate)
+            .map_err(|e| format!("删除存档失败: {e}{hint}"))?;
+    }
+    Ok(())
+}
+
+/// Imports a `.mcworld` / `.zip` world into every Bedrock data directory.
+pub fn import_bedrock_world_file(
+    game_root: &Path,
+    file_path: &str,
+) -> Result<InstallPackResult, String> {
+    let root = net::absolute_path(game_root);
+    let source = net::absolute_path(Path::new(file_path));
+    if !source.is_file() {
+        return Err(format!("存档文件不存在: {file_path}"));
+    }
+    let lower = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !(lower.ends_with(".mcworld") || lower.ends_with(".zip")) {
+        return Err("请选择 .mcworld / .zip 世界存档".to_string());
+    }
+
+    let names = zip_entry_names(&source)?;
+    let has_level = names.iter().any(|name| {
+        let lower = name.to_lowercase();
+        lower == "level.dat" || lower.ends_with("/level.dat")
+    });
+    if !has_level {
+        return Err("压缩包里没有 level.dat，这不是基岩版世界存档".to_string());
+    }
+
+    let mut result = install_pack_archive(&root, &source)?;
+    result.message = format!("本地导入 — {}", result.message);
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Portable data sync
+// ---------------------------------------------------------------------------
+//
+// Imports are written to every client data folder that exists at that moment.
+// On a machine whose Bedrock client has never been started there is no
+// `com.mojang` yet, so those imports stay in the launcher's portable folder and
+// the game never reads them. This sync runs right before a Bedrock launch and
+// copies anything missing into the client folders — the only moment that
+// guarantees the game will see it.
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if from.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a pack with this header UUID is present under `dir`, enabled or in
+/// the disabled container (a pack the user switched off must stay off).
+fn pack_uuid_present(dir: &Path, uuid: &str) -> bool {
+    let uuid = uuid.trim().to_ascii_lowercase();
+    if uuid.is_empty() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(manifest) = pack_manifest_of(&path) else {
+            continue;
+        };
+        let found = manifest
+            .header
+            .as_ref()
+            .and_then(|header| header.uuid.as_deref())
+            .map(|value| value.trim().to_ascii_lowercase());
+        if found.as_deref() == Some(uuid.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn sync_portable_to_targets(portable: &Path, targets: &[PathBuf]) -> usize {
+    if targets.is_empty() {
+        return 0;
+    }
+    let mut copied = 0usize;
+
+    for (folder, _kind) in PACK_KINDS {
+        let Ok(entries) = std::fs::read_dir(portable.join(folder)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let source = entry.path();
+            if !source.is_dir() {
+                continue;
+            }
+            let Some(manifest) = pack_manifest_of(&source) else {
+                continue;
+            };
+            let Some(uuid) = manifest.header.as_ref().and_then(|h| h.uuid.as_deref()) else {
+                continue;
+            };
+            let folder_name = entry.file_name().to_string_lossy().to_string();
+            for target in targets {
+                let base = target.join(folder);
+                if pack_uuid_present(&base, uuid)
+                    || pack_uuid_present(&target.join(DISABLED_PACKS_DIR).join(folder), uuid)
+                {
+                    continue;
+                }
+                let dest = base.join(&folder_name);
+                if dest.exists() {
+                    continue;
+                }
+                if copy_dir_recursive(&source, &dest).is_ok() {
+                    copied += 1;
+                }
+            }
+        }
+    }
+
+    // Worlds imported before the client had a data folder are staged the same
+    // way; copy them by world id (the folder name the game uses).
+    if let Ok(entries) = std::fs::read_dir(portable.join("minecraftWorlds")) {
+        for entry in entries.flatten() {
+            let source = entry.path();
+            if !source.is_dir() || !source.join("level.dat").is_file() {
+                continue;
+            }
+            let folder_name = entry.file_name().to_string_lossy().to_string();
+            for target in targets {
+                let dest = target.join("minecraftWorlds").join(&folder_name);
+                if dest.exists() {
+                    continue;
+                }
+                if copy_dir_recursive(&source, &dest).is_ok() {
+                    copied += 1;
+                }
+            }
+        }
+    }
+
+    copied
+}
+
+/// Creates the `com.mojang` data folder of a package that was just registered
+/// and moves everything staged in the portable folder into it.
+///
+/// Registering a loose AppX core is the moment the game gets its data folder
+/// (`%LOCALAPPDATA%\Packages\<PFN>\LocalState\games\com.mojang`). Anything a
+/// user imported before that — which is the normal case on a fresh machine —
+/// would otherwise stay in the launcher's own folder and never be loaded.
+/// Returns how many pack/world folders were copied.
+#[cfg(target_os = "windows")]
+fn seed_package_data_dir(pfn: &str, game_root: &Path) -> usize {
+    let Ok(local) = std::env::var("LOCALAPPDATA") else {
+        return 0;
+    };
+    let data_dir = PathBuf::from(local)
+        .join("Packages")
+        .join(pfn.trim())
+        .join("LocalState")
+        .join("games")
+        .join("com.mojang");
+    if std::fs::create_dir_all(&data_dir).is_err() {
+        return 0;
+    }
+
+    let root = net::absolute_path(game_root);
+    let portable = portable_mojang_dir(&root);
+    if !portable.is_dir() {
+        return 0;
+    }
+    sync_portable_to_targets(&portable, &[data_dir])
+}
+
+/// Copy packs and worlds that only exist in the portable staging folder into
+/// every installed client's data folder. Returns how many entries were copied.
+pub fn sync_portable_content_to_clients(game_root: &Path) -> usize {
+    let root = net::absolute_path(game_root);
+    let portable = portable_mojang_dir(&root);
+    if !portable.is_dir() {
+        return 0;
+    }
+    let portable_key = portable.to_string_lossy().to_lowercase();
+    let targets: Vec<PathBuf> = bedrock_install_dirs(&root)
+        .into_iter()
+        .filter(|dir| dir.to_string_lossy().to_lowercase() != portable_key)
+        .collect();
+    sync_portable_to_targets(&portable, &targets)
 }
 
 // ---------------------------------------------------------------------------
@@ -5975,6 +6742,9 @@ mod tests {
         assert!(urls.iter().any(|u| u.contains("assets2.xboxlive.cn")));
         assert!(urls.iter().any(|u| u.contains("assets1.xboxlive.com")));
         assert!(urls.iter().any(|u| u.contains("xvcf1.xboxlive.com")));
+        // A client package must never fall back to the BDS server zip: that is a
+        // second, unusable game download for the same version.
+        assert!(!urls.iter().any(|u| u.contains("bedrock-server-")));
     }
 
     #[tokio::test]
@@ -6158,6 +6928,68 @@ mod tests {
         assert!(!version_ids_match("1.26.5", "1.26.52.3"));
         assert!(!version_ids_match("1.26.201", "1.26.52.3"));
         assert!(!version_ids_match("", "1.26.52.3"));
+    }
+
+    /// The list must hold one entry per version folder. A core whose manifest
+    /// reports a longer build number than its folder name used to add a second
+    /// row pointing at `versions/<manifest version>`, which never exists.
+    #[test]
+    fn status_lists_one_row_per_version_folder() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cobble_bds_rows_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let core_dir = temp_dir.join("bedrock").join("versions").join("1.18.3104");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::write(core_dir.join("Minecraft.Windows.exe"), b"MZ").unwrap();
+        std::fs::write(
+            core_dir.join("version.json"),
+            r#"{"id":"1.18.3104.0","name":"Minecraft 基岩版 1.18.3104"}"#,
+        )
+        .unwrap();
+
+        let status = get_bedrock_status(&temp_dir);
+        assert_eq!(status.installed_versions, vec!["1.18.3104".to_string()]);
+        assert_eq!(status.version_details.len(), 1);
+        // The listed id must resolve to the folder that is actually there.
+        assert!(resolve_bedrock_version_dir(&temp_dir, "1.18.3104").is_dir());
+
+        let _ = force_remove_dir_all(&temp_dir);
+    }
+
+    /// The package identity of a deployed core decides which
+    /// `Packages\<PFN>\LocalState` folder is its data folder. Reading it is what
+    /// lets an import reach the game before the game has ever run.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn local_core_identity_names_reads_the_manifest_identity() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cobble_appx_identity_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let core_dir = temp_dir.join("bedrock").join("versions").join("1.18.3104");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::write(
+            core_dir.join("AppxManifest.xml"),
+            r#"<?xml version="1.0"?>
+<Package>
+  <Identity Name="Microsoft.MinecraftUWP" Publisher="CN=Microsoft Corporation" Version="1.18.3104.0" ProcessorArchitecture="x64" />
+</Package>"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            local_core_identity_names(&temp_dir),
+            vec!["Microsoft.MinecraftUWP".to_string()]
+        );
+
+        let _ = force_remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -6459,6 +7291,77 @@ mod pack_install_tests {
         let _ = force_remove_dir_all(&dir);
     }
 
+    /// One pack installed into several `com.mojang` folders (portable, UWP, GDK)
+    /// has one physical copy per folder. Disable/delete must find all of them.
+    #[test]
+    fn finds_every_copy_of_a_pack_across_data_dirs() {
+        let dir = temp_dir("copies");
+        let client_a = dir.join("client_a");
+        let client_b = dir.join("client_b");
+        let uuid = "dedededd-1111-2222-3333-444444444444";
+
+        let enabled_copy = client_a.join("resource_packs").join("Shared_1");
+        let disabled_copy = client_b
+            .join(DISABLED_PACKS_DIR)
+            .join("resource_packs")
+            .join("Shared_1");
+        for copy in [&enabled_copy, &disabled_copy] {
+            std::fs::create_dir_all(copy).unwrap();
+            std::fs::write(copy.join("manifest.json"), manifest("Shared", uuid, "resources"))
+                .unwrap();
+        }
+        // A different pack in the same folders must not be swept up.
+        let other = client_a.join("resource_packs").join("Other_1");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("manifest.json"),
+            manifest("Other", "ffffffff-1111-2222-3333-444444444444", "resources"),
+        )
+        .unwrap();
+
+        let copies = pack_copy_paths(&[client_a, client_b], uuid, "resource");
+        assert_eq!(copies.len(), 2, "both data dirs must be covered: {copies:?}");
+        assert!(copies.contains(&enabled_copy));
+        assert!(copies.contains(&disabled_copy));
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
+    /// `min_engine_version` is what makes the game ignore a perfectly installed
+    /// pack, so it must be recorded and reported against the local cores.
+    #[test]
+    fn records_engine_requirement_and_warns_for_old_cores() {
+        let dir = temp_dir("engine");
+        let portable = dir.join("bedrock").join("games").join("com.mojang");
+        std::fs::create_dir_all(portable.join("resource_packs")).unwrap();
+        std::fs::create_dir_all(dir.join("bedrock").join("versions").join("1.18.3104")).unwrap();
+
+        let archive = dir.join("Modern.mcpack");
+        let body = r#"{"format_version":2,"header":{"name":"Modern Pack","description":"d","uuid":"12341234-1234-1234-1234-123412341234","version":[3,0,1],"min_engine_version":[1,21,0]},"modules":[{"type":"resources","uuid":"43214321-4321-4321-4321-432143214321","version":[3,0,1]}]}"#;
+        write_zip(&archive, &[("manifest.json", body.as_bytes())]);
+
+        let result = install_pack_archive_to(&archive, &[portable.clone()]).unwrap();
+        assert_eq!(result.engine_version.as_deref(), Some("1.21.0"));
+
+        let warning = engine_requirement_warning(&dir, result.engine_version.as_deref())
+            .expect("1.18 core must be reported as too old");
+        assert!(warning.contains("1.21.0"));
+        assert!(warning.contains("1.18.3104"));
+
+        let listed = get_bedrock_packs(&dir);
+        let pack = listed
+            .iter()
+            .find(|pack| pack.name == "Modern Pack")
+            .expect("installed pack is listed");
+        assert_eq!(pack.engine_version.as_deref(), Some("1.21.0"));
+
+        // A new enough core makes the pack loadable again.
+        std::fs::create_dir_all(dir.join("bedrock").join("versions").join("1.21.60")).unwrap();
+        assert!(engine_requirement_warning(&dir, Some("1.21.0")).is_none());
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
     /// A `.mcaddon` may ship a pack as a nested `.mcpack`; it must be extracted
     /// and installed too, not copied verbatim into the enclosing pack.
     #[test]
@@ -6574,6 +7477,56 @@ mod pack_install_tests {
         let _ = force_remove_dir_all(&dir);
     }
 
+    /// Worlds are listed from `minecraftWorlds`, carry their level name and
+    /// icon, and can only be deleted from inside that folder.
+    #[test]
+    fn world_manager_lists_and_deletes_worlds() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble_world_manager_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = dir.join("bedrock").join("games").join("com.mojang");
+        let world_dir = data_dir.join("minecraftWorlds").join("Skyblock123");
+        std::fs::create_dir_all(&world_dir).unwrap();
+        std::fs::write(world_dir.join("level.dat"), b"nbt").unwrap();
+        std::fs::write(world_dir.join("levelname.txt"), "§aSkyblock").unwrap();
+        std::fs::write(
+            world_dir.join("world_icon.jpeg"),
+            [0xFFu8, 0xD8, 0xFF, 0xE0, 0, 0x10],
+        )
+        .unwrap();
+
+        let worlds = get_bedrock_worlds(&dir);
+        let listed = worlds
+            .iter()
+            .find(|world| world.folder == "Skyblock123")
+            .expect("world is listed");
+        assert_eq!(listed.name, "Skyblock");
+        assert_eq!(listed.location, "启动器便携目录");
+        assert!(listed
+            .icon
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("data:image/jpeg;base64,"));
+
+        // A path outside `minecraftWorlds` is refused, not deleted.
+        let outside = data_dir.join("resource_packs");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(delete_bedrock_world(&dir, &outside.to_string_lossy()).is_err());
+        assert!(outside.is_dir());
+
+        delete_bedrock_world(&dir, &listed.path).unwrap();
+        assert!(!world_dir.exists());
+        assert!(get_bedrock_worlds(&dir)
+            .iter()
+            .all(|world| world.folder != "Skyblock123"));
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
     /// The pack manager must read real pack folders (not a Java mods folder),
     /// move them in and out of the disabled container, and only ever touch
     /// paths that live inside a pack folder.
@@ -6671,8 +7624,12 @@ mod pack_install_tests {
             )],
         );
 
-        let result = install_bedrock_pack_from_file(&dir, &archive.to_string_lossy()).unwrap();
-        assert!(result.message.starts_with("本地导入 —"));
+        // Install into the portable folder explicitly: the production wrapper
+        // also targets every installed client, and a test must never write
+        // into the real %LOCALAPPDATA% game data.
+        let portable = dir.join("bedrock").join("games").join("com.mojang");
+        let result = install_pack_archive_to(&archive, &[portable.clone()]).unwrap();
+        assert!(result.message.contains("已安装"));
         let pack = get_bedrock_packs(&dir)
             .into_iter()
             .find(|pack| pack.id == "12121212-3434-5656-7878-909090909090")
@@ -6684,6 +7641,72 @@ mod pack_install_tests {
         let text = dir.join("notes.txt");
         std::fs::write(&text, b"not a pack").unwrap();
         assert!(install_bedrock_pack_from_file(&dir, &text.to_string_lossy()).is_err());
+
+        let _ = force_remove_dir_all(&dir);
+    }
+
+    /// A pack imported before the client created its data folder only exists
+    /// in the portable staging area. The launch sync must copy it where the
+    /// game reads, and a pack the user disabled must stay disabled.
+    #[test]
+    fn syncs_portable_packs_and_worlds_to_client_folders() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble_portable_sync_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let portable = dir.join("portable");
+        let client = dir.join("client");
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        let pack_dir = portable.join("resource_packs").join("Staged_Pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::write(
+            pack_dir.join("manifest.json"),
+            manifest("Staged Pack", uuid, "resources"),
+        )
+        .unwrap();
+
+        let world_dir = portable.join("minecraftWorlds").join("World123");
+        std::fs::create_dir_all(&world_dir).unwrap();
+        std::fs::write(world_dir.join("level.dat"), b"nbt").unwrap();
+        std::fs::write(world_dir.join("levelname.txt"), "Staged World").unwrap();
+
+        assert_eq!(sync_portable_to_targets(&portable, &[client.clone()]), 2);
+        assert!(client
+            .join("resource_packs")
+            .join("Staged_Pack")
+            .join("manifest.json")
+            .is_file());
+        assert!(client
+            .join("minecraftWorlds")
+            .join("World123")
+            .join("level.dat")
+            .is_file());
+
+        // Running again copies nothing (the pack and world already exist).
+        assert_eq!(sync_portable_to_targets(&portable, &[client.clone()]), 0);
+
+        // A disabled copy in the client means the user switched it off; the
+        // sync must not resurrect it.
+        let other_client = dir.join("client2");
+        let disabled = other_client
+            .join(DISABLED_PACKS_DIR)
+            .join("resource_packs")
+            .join("Staged_Pack");
+        std::fs::create_dir_all(&disabled).unwrap();
+        std::fs::write(
+            disabled.join("manifest.json"),
+            manifest("Staged Pack", uuid, "resources"),
+        )
+        .unwrap();
+        sync_portable_to_targets(&portable, &[other_client.clone()]);
+        assert!(!other_client
+            .join("resource_packs")
+            .join("Staged_Pack")
+            .exists());
 
         let _ = force_remove_dir_all(&dir);
     }

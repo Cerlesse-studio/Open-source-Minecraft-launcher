@@ -184,7 +184,7 @@ export function BedrockModLoaderModal({
         {/* Modal Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border/60 bg-muted/20">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-primary/15 text-primary border border-primary/30">
               <Boxes className="size-5" />
             </div>
             <div>
@@ -194,7 +194,7 @@ export function BedrockModLoaderModal({
                 </h3>
                 <Badge
                   variant="outline"
-                  className="h-4 border-emerald-500/40 bg-emerald-500/10 text-[9px] font-mono text-emerald-400"
+                  className="h-4 border-primary/40 bg-primary/10 text-[9px] font-mono text-primary"
                 >
                   BedrockBoot 架构
                 </Badge>
@@ -276,16 +276,16 @@ export function BedrockModLoaderModal({
                   className={cn(
                     "flex flex-col text-left p-3.5 rounded-xl border transition-all",
                     selectedLoaderType === "levilamina"
-                      ? "border-emerald-500/80 bg-emerald-500/10 shadow-sm"
+                      ? "border-primary/80 bg-primary/10 shadow-sm"
                       : "border-border/60 hover:bg-muted/30",
                   )}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                      <Boxes className="size-3.5 text-emerald-400" />
+                      <Boxes className="size-3.5 text-primary" />
                       LeviLamina
                     </span>
-                    <Badge className="h-3.5 text-[8px] bg-emerald-500/20 text-emerald-400 border-0">
+                    <Badge className="h-3.5 text-[8px] bg-success/20 text-success border-0">
                       官方主推
                     </Badge>
                   </div>
@@ -365,7 +365,7 @@ export function BedrockModLoaderModal({
                             v{item.version}
                           </span>
                           {item.stable && (
-                            <Badge className="h-3.5 text-[8px] border-0 bg-emerald-500/20 text-emerald-400">
+                            <Badge className="h-3.5 text-[8px] border-0 bg-success/20 text-success">
                               推荐稳定
                             </Badge>
                           )}
@@ -512,7 +512,7 @@ export function BedrockModLoaderModal({
                               {mod.modType === "dll_mod" ? "Native DLL" : "LeviLamina 插件"}
                             </Badge>
                             {mod.enabled ? (
-                              <Badge className="h-3.5 text-[8px] bg-emerald-500/20 text-emerald-400 border-0">
+                              <Badge className="h-3.5 text-[8px] bg-success/20 text-success border-0">
                                 已启用
                               </Badge>
                             ) : (

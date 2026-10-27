@@ -315,7 +315,7 @@ export function PlayView({
           <div className="relative">
             <div className="world-grid pointer-events-none absolute inset-0 opacity-60" />
             <div className="relative flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:gap-6 lg:p-6">
-              <div className="grass-glow flex size-[104px] shrink-0 items-center justify-center rounded-2xl border border-border/80 bg-[#0a0f0b] p-2 lg:size-[124px] lg:p-2.5">
+              <div className="grass-glow media-surface flex size-[104px] shrink-0 items-center justify-center rounded-2xl border border-border/80 p-2 lg:size-[124px] lg:p-2.5">
                 <GrassBlock size={88} className="lg:hidden" />
                 <GrassBlock size={96} className="hidden lg:block" />
               </div>
@@ -360,7 +360,7 @@ export function PlayView({
                   {isInstalled ? (
                     <Button
                       size="lg"
-                      className="h-10 gap-2 rounded-lg px-5 text-[13px] font-semibold shadow-[0_0_24px_-10px_rgba(155,221,107,0.65)]"
+                      className="accent-glow h-10 gap-2 rounded-lg px-5 text-[13px] font-semibold"
                       onClick={isRunning ? onStop : onLaunch}
                       disabled={isLaunching}
                     >

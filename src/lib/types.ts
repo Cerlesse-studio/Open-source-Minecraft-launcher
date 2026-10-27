@@ -96,6 +96,34 @@ export interface JavaModItem {
   iconDataUrl?: string | null;
 }
 
+/** One Java resource pack inside the instance's `resourcepacks/` folder. */
+export interface JavaPackItem {
+  id: string;
+  name: string;
+  fileName: string;
+  path: string;
+  enabled: boolean;
+  size: number;
+  modifiedTime: string;
+  description: string;
+  packFormat?: number | null;
+  /** `pack.png` inlined as a data URL by the backend. */
+  iconDataUrl?: string | null;
+  isDir: boolean;
+}
+
+/** One Java save inside the instance's `saves/` folder. */
+export interface JavaWorldItem {
+  id: string;
+  name: string;
+  folder: string;
+  path: string;
+  size: number;
+  modifiedTime: string;
+  /** `icon.png` inlined as a data URL by the backend. */
+  iconDataUrl?: string | null;
+}
+
 export interface LoaderSelection {
   instanceName?: string;
   loaderType?: "forge" | "neoforge" | "fabric" | "quilt";
@@ -137,6 +165,8 @@ export interface SearchContentResult {
   offset: number;
   limit: number;
   totalHits: number;
+  /** English keywords used for a non-English query, when they were used. */
+  translatedQuery?: string | null;
 }
 
 export interface ContentFile {
@@ -321,9 +351,19 @@ export interface LaunchRequest {
   processPriority?: ProcessPriority;
   windowSize?: WindowSizeMode;
   jvmArgs?: string | null;
+  /** Locale such as `zh_cn`; the game starts in this language. */
+  language?: string | null;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
+
+/** Reachability of one download source, measured on its version manifest. */
+export interface DownloadSourceProbe {
+  source: DownloadSourceId;
+  ok: boolean;
+  latencyMs: number;
+  error?: string | null;
+}
 
 export type ThemeMode = "dark" | "light" | "system";
 /** `default` keeps the flat theme backdrop, `custom` paints one image. */
@@ -487,6 +527,11 @@ export interface BedrockPackItem {
   description: string;
   /** Semver-ish manifest version, e.g. `1.0.3`. */
   version: string;
+  /**
+   * `min_engine_version` from the manifest, e.g. `1.21.0`. Minecraft silently
+   * ignores a pack when the running core is older than this.
+   */
+  engineVersion?: string | null;
   /** `resource` | `behavior` | `skin` | `template` */
   packType: string;
   folder: string;
@@ -497,6 +542,21 @@ export interface BedrockPackItem {
   /** `pack_icon.png` as a data URL, when the pack ships one. */
   icon?: string | null;
   /** Which data folder this copy lives in: portable, GDK or UWP. */
+  location: string;
+  locationPath: string;
+}
+
+/** One Bedrock world inside a `com.mojang/minecraftWorlds` folder. */
+export interface BedrockWorldItem {
+  /** World folder id, shared by every installed copy on this machine. */
+  id: string;
+  name: string;
+  folder: string;
+  path: string;
+  size: number;
+  modifiedTime: string;
+  /** `world_icon.jpeg` as a data URL, when the world has one. */
+  icon?: string | null;
   location: string;
   locationPath: string;
 }

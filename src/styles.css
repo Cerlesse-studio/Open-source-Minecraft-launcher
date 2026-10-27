@@ -38,6 +38,9 @@
   --accent-foreground: #f0f5ec;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
+  /* State color (enabled / finished / fastest). Deliberately independent of the
+     accent: green here means "good", not "this is the theme". */
+  --success: #34d399;
   --border: #26312a;
   --input: #2a352d;
   --ring: #9bdd6b;
@@ -74,6 +77,7 @@
   --accent-foreground: #f0f5ec;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
+  --success: #34d399;
   --border: #26312a;
   --input: #2a352d;
   --ring: #9bdd6b;
@@ -103,6 +107,8 @@
   --accent-foreground: #151e16;
   --destructive: #e05243;
   --destructive-foreground: #ffffff;
+  /* Darker green so state chips stay readable on white. */
+  --success: #059669;
   --border: #d4e0d3;
   --input: #d4e0d3;
   --sidebar-solid: #f0f5ee;
@@ -119,9 +125,15 @@
    resolves to the exact solid color. */
 :root {
   --surface-alpha: 1;
+  /* Dark media/tile surfaces (news covers, version icon tiles, the console).
+     They stay dark in both modes, but take the accent's hue so they do not
+     stay green when another accent is picked. */
+  --media-solid: color-mix(in oklab, var(--primary) 14%, #04060a);
   --background: color-mix(in oklab, var(--background-solid) calc(var(--surface-alpha) * 100%), transparent);
   --card: color-mix(in oklab, var(--card-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --popover: color-mix(in oklab, var(--popover-solid) calc(var(--surface-alpha) * 100%), transparent);
+  /* Menus, selects and tooltips float above the page: fading them makes the
+     form underneath bleed through the options, so floating layers stay solid. */
+  --popover: var(--popover-solid);
   --secondary: color-mix(in oklab, var(--secondary-solid) calc(var(--surface-alpha) * 100%), transparent);
   --muted: color-mix(in oklab, var(--muted-solid) calc(var(--surface-alpha) * 100%), transparent);
   --accent: color-mix(in oklab, var(--accent-solid) calc(var(--surface-alpha) * 100%), transparent);
@@ -155,6 +167,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -171,9 +184,9 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --color-grass: #9bdd6b;
-  --color-grass-bright: #b6eb8a;
-  --color-grass-deep: #4d7a32;
+  --color-grass: var(--primary);
+  --color-grass-bright: color-mix(in oklab, var(--primary) 70%, white);
+  --color-grass-deep: color-mix(in oklab, var(--primary) 60%, black);
   --color-diamond: #6de0d0;
   --color-gold: #e3c269;
   --color-ember: #e59b68;
@@ -219,7 +232,7 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2d3a30 transparent;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) transparent;
   }
 
   ::-webkit-scrollbar {
@@ -228,7 +241,7 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2d3a30;
+    background: color-mix(in oklab, var(--foreground) 20%, transparent);
     border-radius: 999px;
   }
 }
@@ -256,8 +269,30 @@
 
   .grass-glow {
     box-shadow:
-      0 0 0 1px rgba(155, 221, 107, 0.16),
-      0 12px 40px -18px rgba(155, 221, 107, 0.5);
+      0 0 0 1px color-mix(in oklab, var(--primary) 16%, transparent),
+      0 12px 40px -18px color-mix(in oklab, var(--primary) 50%, transparent);
+  }
+
+  /* Same purpose as the old green literals, now accent-tinted. */
+  .media-surface {
+    background-color: var(--media-solid);
+  }
+
+  .media-surface-fade {
+    background-image: linear-gradient(
+      to top,
+      var(--media-solid),
+      color-mix(in oklab, var(--media-solid) 45%, transparent),
+      transparent
+    );
+  }
+
+  .console-surface {
+    background-color: color-mix(in oklab, var(--media-solid) 70%, transparent);
+  }
+
+  .accent-glow {
+    box-shadow: 0 0 24px -10px color-mix(in oklab, var(--primary) 65%, transparent);
   }
 
   .pixelated {

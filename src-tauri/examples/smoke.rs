@@ -87,6 +87,7 @@ async fn main() -> Result<(), String> {
         process_priority: None,
         window_size: None,
         jvm_args: None,
+        language: None,
     };
 
     println!("Preparing Java and launch arguments…");

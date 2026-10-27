@@ -15,6 +15,8 @@ export type VersionLaunchSettings = Pick<
 > & {
   javaPath?: string;
   jvmArgs?: string;
+  /** Locale the game should start in; empty keeps the in-game choice. */
+  language?: string;
 };
 
 const STORAGE_KEY = "cobble.version-launch.v1";
@@ -38,6 +40,7 @@ export function resolveVersionLaunchSettings(
     windowSize: override?.windowSize ?? defaults.windowSize,
     javaPath: override?.javaPath ?? "",
     jvmArgs: override?.jvmArgs ?? "",
+    language: override?.language ?? "",
   };
 }
 
@@ -79,6 +82,12 @@ function sanitize(value: Partial<VersionLaunchSettings>): VersionLaunchSettings 
         : "default",
     javaPath: typeof value.javaPath === "string" ? value.javaPath.trim() : "",
     jvmArgs: typeof value.jvmArgs === "string" ? value.jvmArgs.trim() : "",
+    // `zh-CN` typed or loaded from an older build becomes the code the game
+    // actually understands.
+    language:
+      typeof value.language === "string"
+        ? value.language.trim().replace("-", "_").toLowerCase()
+        : "",
   };
 }
 

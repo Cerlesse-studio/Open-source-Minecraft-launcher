@@ -477,13 +477,11 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
     }
 
     let fetched = async {
-        let manifest_urls = [
-            VERSION_MANIFEST_URL,
-            "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json",
-        ];
+        // Respect the selected mirror and keep the automatic fallback chain.
+        let manifest_urls = net::preferred_urls(VERSION_MANIFEST_URL);
         let mut last_err = String::new();
         for u in manifest_urls {
-            match net::client().get(u).timeout(Duration::from_secs(4)).send().await {
+            match net::client().get(&u).timeout(Duration::from_secs(4)).send().await {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(text) = response.text().await {
                         if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
@@ -2329,6 +2327,8 @@ pub struct LaunchRequest {
     pub process_priority: Option<String>,
     pub window_size: Option<String>,
     pub jvm_args: Option<String>,
+    /// Locale code such as `zh_cn`; written to `options.txt` before start-up.
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3812,6 +3812,739 @@ pub fn install_java_mod_file(
     Ok(format!("已成功安装模组: {file_name}"))
 }
 
+// ---------------------------------------------------------------------------
+// Java Resource Packs & Worlds
+// ---------------------------------------------------------------------------
+//
+// Both live in the game directory the instance is actually launched with
+// (`versions/<id>` for isolated versions, the shared root when isolation is off),
+// unlike mods which this launcher always keeps inside the instance. Java also
+// records the *enabled* pack list in `options.txt`, so the manager edits that
+// list instead of only renaming files: a pack sitting on disk is still off in
+// game until the game is told to load it.
+
+/// Game directory Java reads for this instance, mirroring the launch code.
+pub fn resolve_java_game_dir(root: &Path, version_id: &str, isolation: Option<&str>) -> PathBuf {
+    let root = net::absolute_path(root);
+    let instance = root.join("versions").join(version_id);
+    match isolation.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("all") {
+        "none" => root,
+        "modded" => {
+            if version_dir_is_modded(&instance) {
+                instance
+            } else {
+                root
+            }
+        }
+        _ => instance,
+    }
+}
+
+/// Whether the installed version carries a mod loader, read from its own json.
+fn version_dir_is_modded(instance: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(instance) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(detail) = serde_json::from_str::<VersionDetail>(&text) {
+            return is_modded_version(&detail);
+        }
+        let lower = text.to_lowercase();
+        if ["fabric", "forge", "quilt", "optifine"]
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaPackItem {
+    /// File (or folder) name inside `resourcepacks`, unique per instance.
+    pub id: String,
+    pub name: String,
+    pub file_name: String,
+    pub path: String,
+    pub enabled: bool,
+    pub size: u64,
+    pub modified_time: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub pack_format: Option<i64>,
+    #[serde(default)]
+    pub icon_data_url: Option<String>,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaWorldItem {
+    /// Save folder name, unique per game directory.
+    pub id: String,
+    pub name: String,
+    pub folder: String,
+    pub path: String,
+    pub size: u64,
+    pub modified_time: String,
+    #[serde(default)]
+    pub icon_data_url: Option<String>,
+}
+
+fn file_modified_text(meta: &std::fs::Metadata) -> String {
+    meta.modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| chrono_format_timestamp(delta.as_secs()))
+        .unwrap_or_else(|| "未知时间".to_string())
+}
+
+fn dir_total_size(dir: &Path, depth: u8) -> u64 {
+    if depth > 8 {
+        return 0;
+    }
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                total += dir_total_size(&entry.path(), depth + 1);
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+fn read_text_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(|line| line.trim_end_matches('\r').to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_text_lines(path: &Path, lines: &[String]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建游戏目录失败: {e}"))?;
+    }
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    std::fs::write(path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+/// `zh-CN` / `ZH_cn` / `zh` -> `zh_cn`.
+///
+/// Minecraft stores locales as `<language>_<region>` in lower case, so anything
+/// else the user may type has to be normalised before it reaches `options.txt`
+/// (`lang:zh-CN` is not a language the game knows).
+fn normalize_locale(raw: &str) -> Option<String> {
+    let cleaned = raw.trim().replace('-', "_");
+    if cleaned.is_empty() {
+        return None;
+    }
+    let mut parts = cleaned.split('_');
+    let language = parts.next()?.to_ascii_lowercase();
+    if language.len() < 2 || language.len() > 3 || !language.chars().all(|c| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let region = parts.next().unwrap_or("").to_ascii_lowercase();
+    if region.is_empty() {
+        return Some(language);
+    }
+    if region.len() < 2 || region.len() > 4 || !region.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(format!("{language}_{region}"))
+}
+
+/// Applies the language picked in the version settings to the folder the game
+/// actually runs in, returning the code that was written.
+///
+/// It must be the `LaunchSpec::cwd` (the resolved `--gameDir`), not always
+/// `versions/<id>`: with "no isolation" the game reads the root `options.txt`,
+/// and writing anywhere else would look like the setting did nothing.
+pub fn apply_launch_language(game_dir: &Path, language: Option<&str>) -> Option<String> {
+    let code = normalize_locale(language?)?;
+    apply_game_language(game_dir, &code);
+    Some(code)
+}
+
+/// Writes `lang:<code>` into the instance's `options.txt`.
+///
+/// Java rewrites options.txt whenever the player changes something in game, and
+/// only reads it on start-up, so an explicit locale here means "start in this
+/// language" without touching any other option.
+fn apply_game_language(game_dir: &Path, code: &str) {
+    let options_path = game_dir.join("options.txt");
+    let mut lines = read_text_lines(&options_path);
+    let entry = format!("lang:{code}");
+    match lines.iter_mut().find(|line| line.starts_with("lang:")) {
+        Some(line) => *line = entry,
+        None => lines.push(entry),
+    }
+    let _ = write_text_lines(&options_path, &lines);
+}
+
+/// Read one `key:[...]` JSON array out of `options.txt` lines.
+fn options_json_list(lines: &[String], key: &str) -> Option<Vec<String>> {
+    let prefix = format!("{key}:");
+    lines.iter().find_map(|line| {
+        let rest = line.strip_prefix(&prefix)?;
+        serde_json::from_str::<Vec<String>>(rest.trim()).ok()
+    })
+}
+
+fn set_options_json_list(lines: &mut Vec<String>, key: &str, values: &[String]) {
+    let serialized = serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string());
+    let prefix = format!("{key}:");
+    for line in lines.iter_mut() {
+        if line.starts_with(&prefix) {
+            *line = format!("{prefix}{serialized}");
+            return;
+        }
+    }
+    lines.push(format!("{prefix}{serialized}"));
+}
+
+/// Resource packs selected in `options.txt`, with the game default as fallback.
+fn selected_resource_packs(game_dir: &Path) -> Vec<String> {
+    let lines = read_text_lines(&game_dir.join("options.txt"));
+    options_json_list(&lines, "resourcePacks").unwrap_or_else(|| vec!["vanilla".to_string()])
+}
+
+/// One selected-pack entry points at this file/folder.
+///
+/// The game writes pack ids as `file/<name>`; older or hand-edited options.txt
+/// files sometimes carry the bare name, so both forms are recognised.
+fn resource_pack_entry_matches(entry: &str, file_name: &str) -> bool {
+    entry
+        .trim()
+        .trim_start_matches("file/")
+        .eq_ignore_ascii_case(file_name)
+}
+
+#[derive(Deserialize)]
+struct PackMcmetaFile {
+    pack: Option<PackMetaSection>,
+}
+
+#[derive(Deserialize)]
+struct PackMetaSection {
+    #[serde(default)]
+    pack_format: Option<i64>,
+    #[serde(default)]
+    description: Option<serde_json::Value>,
+}
+
+/// `description` is either a plain string or a chat component tree.
+fn pack_description_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => normalize_mod_description(text),
+        serde_json::Value::Array(items) => {
+            let joined: String = items.iter().map(pack_description_text).collect();
+            normalize_mod_description(&joined)
+        }
+        serde_json::Value::Object(map) => {
+            let mut parts = String::new();
+            if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                parts.push_str(text);
+            }
+            if let Some(extra) = map.get("extra") {
+                parts.push_str(&pack_description_text(extra));
+            }
+            normalize_mod_description(&parts)
+        }
+        _ => String::new(),
+    }
+}
+
+fn parse_pack_mcmeta(text: &str) -> (Option<i64>, String) {
+    let Ok(parsed) = serde_json::from_str::<PackMcmetaFile>(text) else {
+        return (None, String::new());
+    };
+    let Some(pack) = parsed.pack else {
+        return (None, String::new());
+    };
+    (
+        pack.pack_format,
+        pack.description
+            .as_ref()
+            .map(pack_description_text)
+            .unwrap_or_default(),
+    )
+}
+
+fn image_file_data_url(path: &Path) -> Option<String> {
+    use base64::Engine;
+
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_MOD_ICON_BYTES {
+        return None;
+    }
+    let mime = image_mime_for_path(&path.to_string_lossy())?;
+    let bytes = std::fs::read(path).ok()?;
+    if !bytes_look_like_image(&bytes, mime) {
+        return None;
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:{mime};base64,{encoded}"))
+}
+
+fn zip_image_data_url(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+    use base64::Engine;
+    use std::io::Read;
+
+    let mime = image_mime_for_path(name)?;
+    let mut entry = archive.by_name(name).ok()?;
+    if entry.size() == 0 || entry.size() > MAX_MOD_ICON_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes).ok()?;
+    if !bytes_look_like_image(&bytes, mime) {
+        return None;
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:{mime};base64,{encoded}"))
+}
+
+pub fn get_java_resource_packs(
+    root: &Path,
+    version_id: &str,
+    isolation: Option<&str>,
+) -> Vec<JavaPackItem> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let packs_dir = game_dir.join("resourcepacks");
+    let Ok(entries) = std::fs::read_dir(&packs_dir) else {
+        return Vec::new();
+    };
+    let selected = selected_resource_packs(&game_dir);
+    let mut packs = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let lower = file_name.to_lowercase();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        // `name.zip.disabled` files are leftovers from launchers that toggled
+        // packs by renaming; Minecraft never loads them.
+        if lower.ends_with(".disabled") || lower.ends_with(".dis") {
+            continue;
+        }
+        let is_dir = path.is_dir();
+        if !is_dir && !lower.ends_with(".zip") {
+            continue;
+        }
+
+        let (name, description, pack_format, icon) = if is_dir {
+            let meta_text = std::fs::read_to_string(path.join("pack.mcmeta")).ok();
+            let (format, description) = meta_text
+                .as_deref()
+                .map(parse_pack_mcmeta)
+                .unwrap_or((None, String::new()));
+            (
+                file_name.clone(),
+                description,
+                format,
+                image_file_data_url(&path.join("pack.png")),
+            )
+        } else {
+            let mut found = (file_name.clone(), String::new(), None, None);
+            if let Ok(file) = std::fs::File::open(&path) {
+                if let Ok(mut archive) = zip::ZipArchive::new(file) {
+                    if let Some(text) = read_zip_text(&mut archive, "pack.mcmeta") {
+                        let (format, description) = parse_pack_mcmeta(&text);
+                        found.1 = description;
+                        found.2 = format;
+                    }
+                    found.3 = zip_image_data_url(&mut archive, "pack.png");
+                }
+            }
+            found
+        };
+
+        let meta = entry.metadata().ok();
+        let size = match &meta {
+            Some(meta) if meta.is_dir() => dir_total_size(&path, 0),
+            Some(meta) => meta.len(),
+            None => 0,
+        };
+        let modified_time = meta
+            .as_ref()
+            .map(file_modified_text)
+            .unwrap_or_else(|| "未知时间".to_string());
+        let enabled = selected
+            .iter()
+            .any(|item| resource_pack_entry_matches(item, &file_name));
+
+        packs.push(JavaPackItem {
+            id: file_name.clone(),
+            name,
+            file_name,
+            path: path.to_string_lossy().to_string(),
+            enabled,
+            size,
+            modified_time,
+            description,
+            pack_format,
+            icon_data_url: icon,
+            is_dir,
+        });
+    }
+
+    packs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    packs
+}
+
+/// Enabled/disabled state of a Java resource pack lives in `options.txt`, so
+/// this rewrites that one list instead of touching the pack files.
+pub fn toggle_java_resource_pack(
+    root: &Path,
+    version_id: &str,
+    file_name: &str,
+    enable: bool,
+    isolation: Option<&str>,
+) -> Result<(), String> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let safe_name = Path::new(file_name)
+        .file_name()
+        .ok_or_else(|| "资源包名称无效".to_string())?
+        .to_string_lossy()
+        .to_string();
+    if safe_name != file_name {
+        return Err("资源包名称无效".to_string());
+    }
+    if !game_dir.join("resourcepacks").join(&safe_name).exists() {
+        return Err(format!("未找到资源包: {safe_name}"));
+    }
+
+    let options_path = game_dir.join("options.txt");
+    let mut lines = read_text_lines(&options_path);
+    let entry = format!("file/{safe_name}");
+    let mut packs =
+        options_json_list(&lines, "resourcePacks").unwrap_or_else(|| vec!["vanilla".to_string()]);
+
+    if enable {
+        if !packs
+            .iter()
+            .any(|pack| resource_pack_entry_matches(pack, &safe_name))
+        {
+            packs.push(entry.clone());
+        }
+    } else {
+        packs.retain(|pack| !resource_pack_entry_matches(pack, &safe_name));
+    }
+    set_options_json_list(&mut lines, "resourcePacks", &packs);
+
+    // An incompatible pack stays "on" through the other list, so drop it there
+    // too when it is turned off.
+    if let Some(mut incompatible) = options_json_list(&lines, "incompatibleResourcePacks") {
+        let before = incompatible.len();
+        incompatible.retain(|pack| !resource_pack_entry_matches(pack, &safe_name));
+        if incompatible.len() != before {
+            set_options_json_list(&mut lines, "incompatibleResourcePacks", &incompatible);
+        }
+    }
+
+    write_text_lines(&options_path, &lines)
+}
+
+pub fn delete_java_resource_pack(
+    root: &Path,
+    version_id: &str,
+    file_name: &str,
+    isolation: Option<&str>,
+) -> Result<(), String> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let path = game_dir.join("resourcepacks").join(file_name);
+    if path.file_name().map(|name| name.to_string_lossy().to_string()) != Some(file_name.to_string()) {
+        return Err("资源包名称无效".to_string());
+    }
+    if path.is_dir() {
+        crate::bedrock::force_remove_dir_all(&path).map_err(|e| format!("删除资源包失败: {e}"))?;
+    } else if path.is_file() {
+        std::fs::remove_file(&path).map_err(|e| format!("删除资源包失败: {e}"))?;
+    } else {
+        return Err(format!("未找到资源包: {file_name}"));
+    }
+
+    // A deleted pack must not stay selected in options.txt.
+    let options_path = game_dir.join("options.txt");
+    if options_path.is_file() {
+        let mut lines = read_text_lines(&options_path);
+        if let Some(mut packs) = options_json_list(&lines, "resourcePacks") {
+            let before = packs.len();
+            packs.retain(|pack| !resource_pack_entry_matches(pack, file_name));
+            if packs.len() != before {
+                set_options_json_list(&mut lines, "resourcePacks", &packs);
+                write_text_lines(&options_path, &lines)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| format!("创建目录失败: {e}"))?;
+    let entries = std::fs::read_dir(src).map_err(|e| format!("读取目录失败: {e}"))?;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if from.is_file() {
+            std::fs::copy(&from, &to).map_err(|e| format!("复制文件失败: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn unique_target(parent: &Path, stem: &str) -> PathBuf {
+    let mut dest = parent.join(stem);
+    let mut suffix = 2;
+    while dest.exists() && suffix < 1000 {
+        dest = parent.join(format!("{stem}_{suffix}"));
+        suffix += 1;
+    }
+    dest
+}
+
+pub fn install_java_resource_pack_file(
+    root: &Path,
+    version_id: &str,
+    file_path: &str,
+    isolation: Option<&str>,
+) -> Result<String, String> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let packs_dir = game_dir.join("resourcepacks");
+    std::fs::create_dir_all(&packs_dir).map_err(|e| format!("创建资源包目录失败: {e}"))?;
+
+    let source = net::absolute_path(Path::new(file_path));
+    if source.is_dir() {
+        let name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "resourcepack".to_string());
+        let dest = unique_target(&packs_dir, &name);
+        copy_dir_recursive(&source, &dest)?;
+        return Ok(format!("已导入资源包文件夹: {}", dest.display()));
+    }
+    if !source.is_file() {
+        return Err(format!("资源包文件不存在: {file_path}"));
+    }
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "resourcepack.zip".to_string());
+    if !name.to_lowercase().ends_with(".zip") {
+        return Err("请选择 .zip 资源包或包含 pack.mcmeta 的文件夹".to_string());
+    }
+    let dest = packs_dir.join(&name);
+    if dest.exists() {
+        return Err(format!("资源包里已经有同名文件: {name}"));
+    }
+    std::fs::copy(&source, &dest).map_err(|e| format!("复制资源包失败: {e}"))?;
+    Ok(format!("已导入资源包: {}", dest.display()))
+}
+
+pub fn get_java_worlds(
+    root: &Path,
+    version_id: &str,
+    isolation: Option<&str>,
+) -> Vec<JavaWorldItem> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let saves_dir = game_dir.join("saves");
+    let Ok(entries) = std::fs::read_dir(&saves_dir) else {
+        return Vec::new();
+    };
+
+    let mut worlds = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("level.dat").is_file() {
+            continue;
+        }
+        let folder = entry.file_name().to_string_lossy().to_string();
+        let name = std::fs::read_to_string(path.join("levelname.txt"))
+            .map(|text| normalize_mod_description(&text))
+            .ok()
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| folder.clone());
+        let meta = entry.metadata().ok();
+        worlds.push(JavaWorldItem {
+            id: folder.clone(),
+            name,
+            folder,
+            path: path.to_string_lossy().to_string(),
+            size: dir_total_size(&path, 0),
+            modified_time: meta
+                .as_ref()
+                .map(file_modified_text)
+                .unwrap_or_else(|| "未知时间".to_string()),
+            icon_data_url: image_file_data_url(&path.join("icon.png")),
+        });
+    }
+
+    worlds.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
+    worlds
+}
+
+pub fn delete_java_world(
+    root: &Path,
+    version_id: &str,
+    folder: &str,
+    isolation: Option<&str>,
+) -> Result<(), String> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let saves_dir = game_dir.join("saves");
+    let target = saves_dir.join(folder);
+    if target.file_name().map(|name| name.to_string_lossy().to_string())
+        != Some(folder.to_string())
+        || !target.is_dir()
+        || !target.join("level.dat").is_file()
+    {
+        return Err(format!("未找到存档: {folder}"));
+    }
+    crate::bedrock::force_remove_dir_all(&target).map_err(|e| format!("删除存档失败: {e}"))
+}
+
+/// Extract a world archive into `dest`, dropping the wrapper folder when the
+/// archive wraps the files in one directory (the shape `.zip` exports use).
+fn extract_world_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("打开存档压缩包失败: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取存档压缩包失败: {e}"))?;
+    let names: Vec<String> = (0..archive.len())
+        .filter_map(|index| archive.by_index(index).ok().map(|entry| entry.name().to_string()))
+        .collect();
+
+    let prefix = names
+        .iter()
+        .find_map(|name| {
+            let lower = name.to_lowercase();
+            if lower == "level.dat" {
+                return Some(String::new());
+            }
+            if lower.ends_with("/level.dat") {
+                let parent = &name[..name.len() - "/level.dat".len()];
+                if !parent.contains('/') {
+                    return Some(format!("{parent}/"));
+                }
+            }
+            None
+        })
+        .ok_or_else(|| "压缩包里没有 level.dat，这不是我的世界存档".to_string())?;
+
+    std::fs::create_dir_all(dest).map_err(|e| format!("创建存档目录失败: {e}"))?;
+    for name in &names {
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let relative = &name[prefix.len()..];
+        if relative.is_empty() || relative.starts_with("__MACOSX/") {
+            continue;
+        }
+        let safe = Path::new(relative)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !safe {
+            return Err("存档压缩包包含非法路径".to_string());
+        }
+        let target = dest.join(relative);
+        if name.ends_with('/') {
+            std::fs::create_dir_all(&target)
+                .map_err(|e| format!("创建存档目录失败: {e}"))?;
+            continue;
+        }
+        let mut entry = archive
+            .by_name(name)
+            .map_err(|e| format!("读取存档文件失败: {e}"))?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建存档目录失败: {e}"))?;
+        }
+        let mut out = std::fs::File::create(&target)
+            .map_err(|e| format!("写入存档文件失败: {e}"))?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = entry
+                .read(&mut buffer)
+                .map_err(|e| format!("读取存档文件失败: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            std::io::Write::write_all(&mut out, &buffer[..read])
+                .map_err(|e| format!("写入存档文件失败: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn install_java_world_file(
+    root: &Path,
+    version_id: &str,
+    file_path: &str,
+    isolation: Option<&str>,
+) -> Result<String, String> {
+    let game_dir = resolve_java_game_dir(root, version_id, isolation);
+    let saves_dir = game_dir.join("saves");
+    std::fs::create_dir_all(&saves_dir).map_err(|e| format!("创建存档目录失败: {e}"))?;
+
+    let source = net::absolute_path(Path::new(file_path));
+    if source.is_dir() {
+        if !source.join("level.dat").is_file() {
+            return Err("所选文件夹里没有 level.dat，请选择存档文件夹本身".to_string());
+        }
+        let name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "world".to_string());
+        let dest = unique_target(&saves_dir, &name);
+        copy_dir_recursive(&source, &dest)?;
+        return Ok(format!("已导入存档: {}", dest.display()));
+    }
+    if !source.is_file() {
+        return Err(format!("存档文件不存在: {file_path}"));
+    }
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "world.zip".to_string());
+    if !name.to_lowercase().ends_with(".zip") {
+        return Err("请选择 .zip 存档或存档文件夹".to_string());
+    }
+    let stem = Path::new(&name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "world".to_string());
+    let dest = unique_target(&saves_dir, &stem);
+    extract_world_zip(&source, &dest)?;
+    Ok(format!("已导入存档: {}", dest.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4231,5 +4964,214 @@ description="A minimap."
         assert!(icon.starts_with("data:image/png;base64,"), "{icon}");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Isolated instances read `versions/<id>`, but turning isolation off moves
+    /// the game directory (packs, saves, screenshots) back to the shared root.
+    #[test]
+    fn game_dir_follows_version_isolation() {
+        let temp = temp_test_dir("oml_test_gamedir");
+        let instance = temp.join("versions").join("1.20.1-fabric");
+        std::fs::create_dir_all(&instance).unwrap();
+        std::fs::write(
+            instance.join("1.20.1-fabric.json"),
+            r#"{"id":"1.20.1-fabric","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient","libraries":[]}"#,
+        )
+        .unwrap();
+        let vanilla = temp.join("versions").join("1.20.1");
+        std::fs::create_dir_all(&vanilla).unwrap();
+        std::fs::write(
+            vanilla.join("1.20.1.json"),
+            r#"{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_java_game_dir(&temp, "1.20.1-fabric", Some("all")),
+            net::absolute_path(&instance)
+        );
+        assert_eq!(
+            resolve_java_game_dir(&temp, "1.20.1-fabric", Some("none")),
+            net::absolute_path(&temp)
+        );
+        // Only modded instances are isolated in "modded" mode.
+        assert_eq!(
+            resolve_java_game_dir(&temp, "1.20.1-fabric", Some("modded")),
+            net::absolute_path(&instance)
+        );
+        assert_eq!(
+            resolve_java_game_dir(&temp, "1.20.1", Some("modded")),
+            net::absolute_path(&temp)
+        );
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Java enables resource packs through `options.txt`; the manager edits that
+    /// list instead of renaming files, and deletion clears the entry too.
+    #[test]
+    fn resource_pack_toggle_edits_options_txt() {
+        let temp = temp_test_dir("oml_test_packs");
+        let instance = temp.join("versions").join("1.20.1-fabric");
+        let pack_dir = instance.join("resourcepacks").join("Cartoon");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::write(
+            pack_dir.join("pack.mcmeta"),
+            r#"{"pack":{"pack_format":15,"description":{"text":"Cartoon","extra":[]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pack_dir.join("pack.png"),
+            [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        )
+        .unwrap();
+        std::fs::write(
+            instance.join("options.txt"),
+            "lang:zh_cn\nfov:0.5\nresourcePacks:[\"vanilla\"]\n",
+        )
+        .unwrap();
+
+        let listed = get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Cartoon");
+        assert_eq!(listed[0].pack_format, Some(15));
+        assert!(!listed[0].enabled);
+        assert!(listed[0]
+            .icon_data_url
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("data:image/png;base64,"));
+
+        // A hand-edited options.txt may list the bare name instead of
+        // `file/<name>`; both mean the same pack.
+        std::fs::write(
+            instance.join("options.txt"),
+            "resourcePacks:[\"vanilla\",\"Cartoon\"]\n",
+        )
+        .unwrap();
+        assert!(get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"))[0].enabled);
+        std::fs::write(
+            instance.join("options.txt"),
+            "lang:zh_cn\nfov:0.5\nresourcePacks:[\"vanilla\"]\n",
+        )
+        .unwrap();
+
+        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", true, Some("all"))
+            .unwrap();
+        let options = std::fs::read_to_string(instance.join("options.txt")).unwrap();
+        assert!(
+            options.contains("resourcePacks:[\"vanilla\",\"file/Cartoon\"]"),
+            "{options}"
+        );
+        // Unrelated options survive the rewrite.
+        assert!(options.contains("lang:zh_cn") && options.contains("fov:0.5"));
+        assert!(get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"))[0].enabled);
+
+        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", false, Some("all"))
+            .unwrap();
+        let options = std::fs::read_to_string(instance.join("options.txt")).unwrap();
+        assert!(options.contains("resourcePacks:[\"vanilla\"]"), "{options}");
+        assert!(!get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"))[0].enabled);
+
+        delete_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", Some("all")).unwrap();
+        assert!(!pack_dir.exists());
+        assert!(get_java_resource_packs(&temp, "1.20.1-fabric", Some("all")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// The language picked in the version settings must be in `options.txt`
+    /// before Java starts: the game only reads `lang:` at start-up.
+    #[test]
+    fn game_language_is_written_into_options_txt() {
+        let temp = temp_test_dir("oml_test_lang");
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(
+            temp.join("options.txt"),
+            "lang:en_us\nfov:0.5\nresourcePacks:[\"vanilla\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(normalize_locale("ZH-CN").as_deref(), Some("zh_cn"));
+        assert_eq!(normalize_locale(" ja_jp ").as_deref(), Some("ja_jp"));
+        assert_eq!(normalize_locale("en").as_deref(), Some("en"));
+        assert_eq!(normalize_locale(""), None);
+        assert_eq!(normalize_locale("not a locale!"), None);
+
+        apply_game_language(&temp, "zh_cn");
+        let options = std::fs::read_to_string(temp.join("options.txt")).unwrap();
+        assert!(options.contains("lang:zh_cn"), "{options}");
+        assert!(!options.contains("lang:en_us"), "{options}");
+        // Only the language changes; every other option is preserved.
+        assert!(options.contains("fov:0.5"), "{options}");
+        assert!(options.contains("resourcePacks:[\"vanilla\"]"), "{options}");
+
+        // A version that was never started has no options.txt yet: the option
+        // is created and nothing else is invented.
+        let fresh = temp.join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        apply_game_language(&fresh, "ja_jp");
+        assert_eq!(
+            std::fs::read_to_string(fresh.join("options.txt"))
+                .unwrap()
+                .trim(),
+            "lang:ja_jp"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// A world zip that wraps everything in one folder (what `.zip` exports
+    /// produce) must land directly in `saves/<name>`, with `level.dat` on top.
+    #[test]
+    fn world_zip_import_strips_wrapper_folder() {
+        use std::io::Write;
+
+        let temp = temp_test_dir("oml_test_worlds");
+        let zip_path = temp.join("Skyblock.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("Skyblock/level.dat", options).unwrap();
+            writer.write_all(b"nbt").unwrap();
+            writer.start_file("Skyblock/levelname.txt", options).unwrap();
+            writer.write_all("空岛生存".as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        install_java_world_file(
+            &temp,
+            "1.20.1",
+            &zip_path.to_string_lossy(),
+            Some("all"),
+        )
+        .unwrap();
+
+        let worlds = get_java_worlds(&temp, "1.20.1", Some("all"));
+        assert_eq!(worlds.len(), 1);
+        assert_eq!(worlds[0].name, "空岛生存");
+        assert!(PathBuf::from(&worlds[0].path).join("level.dat").is_file());
+
+        // Only the save folder itself can be deleted; a case-mismatched or
+        // traversing name is refused instead of removing something else.
+        assert!(delete_java_world(&temp, "1.20.1", "../versions", Some("all")).is_err());
+        delete_java_world(&temp, "1.20.1", &worlds[0].folder, Some("all")).unwrap();
+        assert!(get_java_worlds(&temp, "1.20.1", Some("all")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }

@@ -6,6 +6,7 @@ pub mod loaders;
 pub mod mcmod;
 pub mod minecraft;
 mod net;
+pub mod search_i18n;
 
 use minecraft::{
     InstallProgress, InstallResult, InstalledVersion, LaunchRequest, LaunchSpec, ProgressFn,
@@ -113,6 +114,24 @@ fn default_root(app: &AppHandle) -> Result<PathBuf, String> {
     let root = home.join(".cobble");
     let _ = std::fs::create_dir_all(&root);
     Ok(root)
+}
+
+#[tauri::command]
+fn set_download_preference(
+    source: String,
+    custom_url: Option<String>,
+    threads: Option<u32>,
+) {
+    net::set_download_preference(
+        &source,
+        custom_url.as_deref().unwrap_or(""),
+        threads.map(|value| value as usize),
+    );
+}
+
+#[tauri::command]
+async fn probe_download_sources(custom_url: Option<String>) -> Vec<net::DownloadSourceProbe> {
+    net::probe_download_sources(custom_url.as_deref()).await
 }
 
 #[tauri::command]
@@ -476,6 +495,18 @@ async fn launch_game(
             );
             error
         })?;
+
+    // The language picked in the version settings is read from options.txt at
+    // start-up, so it has to be on disk before the process is spawned.
+    if let Some(code) = minecraft::apply_launch_language(&spec.cwd, request.language.as_deref()) {
+        let _ = app.emit(
+            "game:log",
+            GameLogPayload {
+                stream: "cobble".to_string(),
+                line: format!("已设置游戏语言: {code}"),
+            },
+        );
+    }
 
     let mut command = Command::new(&spec.java);
     command
@@ -1165,6 +1196,163 @@ fn install_java_mod_file(
     minecraft::install_java_mod_file(&p, &version_id, std::path::Path::new(&file_path))
 }
 
+#[tauri::command]
+fn get_java_resource_packs(
+    app: AppHandle,
+    version_id: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<Vec<minecraft::JavaPackItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    Ok(minecraft::get_java_resource_packs(
+        &p,
+        &version_id,
+        isolation.as_deref(),
+    ))
+}
+
+#[tauri::command]
+fn toggle_java_resource_pack(
+    app: AppHandle,
+    version_id: String,
+    file_name: String,
+    enabled: bool,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::toggle_java_resource_pack(
+        &p,
+        &version_id,
+        &file_name,
+        enabled,
+        isolation.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn delete_java_resource_pack(
+    app: AppHandle,
+    version_id: String,
+    file_name: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::delete_java_resource_pack(&p, &version_id, &file_name, isolation.as_deref())
+}
+
+#[tauri::command]
+fn install_java_resource_pack_file(
+    app: AppHandle,
+    version_id: String,
+    file_path: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::install_java_resource_pack_file(
+        &p,
+        &version_id,
+        &file_path,
+        isolation.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn get_java_worlds(
+    app: AppHandle,
+    version_id: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<Vec<minecraft::JavaWorldItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    Ok(minecraft::get_java_worlds(&p, &version_id, isolation.as_deref()))
+}
+
+#[tauri::command]
+fn delete_java_world(
+    app: AppHandle,
+    version_id: String,
+    folder: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::delete_java_world(&p, &version_id, &folder, isolation.as_deref())
+}
+
+#[tauri::command]
+fn install_java_world_file(
+    app: AppHandle,
+    version_id: String,
+    file_path: String,
+    isolation: Option<String>,
+    root: Option<String>,
+) -> Result<String, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    minecraft::install_java_world_file(&p, &version_id, &file_path, isolation.as_deref())
+}
+
+#[tauri::command]
+fn get_bedrock_worlds(
+    app: AppHandle,
+    root: Option<String>,
+) -> Result<Vec<bedrock::BedrockWorldItem>, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    Ok(bedrock::get_bedrock_worlds(&p))
+}
+
+#[tauri::command]
+fn delete_bedrock_world(
+    app: AppHandle,
+    path: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::delete_bedrock_world(&p, &path)
+}
+
+#[tauri::command]
+fn import_bedrock_world_file(
+    app: AppHandle,
+    file_path: String,
+    root: Option<String>,
+) -> Result<bedrock::InstallPackResult, String> {
+    let p = match root {
+        Some(s) => PathBuf::from(s),
+        None => default_root(&app)?,
+    };
+    bedrock::import_bedrock_world_file(&p, &file_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1173,6 +1361,8 @@ pub fn run() {
         .manage(InstallState::default())
         .manage(GameState::default())
         .invoke_handler(tauri::generate_handler![
+            set_download_preference,
+            probe_download_sources,
             get_version_manifest,
             get_betacraft_manifest,
             get_installed_versions,
@@ -1219,6 +1409,16 @@ pub fn run() {
             toggle_java_mod,
             delete_java_mod,
             install_java_mod_file,
+            get_java_resource_packs,
+            toggle_java_resource_pack,
+            delete_java_resource_pack,
+            install_java_resource_pack_file,
+            get_java_worlds,
+            delete_java_world,
+            install_java_world_file,
+            get_bedrock_worlds,
+            delete_bedrock_world,
+            import_bedrock_world_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

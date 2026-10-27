@@ -26,10 +26,12 @@ import {
   UserRound,
 } from "lucide-react";
 import { cn } from "cn";
-import { isDesktop, openExternalUrl } from "../lib/backend";
+import { isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend";
 import { joinPath, shortPath } from "../lib/format";
 import { DEFAULT_ACCENT } from "../lib/theme";
 import type {
+  DownloadSourceId,
+  DownloadSourceProbe,
   JavaInstall,
   LauncherSettings,
   LauncherVisibility,
@@ -124,6 +126,47 @@ function CreditRow({ entry }: { entry: CreditEntry }) {
   );
 }
 
+const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
+  official_ap: "官方 / 亚太 CDN",
+  bmclapi: "BMCLAPI",
+  custom: "自定义镜像",
+};
+
+/** Latency chip shown next to a mirror after probing. */
+function ProbeBadge({ probe, fastest }: { probe?: DownloadSourceProbe; fastest: boolean }) {
+  if (!probe) return null;
+  if (!probe.ok) {
+    return (
+      <span
+        title={probe.error || undefined}
+        className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-destructive/35 bg-destructive/10 px-1.5 py-0.5 font-mono text-[9px] text-destructive"
+      >
+        <span className="size-1.5 rounded-full bg-destructive" />
+        不可用
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "ml-auto inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9px]",
+        fastest
+          ? "border-success/40 bg-success/10 text-success"
+          : "border-border/70 bg-muted/30 text-muted-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          fastest ? "bg-success" : "bg-muted-foreground/60",
+        )}
+      />
+      {fastest ? "最快 " : ""}
+      {probe.latencyMs} ms
+    </span>
+  );
+}
+
 interface SettingsViewProps {
   settings: LauncherSettings;
   onChange: (patch: Partial<LauncherSettings>) => void;
@@ -142,14 +185,16 @@ function SettingsSection({
   icon,
   children,
   actions,
+  className,
 }: {
   title: string;
   icon: ReactNode;
   children: ReactNode;
   actions?: ReactNode;
+  className?: string;
 }) {
   return (
-    <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-sm">
+    <Card className={cn("gap-0 border-border/70 bg-card/55 py-0 shadow-sm", className)}>
       <CardHeader className="border-b border-border/60 px-5 py-3.5">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -254,7 +299,35 @@ export function SettingsView({
   const [scanning, setScanning] = useState(false);
   const [rootDraft, setRootDraft] = useState(settings.gameRoot);
   const [skinCollapsed, setSkinCollapsed] = useState(false);
+  const [sourceProbes, setSourceProbes] = useState<DownloadSourceProbe[] | null>(null);
+  const [probingSources, setProbingSources] = useState(false);
   const cleanName = /^[A-Za-z0-9_]{1,16}$/.test(settings.playerName);
+
+  // Custom mirror latency changes when the URL changes, so drop stale results.
+  useEffect(() => {
+    setSourceProbes(null);
+  }, [settings.customSourceUrl]);
+
+  const probeSources = async () => {
+    setProbingSources(true);
+    try {
+      setSourceProbes(await probeDownloadSources(settings.customSourceUrl || ""));
+    } catch (error) {
+      onNotify("error", "测速失败", String(error));
+    } finally {
+      setProbingSources(false);
+    }
+  };
+
+  const probeFor = (source: DownloadSourceId) =>
+    sourceProbes?.find((probe) => probe.source === source);
+  const fastestProbe =
+    sourceProbes
+      ?.filter((probe) => probe.ok)
+      .reduce<DownloadSourceProbe | null>(
+        (best, probe) => (!best || probe.latencyMs < best.latencyMs ? probe : best),
+        null,
+      ) ?? null;
 
   useEffect(() => {
     setRootDraft(settings.gameRoot);
@@ -1205,6 +1278,18 @@ export function SettingsView({
             <SettingsSection
               title="下载镜像源"
               icon={<Globe className="size-4" />}
+              actions={
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="h-7 gap-1.5 px-2 text-[11px]"
+                  onClick={() => void probeSources()}
+                  disabled={probingSources}
+                >
+                  <RefreshCw className={cn("size-3", probingSources && "animate-spin")} />
+                  {probingSources ? "测速中" : "测速"}
+                </Button>
+              }
             >
               <RadioGroup
                 value={settings.downloadSource || "official_ap"}
@@ -1232,6 +1317,10 @@ export function SettingsView({
                       >
                         非中国大陆
                       </Badge>
+                      <ProbeBadge
+                        probe={probeFor("official_ap")}
+                        fastest={fastestProbe?.source === "official_ap"}
+                      />
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground/80">
                       <span className="rounded bg-muted/50 px-1 py-0.5">香港</span>
@@ -1263,6 +1352,10 @@ export function SettingsView({
                       >
                         中国大陆
                       </Badge>
+                      <ProbeBadge
+                        probe={probeFor("bmclapi")}
+                        fastest={fastestProbe?.source === "bmclapi"}
+                      />
                     </div>
                   </div>
                 </label>
@@ -1277,30 +1370,73 @@ export function SettingsView({
                   )}
                 >
                   <RadioGroupItem value="custom" id="src-custom" className="mt-0.5" />
-                  <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="text-[12px] font-medium text-foreground">
                       自定义镜像源
                     </span>
+                    <ProbeBadge
+                      probe={probeFor("custom")}
+                      fastest={fastestProbe?.source === "custom"}
+                    />
                   </div>
                 </label>
               </RadioGroup>
+
+              {sourceProbes ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/15 px-3 py-2 text-[11px]">
+                  <span className="text-muted-foreground">
+                    {fastestProbe ? (
+                      <>
+                        最快：
+                        <span className="font-medium text-foreground">
+                          {DOWNLOAD_SOURCE_LABELS[fastestProbe.source] ?? fastestProbe.source}
+                        </span>
+                        <span className="ml-1 font-mono text-primary">
+                          {fastestProbe.latencyMs} ms
+                        </span>
+                      </>
+                    ) : (
+                      "所有下载源均不可用，请检查网络或代理"
+                    )}
+                  </span>
+                  {fastestProbe &&
+                  fastestProbe.source !== (settings.downloadSource || "official_ap") ? (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="h-6 px-2 text-[10.5px]"
+                      onClick={() => onChange({ downloadSource: fastestProbe.source })}
+                    >
+                      使用最快源
+                    </Button>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-[10.5px] leading-5 text-muted-foreground/60">
+                  选择只改变优先顺序，失败时会自动回退到其它源；测速会请求各源的版本清单，仅比较首字节延迟。
+                </p>
+              )}
 
               {settings.downloadSource === "custom" ? (
                 <Field label="自定义镜像 URL">
                   <Input
                     value={settings.customSourceUrl || ""}
-                    placeholder="https://..."
+                    placeholder="https://mirror.example.com（BMCLAPI 兼容地址）"
                     spellCheck={false}
                     className="h-8 bg-background/40 font-mono text-[11px]"
                     onChange={(e) => onChange({ customSourceUrl: e.target.value })}
                   />
+                  {settings.customSourceUrl?.trim() &&
+                  !/^https?:\/\//i.test(settings.customSourceUrl.trim()) ? (
+                    <p className="text-[10px] text-destructive">需以 http:// 或 https:// 开头</p>
+                  ) : null}
                 </Field>
               ) : null}
             </SettingsSection>
 
             <SettingsSection
               title="基岩版第三方 API 下载源"
-              icon={<Boxes className="size-4 text-emerald-400" />}
+              icon={<Boxes className="size-4 text-primary" />}
             >
               <RadioGroup
                 value={settings.bedrockApiSource || "endstone"}
@@ -1312,7 +1448,7 @@ export function SettingsView({
                   className={cn(
                     "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
                     (!settings.bedrockApiSource || settings.bedrockApiSource === "endstone")
-                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      ? "border-primary/40 bg-primary/[0.04]"
                       : "border-border/60",
                   )}
                 >
@@ -1320,7 +1456,7 @@ export function SettingsView({
                   <div className="flex-1 text-xs">
                     <div className="flex items-center gap-1.5 font-medium text-foreground">
                       <span>EndstoneMC 全版本 API (推荐)</span>
-                      <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                      <Badge className="h-4 rounded-[4px] border-0 bg-primary/15 px-1.5 text-[9px] font-normal text-primary">
                         智能多 CDN 镜像
                       </Badge>
                     </div>
@@ -1335,7 +1471,7 @@ export function SettingsView({
                   className={cn(
                     "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
                     settings.bedrockApiSource === "mcserverjars"
-                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      ? "border-primary/40 bg-primary/[0.04]"
                       : "border-border/60",
                   )}
                 >
@@ -1343,7 +1479,7 @@ export function SettingsView({
                   <div className="flex-1 text-xs">
                     <div className="flex items-center gap-1.5 font-medium text-foreground">
                       <span>MCServerJars API</span>
-                      <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                      <Badge className="h-4 rounded-[4px] border-0 bg-primary/15 px-1.5 text-[9px] font-normal text-primary">
                         第三方直连 API
                       </Badge>
                     </div>
@@ -1358,7 +1494,7 @@ export function SettingsView({
                   className={cn(
                     "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
                     settings.bedrockApiSource === "azure_mirror"
-                      ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+                      ? "border-primary/40 bg-primary/[0.04]"
                       : "border-border/60",
                   )}
                 >
@@ -1378,6 +1514,7 @@ export function SettingsView({
             <SettingsSection
               title="多线程下载并发"
               icon={<Cpu className="size-4" />}
+              className="lg:col-span-2"
             >
               <div className="space-y-3">
                 <div className="flex items-end justify-between gap-3">
@@ -1417,6 +1554,10 @@ export function SettingsView({
                     </Button>
                   ))}
                 </div>
+
+                <p className="text-[10.5px] leading-5 text-muted-foreground/60">
+                  线程越多分片越细，建议 8–16；网络不稳定或共享带宽时降到 4 更稳。单文件小于 1 MB 时仍走单线程。
+                </p>
               </div>
             </SettingsSection>
           </div>

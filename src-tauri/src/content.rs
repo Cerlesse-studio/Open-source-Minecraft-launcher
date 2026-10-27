@@ -49,6 +49,10 @@ pub struct SearchContentResult {
     pub offset: u32,
     pub limit: u32,
     pub total_hits: u32,
+    /// English keywords substituted for a non-English query, when the search
+    /// actually used them. The UI shows this so the substitution is visible.
+    #[serde(default)]
+    pub translated_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,22 +162,91 @@ pub async fn search_content(
         || game_version.as_deref() == Some("bedrock")
         || game_version.as_deref() == Some("基岩版");
 
+    // The catalogues index English metadata, so `钠` or `機械動力` found nothing.
+    // Search the English keywords first; when even those return nothing the
+    // raw query is retried, because a project can genuinely be titled in
+    // Chinese and the glossary must not hide it.
+    let translated = crate::search_i18n::translate_query(&query);
+    let effective = translated.as_deref().unwrap_or(&query);
+
     if is_bedrock {
         // Bedrock content is browsed through CurseForge, the catalogue
         // BedrockBoot-DM uses: add-ons and texture packs with real download
         // counts, icons and per-file CDN links.
-        return crate::bedrock_store::search_bedrock(
-            &query,
+        let mut result = crate::bedrock_store::search_bedrock(
+            effective,
             &project_type,
             offset,
             limit,
             sort.as_deref(),
         )
         .await
-        .map_err(|e| format!("搜索基岩版资源失败: {e}"));
+        .map_err(|e| format!("搜索基岩版资源失败: {e}"))?;
+
+        if result.total_hits == 0 && translated.is_some() {
+            if let Ok(fallback) = crate::bedrock_store::search_bedrock(
+                &query,
+                &project_type,
+                offset,
+                limit,
+                sort.as_deref(),
+            )
+            .await
+            {
+                if fallback.total_hits > 0 {
+                    return Ok(fallback);
+                }
+            }
+        }
+
+        result.translated_query = translated;
+        return Ok(result);
     }
 
-    let index = match sort.as_deref() {
+    let mut result = search_modrinth(
+        effective,
+        &project_type,
+        game_version.as_deref(),
+        loader.as_deref(),
+        sort.as_deref(),
+        offset,
+        limit,
+    )
+    .await?;
+
+    if result.total_hits == 0 && translated.is_some() {
+        if let Ok(fallback) = search_modrinth(
+            &query,
+            &project_type,
+            game_version.as_deref(),
+            loader.as_deref(),
+            sort.as_deref(),
+            offset,
+            limit,
+        )
+        .await
+        {
+            if fallback.total_hits > 0 {
+                return Ok(fallback);
+            }
+        }
+    }
+
+    result.translated_query = translated;
+    Ok(result)
+}
+
+/// One Modrinth search request for a query that is already in English.
+async fn search_modrinth(
+    query: &str,
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    sort: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> Result<SearchContentResult, String> {
+    let index = match sort {
         Some("relevance") => "relevance",
         Some("newest") => "newest",
         Some("updated") => "updated",
@@ -184,11 +257,11 @@ pub async fn search_content(
     // Project type facet: "project_type:mod" / "project_type:shader" / etc.
     facets.push(vec![format!("project_type:{project_type}")]);
 
-    if let Some(v) = game_version.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
+    if let Some(v) = game_version.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
         facets.push(vec![format!("versions:{v}")]);
     }
 
-    if let Some(l) = loader.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
+    if let Some(l) = loader.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
         facets.push(vec![format!("categories:{}", l.to_lowercase())]);
     }
 
@@ -196,7 +269,7 @@ pub async fn search_content(
 
     let url = format!(
         "https://api.modrinth.com/v2/search?query={}&facets={}&index={}&offset={}&limit={}",
-        urlencoding(&query),
+        urlencoding(query),
         urlencoding(&facets_json),
         index,
         offset,
@@ -235,6 +308,7 @@ pub async fn search_content(
         offset: raw.offset,
         limit: raw.limit,
         total_hits: raw.total_hits,
+        translated_query: None,
     })
 }
 
@@ -597,12 +671,15 @@ pub async fn download_content_file(
 
     let dest = target_dir.join(&filename);
 
-    let bytes = net::download_file_multithreaded(
+    // Mods, resource packs, shaders and data packs share the same download
+    // engine as game files: mirror fallback, the selected source, retries, the
+    // atomic `.part` file and the configured thread count.
+    let bytes = net::download_file_with_mirrors(
         &request.url,
         &dest,
         request.sha1.as_deref(),
         request.size,
-        6,
+        net::download_threads(),
         None,
         None,
     )

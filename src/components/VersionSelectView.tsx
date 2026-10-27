@@ -347,7 +347,7 @@ export function VersionSelectView({
           <h1 className="text-xl font-bold tracking-tight">版本选择</h1>
           <Badge
             variant="outline"
-            className="h-6 border-emerald-500/30 bg-emerald-500/10 px-2 text-xs font-normal text-emerald-400"
+            className="h-6 border-primary/30 bg-primary/10 px-2 text-xs font-normal text-primary"
           >
             Java 版与基岩版全混用
           </Badge>
@@ -439,8 +439,8 @@ export function VersionSelectView({
               </div>
 
               {/* Bedrock Folder */}
-              <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.04] p-2.5">
-                <div className="flex items-center justify-between text-[10px] font-medium text-emerald-400">
+              <div className="rounded-lg border border-primary/25 bg-primary/[0.04] p-2.5">
+                <div className="flex items-center justify-between text-[10px] font-medium text-primary">
                   <span className="flex items-center gap-1.5">
                     <Boxes className="size-3" />
                     基岩版数据目录
@@ -629,7 +629,7 @@ export function VersionSelectView({
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-6 gap-1 px-2 text-[10px] text-emerald-400 hover:bg-emerald-500/10"
+                            className="h-6 gap-1 px-2 text-[10px] text-primary hover:bg-primary/10"
                             onClick={onOpenDownloadPage}
                           >
                             <Download className="size-2.5" />
@@ -660,7 +660,7 @@ export function VersionSelectView({
                       key={`${item.edition}-${item.id}`}
                       className={cn(
                         "flex items-center gap-2 px-3.5 py-3 transition-colors hover:bg-muted/20",
-                        isSelected && (isJava ? "bg-primary/[0.045]" : "bg-emerald-500/[0.045]"),
+                        isSelected && "bg-primary/[0.045]",
                       )}
                     >
                       <button
@@ -696,7 +696,7 @@ export function VersionSelectView({
                                       : item.type === "snapshot"
                                         ? "border-gold/25 bg-gold/10"
                                         : "border-border/70 bg-muted/50"
-                                  : "border-emerald-500/30 bg-emerald-500/10",
+                                  : "border-primary/30 bg-primary/10",
                               )}
                             >
                               <img
@@ -720,7 +720,7 @@ export function VersionSelectView({
                                 ☕ Java 版
                               </Badge>
                             ) : (
-                              <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                              <Badge className="h-4 rounded-[4px] border-0 bg-primary/15 px-1.5 text-[9px] font-normal text-primary">
                                 ☸ 基岩版
                               </Badge>
                             )}
@@ -729,9 +729,7 @@ export function VersionSelectView({
                               <Badge
                                 className={cn(
                                   "h-4 gap-0.5 rounded-[4px] border-0 px-1.5 text-[9px] font-normal",
-                                  isJava
-                                    ? "bg-primary/20 text-primary"
-                                    : "bg-emerald-500/20 text-emerald-400",
+                                  "bg-primary/20 text-primary",
                                 )}
                               >
                                 <Check className="size-2.5" />
@@ -774,7 +772,7 @@ export function VersionSelectView({
                             ) : (
                               <Badge
                                 variant="outline"
-                                className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/5 px-1.5 text-[9px] font-normal text-emerald-400"
+                                className="h-4 rounded-[4px] border-primary/30 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
                               >
                                 {item.isUwp
                                   ? "Windows Store 正版"
@@ -838,10 +836,7 @@ export function VersionSelectView({
 
                         <Button
                           size="sm"
-                          className={cn(
-                            "h-7 gap-1.5 px-2.5 text-[11px]",
-                            !isJava && "bg-emerald-600 hover:bg-emerald-500 text-white",
-                          )}
+                          className="h-7 gap-1.5 px-2.5 text-[11px]"
                           onClick={() => handlePlayItem(item)}
                         >
                           <Play className="size-3 fill-current" />

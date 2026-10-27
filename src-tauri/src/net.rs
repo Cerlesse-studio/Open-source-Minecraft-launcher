@@ -22,6 +22,28 @@ const MAX_RETRIES: u32 = 3;
 
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// Chosen mirror family, optional custom base URL and the thread count used by
+/// downloads that do not carry their own (mods, resource packs, pack archives).
+/// The frontend pushes them down on startup and whenever the setting changes.
+#[derive(Clone)]
+struct DownloadPreference {
+    source: String,
+    custom_url: String,
+    threads: usize,
+}
+
+static DOWNLOAD_PREFERENCE: OnceLock<std::sync::RwLock<DownloadPreference>> = OnceLock::new();
+
+fn preference_lock() -> &'static std::sync::RwLock<DownloadPreference> {
+    DOWNLOAD_PREFERENCE.get_or_init(|| {
+        std::sync::RwLock::new(DownloadPreference {
+            source: "official_ap".to_string(),
+            custom_url: String::new(),
+            threads: 16,
+        })
+    })
+}
+
 pub fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -33,6 +55,173 @@ pub fn client() -> &'static reqwest::Client {
             .build()
             .expect("failed to build http client")
     })
+}
+
+/// `source` is one of `official_ap` / `bmclapi` / `custom`; `custom_url` is the
+/// BMCLAPI-compatible base the user typed in; `threads` is clamped to 1–64.
+pub fn set_download_preference(source: &str, custom_url: &str, threads: Option<usize>) {
+    let mut guard = preference_lock()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.source = source.trim().to_string();
+    guard.custom_url = custom_url.trim().trim_end_matches('/').to_string();
+    if let Some(threads) = threads {
+        guard.threads = threads.clamp(1, 64);
+    }
+}
+
+fn download_preference() -> DownloadPreference {
+    preference_lock()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Thread count content downloads should use when the caller has no own value.
+pub fn download_threads() -> usize {
+    download_preference().threads
+}
+
+fn is_bmclapi(url: &str) -> bool {
+    url.contains("bmclapi2.bangbang93.com") || url.contains("bmclapi.bangbang93.com")
+}
+
+/// Rewrite a BMCLAPI URL onto the user's BMCLAPI-compatible mirror base.
+fn rewrite_to_custom_mirror(url: &str, base: &str) -> Option<String> {
+    if !is_bmclapi(url) {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let mut rewritten = format!("{base}{}", parsed.path());
+    if let Some(query) = parsed.query() {
+        rewritten.push('?');
+        rewritten.push_str(query);
+    }
+    Some(rewritten)
+}
+
+/// Candidate URLs in the order they should be attempted: the chosen source
+/// family first, the rest kept as the automatic 404/offline fallback.
+pub fn preferred_urls(url: &str) -> Vec<String> {
+    let mut chain = vec![url.to_string()];
+    for mirror in get_mirror_urls(url) {
+        if !chain.contains(&mirror) {
+            chain.push(mirror);
+        }
+    }
+
+    let preference = download_preference();
+    let mode = preference.source;
+    let custom_base = preference.custom_url;
+    let mut custom = Vec::new();
+    if !custom_base.is_empty() {
+        for candidate in &chain {
+            if let Some(rewritten) = rewrite_to_custom_mirror(candidate, &custom_base) {
+                if rewritten != *candidate && !custom.contains(&rewritten) {
+                    custom.push(rewritten);
+                }
+            }
+        }
+    }
+
+    let (bmclapi, official): (Vec<String>, Vec<String>) =
+        chain.into_iter().partition(|candidate| is_bmclapi(candidate));
+
+    let mut ordered = match mode.as_str() {
+        "bmclapi" => {
+            let mut list = bmclapi;
+            list.extend(custom);
+            list.extend(official);
+            list
+        }
+        "custom" => {
+            let mut list = custom;
+            list.extend(bmclapi);
+            list.extend(official);
+            list
+        }
+        _ => {
+            let mut list = official;
+            list.extend(bmclapi);
+            list.extend(custom);
+            list
+        }
+    };
+
+    let mut seen: Vec<String> = Vec::new();
+    ordered.retain(|candidate| {
+        if seen.contains(candidate) {
+            false
+        } else {
+            seen.push(candidate.clone());
+            true
+        }
+    });
+    ordered
+}
+
+/// One mirror's reachability and round-trip time, measured against its version
+/// manifest. Serialized in camelCase for the settings page.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadSourceProbe {
+    pub source: String,
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+pub async fn probe_download_sources(custom_url: Option<&str>) -> Vec<DownloadSourceProbe> {
+    const MANIFEST_PATH: &str = "/mc/game/version_manifest_v2.json";
+    let mut targets = vec![
+        (
+            "official_ap",
+            format!("https://piston-meta.mojang.com{MANIFEST_PATH}"),
+        ),
+        (
+            "bmclapi",
+            format!("https://bmclapi2.bangbang93.com{MANIFEST_PATH}"),
+        ),
+    ];
+    let custom_base = custom_url.unwrap_or("").trim().trim_end_matches('/');
+    if !custom_base.is_empty() {
+        targets.push(("custom", format!("{custom_base}{MANIFEST_PATH}")));
+    }
+
+    let probes = targets.into_iter().map(|(source, url)| async move {
+        let started = std::time::Instant::now();
+        let response = client()
+            .get(&url)
+            .timeout(Duration::from_secs(6))
+            .header(RANGE, "bytes=0-1023")
+            .send()
+            .await;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        match response {
+            Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 206 => {
+                DownloadSourceProbe {
+                    source: source.to_string(),
+                    ok: true,
+                    latency_ms,
+                    error: None,
+                }
+            }
+            Ok(resp) => DownloadSourceProbe {
+                source: source.to_string(),
+                ok: false,
+                latency_ms,
+                error: Some(format!("HTTP {}", resp.status())),
+            },
+            Err(err) => DownloadSourceProbe {
+                source: source.to_string(),
+                ok: false,
+                latency_ms,
+                error: Some(describe_error(&err)),
+            },
+        }
+    });
+
+    futures_util::future::join_all(probes).await
 }
 
 /// Render an error together with its full source chain.
@@ -257,12 +446,7 @@ pub async fn download_file_with_mirrors<'a>(
     retry_counter: Option<&AtomicU64>,
     mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let mut candidate_urls = vec![url.to_string()];
-    for mirror in get_mirror_urls(url) {
-        if !candidate_urls.contains(&mirror) {
-            candidate_urls.push(mirror);
-        }
-    }
+    let candidate_urls = preferred_urls(url);
 
     let mut last_error = String::new();
     for candidate in &candidate_urls {
@@ -764,6 +948,33 @@ mod tests {
         assert_eq!(
             mirrors.first().map(String::as_str),
             Some("https://resources.betacraft.uk/f1/f1b527e059bb4abe3aed3acf6b5eb96f40b07f67")
+        );
+    }
+
+    #[test]
+    fn preferred_urls_follow_the_selected_source() {
+        let url = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+
+        set_download_preference("official_ap", "", Some(16));
+        let official = preferred_urls(url);
+        assert_eq!(official.first().map(String::as_str), Some(url));
+
+        set_download_preference("bmclapi", "", None);
+        let bmclapi = preferred_urls(url);
+        assert!(is_bmclapi(&bmclapi[0]));
+
+        set_download_preference("custom", "https://mirror.example.com/", Some(8));
+        let custom = preferred_urls(url);
+        assert_eq!(download_threads(), 8);
+        assert_eq!(
+            custom.first().map(String::as_str),
+            Some("https://mirror.example.com/mc/game/version_manifest_v2.json")
+        );
+
+        set_download_preference("official_ap", "", None);
+        assert_eq!(
+            preferred_urls(url).first().map(String::as_str),
+            Some(url)
         );
     }
 

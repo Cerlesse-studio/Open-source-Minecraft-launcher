@@ -11,8 +11,10 @@ import {
   LayoutDashboard,
   Layers3,
   LoaderCircle,
+  Map as MapIcon,
   MemoryStick,
   Package,
+  Paintbrush,
   Play,
   Plus,
   Power,
@@ -69,6 +71,9 @@ import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { GrassBlock, PageHeader, TypeBadge } from "./ui";
 import { BedrockPackManager } from "./BedrockPackManager";
+import { JavaPackManager } from "./JavaPackManager";
+import { JavaShortcuts } from "./JavaShortcuts";
+import { WorldManager } from "./WorldManager";
 
 interface VersionSettingsViewProps {
   manifest: VersionManifest | null;
@@ -91,7 +96,34 @@ interface VersionSettingsViewProps {
   [key: string]: any;
 }
 
-type Section = "overview" | "launch" | "mods";
+type Section = "overview" | "launch" | "mods" | "packs" | "worlds";
+
+/**
+ * Locales the launcher can force at start-up. The codes are the ones Minecraft
+ * itself writes into `options.txt` (`lang:`), so nothing is translated on the
+ * way to disk.
+ */
+const GAME_LANGUAGES: Array<{ value: string; label: string }> = [
+  { value: "", label: "不修改（跟随游戏内设置）" },
+  { value: "zh_cn", label: "简体中文 · zh_cn" },
+  { value: "zh_tw", label: "繁體中文 · zh_tw" },
+  { value: "en_us", label: "English (US) · en_us" },
+  { value: "en_gb", label: "English (UK) · en_gb" },
+  { value: "ja_jp", label: "日本語 · ja_jp" },
+  { value: "ko_kr", label: "한국어 · ko_kr" },
+  { value: "fr_fr", label: "Français · fr_fr" },
+  { value: "de_de", label: "Deutsch · de_de" },
+  { value: "es_es", label: "Español · es_es" },
+  { value: "pt_br", label: "Português (Brasil) · pt_br" },
+  { value: "it_it", label: "Italiano · it_it" },
+  { value: "ru_ru", label: "Русский · ru_ru" },
+  { value: "uk_ua", label: "Українська · uk_ua" },
+  { value: "pl_pl", label: "Polski · pl_pl" },
+  { value: "tr_tr", label: "Türkçe · tr_tr" },
+  { value: "nl_nl", label: "Nederlands · nl_nl" },
+  { value: "th_th", label: "ไทย · th_th" },
+  { value: "vi_vn", label: "Tiếng Việt · vi_vn" },
+];
 
 function VersionSelect<T extends string>({
   value,
@@ -150,6 +182,7 @@ function LaunchSettingsPanel({
   gameRoot,
   javaInstalls,
   defaultJavaPath,
+  isBedrock = false,
 }: {
   versionId: string;
   settings: VersionLaunchSettings;
@@ -162,6 +195,7 @@ function LaunchSettingsPanel({
   gameRoot: string;
   javaInstalls?: JavaInstall[];
   defaultJavaPath?: string;
+  isBedrock?: boolean;
 }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -458,6 +492,25 @@ function LaunchSettingsPanel({
                 }}
               />
             </div>
+
+            {/* Language applied to options.txt right before the game starts. */}
+            {isBedrock ? null : (
+              <div className="space-y-1.5 md:col-span-2">
+                <Label className="text-[11px] font-normal text-muted-foreground">
+                  游戏语言（启动后生效）
+                </Label>
+                <VersionSelect<string>
+                  value={settings.language || ""}
+                  options={GAME_LANGUAGES}
+                  onChange={(val) => onChange({ language: val })}
+                />
+                <p className="text-[10px] leading-4 text-muted-foreground/80">
+                  启动前写入本版本 <span className="font-mono">options.txt</span> 的{" "}
+                  <span className="font-mono">lang</span> 项，游戏全程以该语言运行；
+                  游戏内再次切换语言会覆盖此设置，下次启动仍按这里生效。
+                </p>
+              </div>
+            )}
 
             {/* Custom JVM Arguments */}
             <div className="space-y-1.5 md:col-span-2">
@@ -883,7 +936,7 @@ function JavaModManagerPanel({
                     <>
                       <span>共 {mods.length} 个模组</span>
                       <span className="text-border">/</span>
-                      <span className="text-emerald-400/90">启用 {enabledCount}</span>
+                      <span className="text-success/90">启用 {enabledCount}</span>
                       {disabledCount > 0 ? (
                         <>
                           <span className="text-border">/</span>
@@ -973,7 +1026,7 @@ function JavaModManagerPanel({
                 className={cn(
                   "rounded-md px-2.5 py-1 text-[11px] transition-colors",
                   statusFilter === "enabled"
-                    ? "bg-emerald-500/15 font-medium text-emerald-400"
+                    ? "bg-success/15 font-medium text-success"
                     : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
                 )}
               >
@@ -1123,7 +1176,7 @@ function JavaModManagerPanel({
                         </Badge>
                       ) : null}
                       {mod.enabled ? (
-                        <Badge className="h-4 border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                        <Badge className="h-4 border-0 bg-success/15 px-1.5 text-[9px] font-normal text-success">
                           已启用
                         </Badge>
                       ) : (
@@ -1514,6 +1567,15 @@ export function VersionSettingsView({
     selectedVersion.toLowerCase().includes("optifine")
   );
 
+  // Resource packs, saves and screenshots all live in the game directory the
+  // version is launched with, which the isolation mode decides.
+  const javaGameDir = useMemo(() => {
+    const isolation = launchSettings.versionIsolation ?? "all";
+    if (isolation === "none") return gameRoot;
+    if (isolation === "modded" && !isModded) return gameRoot;
+    return joinPath(gameRoot, "versions", selectedVersion);
+  }, [gameRoot, launchSettings.versionIsolation, selectedVersion, isModded]);
+
   const [lastAutoLoadedVersion, setLastAutoLoadedVersion] = useState<string | null>(null);
 
   // Open the manager that matches the platform: mods for a modded Java
@@ -1686,6 +1748,46 @@ export function VersionSettingsView({
                   </Badge>
                 ) : null}
               </button>
+              <button
+                type="button"
+                onClick={() => setSection("packs")}
+                aria-current={section === "packs" ? "page" : undefined}
+                className={cn(
+                  "relative flex h-9 items-center gap-2.5 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+                  section === "packs" && "bg-accent/70 text-foreground",
+                )}
+              >
+                {section === "packs" ? (
+                  <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" />
+                ) : null}
+                <Paintbrush
+                  className={cn(
+                    "size-3.5",
+                    section === "packs" ? "text-primary" : "text-muted-foreground/75",
+                  )}
+                />
+                资源包管理
+              </button>
+              <button
+                type="button"
+                onClick={() => setSection("worlds")}
+                aria-current={section === "worlds" ? "page" : undefined}
+                className={cn(
+                  "relative flex h-9 items-center gap-2.5 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+                  section === "worlds" && "bg-accent/70 text-foreground",
+                )}
+              >
+                {section === "worlds" ? (
+                  <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" />
+                ) : null}
+                <MapIcon
+                  className={cn(
+                    "size-3.5",
+                    section === "worlds" ? "text-primary" : "text-muted-foreground/75",
+                  )}
+                />
+                地图管理
+              </button>
             </nav>
 
             <Separator />
@@ -1715,20 +1817,30 @@ export function VersionSettingsView({
 
           <div className="min-w-0">
             {section === "overview" ? (
-              <VersionOverviewPanel
-                versionId={selectedVersion}
-                installedVersion={installedVersion}
-                summary={summary}
-                gameRoot={gameRoot}
-                launchSettings={launchSettings}
-                hasOverride={hasOverride}
-                isModded={isModded}
-                isBedrock={isBedrockVersion}
-                onGoToLaunch={() => setSection("launch")}
-                onGoToMods={() => setSection("mods")}
-                onOpenFolder={onOpenFolder}
-                onLaunch={onLaunch}
-              />
+              <div className="space-y-4">
+                <VersionOverviewPanel
+                  versionId={selectedVersion}
+                  installedVersion={installedVersion}
+                  summary={summary}
+                  gameRoot={gameRoot}
+                  launchSettings={launchSettings}
+                  hasOverride={hasOverride}
+                  isModded={isModded}
+                  isBedrock={isBedrockVersion}
+                  onGoToLaunch={() => setSection("launch")}
+                  onGoToMods={() => setSection("mods")}
+                  onOpenFolder={onOpenFolder}
+                  onLaunch={onLaunch}
+                />
+                {isBedrockVersion ? null : (
+                  <JavaShortcuts
+                    versionId={selectedVersion}
+                    gameRoot={gameRoot}
+                    gameDir={javaGameDir}
+                    onOpenFolder={onOpenFolder}
+                  />
+                )}
+              </div>
             ) : section === "launch" ? (
               <LaunchSettingsPanel
                 versionId={selectedVersion}
@@ -1749,6 +1861,35 @@ export function VersionSettingsView({
                 gameRoot={gameRoot}
                 javaInstalls={javaInstalls}
                 defaultJavaPath={javaPath}
+                isBedrock={isBedrockVersion}
+              />
+            ) : section === "packs" ? (
+              isBedrockVersion ? (
+                <BedrockPackManager
+                  gameRoot={gameRoot}
+                  fixedType="resource"
+                  onOpenFolder={onOpenFolder}
+                  onNotify={onNotify}
+                />
+              ) : (
+                <JavaPackManager
+                  versionId={selectedVersion}
+                  gameRoot={gameRoot}
+                  gameDir={javaGameDir}
+                  isolation={launchSettings.versionIsolation}
+                  onOpenFolder={onOpenFolder}
+                  onNotify={onNotify}
+                />
+              )
+            ) : section === "worlds" ? (
+              <WorldManager
+                edition={isBedrockVersion ? "bedrock" : "java"}
+                versionId={selectedVersion}
+                gameRoot={gameRoot}
+                gameDir={javaGameDir}
+                isolation={launchSettings.versionIsolation}
+                onOpenFolder={onOpenFolder}
+                onNotify={onNotify}
               />
             ) : isBedrockVersion ? (
               <BedrockPackManager

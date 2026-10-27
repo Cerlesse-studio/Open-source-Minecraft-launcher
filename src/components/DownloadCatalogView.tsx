@@ -295,7 +295,7 @@ function VersionGlyph({ type, source }: { type: string; source?: string }) {
 
   if (type === "bedrock") {
     iconSrc = "/icons/minecraft/bedrock.png";
-    borderClass = "border-emerald-500/30 bg-emerald-500/10";
+    borderClass = "border-primary/30 bg-primary/10";
     altText = "基岩版";
   } else if (type === "april_fools") {
     iconSrc = "/icons/minecraft/poisonous_potato.png";
@@ -326,6 +326,40 @@ function VersionGlyph({ type, source }: { type: string; source?: string }) {
       />
     </span>
   );
+}
+
+/**
+ * Version type aliases for the catalogue search.
+ *
+ * The search box used to match version ids only, so a player who typed
+ * 「正式版」or `release` got nothing. Matching aliases (Chinese + English)
+ * resolve to the manifest types the groups already use.
+ */
+const TYPE_SEARCH_ALIASES: Array<{ types: string[]; aliases: string[] }> = [
+  { types: ["release"], aliases: ["正式版", "正式", "稳定版", "穩定版", "release", "stable"] },
+  { types: ["snapshot"], aliases: ["快照", "预览版", "預覽版", "测试版", "測試版", "snapshot", "preview"] },
+  {
+    types: ["april_fools"],
+    aliases: ["愚人节", "愚人節", "愚人节限定", "april fools", "april_fools"],
+  },
+  { types: ["old_beta"], aliases: ["beta", "贝塔版", "貝塔版"] },
+  { types: ["old_alpha"], aliases: ["alpha", "阿尔法版", "阿爾法版"] },
+  {
+    types: ["legacy"],
+    aliases: ["远古", "遠古", "古老", "旧版本", "舊版本", "classic", "indev", "infdev"],
+  },
+];
+
+function aliasTypesFor(needle: string): Set<string> {
+  const types = new Set<string>();
+  if (needle.length < 2) return types;
+  for (const entry of TYPE_SEARCH_ALIASES) {
+    const hit = entry.aliases.some(
+      (alias) => alias === needle || (alias.length >= 2 && alias.includes(needle)),
+    );
+    if (hit) entry.types.forEach((type) => types.add(type));
+  }
+  return types;
 }
 
 let globalBedrockVersionsCache: BedrockVersionItem[] | null = null;
@@ -480,17 +514,14 @@ export function DownloadCatalogView({
     }>
   >(() => {
     const needle = query.trim().toLowerCase();
-    const matches = (version: VersionSummary) =>
-      !needle || version.id.toLowerCase().includes(needle);
-
-    const all = (manifest?.versions ?? []).filter(matches);
-    const filteredBedrock = bedrockVersions.filter(
-      (v) =>
-        !needle ||
-        v.name.toLowerCase().includes(needle) ||
-        v.version.toLowerCase().includes(needle),
-    );
-
+    const aliasTypes = aliasTypesFor(needle);
+    const typeMatches = (type?: string) => {
+      if (aliasTypes.size === 0) return false;
+      const value = (type ?? "").toLowerCase();
+      if (aliasTypes.has(value)) return true;
+      // "legacy" covers every archived type (old_alpha / old_beta / …).
+      return aliasTypes.has("legacy") && value !== "release" && value !== "snapshot";
+    };
     const isAprilFools = (version: VersionSummary) => {
       const vid = version.id.toLowerCase();
       return (
@@ -504,6 +535,37 @@ export function DownloadCatalogView({
         vid === "15w14a"
       );
     };
+
+    const matches = (version: VersionSummary) => {
+      if (!needle) return true;
+      if (version.id.toLowerCase().includes(needle)) return true;
+      const fool = isAprilFools(version);
+      if (aliasTypes.has("april_fools") && fool) return true;
+      // April Fools builds are manifest snapshots, but they belong to their own
+      // group: 「快照」should not flood the list with joke versions.
+      if (fool && aliasTypes.has("snapshot")) return false;
+      return typeMatches(version.type);
+    };
+
+    const all = (manifest?.versions ?? []).filter(matches);
+    const filteredBedrock = bedrockVersions.filter((v) => {
+      if (!needle) return true;
+      if (
+        v.name.toLowerCase().includes(needle) ||
+        v.version.toLowerCase().includes(needle)
+      ) {
+        return true;
+      }
+      const releaseType = (v.releaseType ?? "").toLowerCase();
+      if (aliasTypes.has("release") && releaseType.includes("release")) return true;
+      if (
+        aliasTypes.has("snapshot") &&
+        (releaseType.includes("preview") || releaseType.includes("beta"))
+      ) {
+        return true;
+      }
+      return false;
+    });
 
     const aprilFoolsFromManifest = all.filter(isAprilFools);
     const manifestFoolsIds = new Set(aprilFoolsFromManifest.map((v) => v.id));
@@ -760,8 +822,9 @@ export function DownloadCatalogView({
                   setQuery(event.target.value);
                   setLimits({ release: 10, snapshot: 6, april_fools: 15, legacy: 15, bedrock: 25 });
                 }}
-                placeholder="搜索版本号"
-                aria-label="搜索版本号"
+                placeholder="搜索版本号或类型"
+                aria-label="搜索版本号或类型（正式版、快照、Beta…）"
+                title="支持版本号，以及正式版 / 快照 / 愚人节 / Beta / 远古 / release / snapshot 等类型关键词"
                 spellCheck={false}
                 className="h-8 w-[180px] border-border/80 bg-card/60 pl-8 pr-8 font-mono text-[11px]"
               />
@@ -1060,7 +1123,7 @@ export function DownloadCatalogView({
                           <div className="flex flex-wrap items-center justify-between gap-2.5 bg-muted/20 px-3.5 py-2.5 text-xs">
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="flex items-center gap-1.5 font-medium text-foreground">
-                                <Globe className="size-3.5 text-emerald-400" />
+                                <Globe className="size-3.5 text-primary" />
                                 <span>基岩版下载数据源 (BedrockBoot)：</span>
                               </div>
                               <div className="inline-flex flex-wrap items-center rounded-lg border border-border/70 bg-background/60 p-0.5">
@@ -1073,7 +1136,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                                     bedrockApiSource === "mcappx"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      ? "bg-primary/20 text-primary shadow-xs"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1088,7 +1151,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                                     bedrockApiSource === "bedrockboot_gitee"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      ? "bg-primary/20 text-primary shadow-xs"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1103,7 +1166,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                                     bedrockApiSource === "bmcbl"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      ? "bg-primary/20 text-primary shadow-xs"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1118,7 +1181,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                                     bedrockApiSource === "endstone"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      ? "bg-primary/20 text-primary shadow-xs"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1133,7 +1196,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                                     bedrockApiSource === "azure_mirror"
-                                      ? "bg-emerald-500/20 text-emerald-400 shadow-xs"
+                                      ? "bg-primary/20 text-primary shadow-xs"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1160,7 +1223,7 @@ export function DownloadCatalogView({
                                   className={cn(
                                     "rounded-md px-2 py-0.5 text-[10.5px] transition-colors",
                                     bedrockTypeFilter === "release"
-                                      ? "bg-emerald-500/20 text-emerald-400 font-medium"
+                                      ? "bg-primary/20 text-primary font-medium"
                                       : "text-muted-foreground hover:text-foreground",
                                   )}
                                 >
@@ -1183,7 +1246,7 @@ export function DownloadCatalogView({
 
                             <div className="flex items-center gap-2">
                               {bedrockLoading ? (
-                                <span className="flex items-center gap-1 text-[11px] text-emerald-400">
+                                <span className="flex items-center gap-1 text-[11px] text-primary">
                                   <LoaderCircle className="size-3 animate-spin" />
                                   正在通过第三方 API 同步…
                                 </span>
@@ -1240,13 +1303,13 @@ export function DownloadCatalogView({
                                             <span className="font-mono text-[12px] font-medium text-foreground">
                                               {ver.name}
                                             </span>
-                                            <Badge className="h-4 rounded-[4px] border-0 bg-emerald-500/15 px-1.5 text-[9px] font-normal text-emerald-400">
+                                            <Badge className="h-4 rounded-[4px] border-0 bg-primary/15 px-1.5 text-[9px] font-normal text-primary">
                                               基岩版
                                             </Badge>
                                             {ver.buildType ? (
                                               <Badge
                                                 variant="outline"
-                                                className="h-4 rounded-[4px] border-emerald-500/40 bg-emerald-500/10 px-1.5 font-mono text-[9px] font-semibold text-emerald-300"
+                                                className="h-4 rounded-[4px] border-primary/40 bg-primary/10 px-1.5 font-mono text-[9px] font-semibold text-primary"
                                               >
                                                 {ver.buildType}
                                               </Badge>
@@ -1263,7 +1326,7 @@ export function DownloadCatalogView({
                                             {ver.apiSource ? (
                                               <Badge
                                                 variant="outline"
-                                                className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/5 px-1.5 text-[9px] font-normal text-emerald-400"
+                                                className="h-4 rounded-[4px] border-primary/30 bg-primary/5 px-1.5 text-[9px] font-normal text-primary"
                                               >
                                                 {ver.apiSource}
                                               </Badge>
@@ -1271,7 +1334,7 @@ export function DownloadCatalogView({
                                             {isInstalled ? (
                                               <Badge
                                                 variant="outline"
-                                                className="h-4 rounded-[4px] border-emerald-500/30 bg-emerald-500/10 px-1.5 text-[9px] font-normal text-emerald-400"
+                                                className="h-4 rounded-[4px] border-success/30 bg-success/10 px-1.5 text-[9px] font-normal text-success"
                                               >
                                                 已就绪
                                               </Badge>
@@ -1310,7 +1373,7 @@ export function DownloadCatalogView({
                                             <Button
                                               variant="outline"
                                               size="sm"
-                                              className="h-7 gap-1 border-emerald-500/30 text-xs text-emerald-400 hover:bg-emerald-500/10"
+                                              className="h-7 gap-1 border-primary/30 text-xs text-primary hover:bg-primary/10"
                                               onClick={() => void handleLaunchBedrockInstance(ver.id)}
                                             >
                                               <Play className="size-3 fill-current" />
@@ -1320,7 +1383,7 @@ export function DownloadCatalogView({
                                               <Button
                                                 variant="outline"
                                                 size="sm"
-                                                className="h-7 gap-1 border-emerald-500/40 text-xs text-emerald-300 hover:bg-emerald-500/10"
+                                                className="h-7 gap-1 border-primary/40 text-xs text-primary hover:bg-primary/10"
                                                 onClick={async () => {
                                                   try {
                                                     const s = await autoFixBedrockBootDependencies();
@@ -1337,7 +1400,7 @@ export function DownloadCatalogView({
                                                 }}
                                                 title="自动配置 Xbox 应用与游戏服务运行环境"
                                               >
-                                                <Wrench className="size-3 text-emerald-400" />
+                                                <Wrench className="size-3 text-primary" />
                                                 环境自检与修复
                                               </Button>
                                             ) : null}

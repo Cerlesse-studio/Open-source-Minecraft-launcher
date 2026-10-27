@@ -104,7 +104,7 @@ export function ConsolePanel({
       </div>
 
       <div
-        className="min-h-0 flex-1 overflow-y-auto bg-[#090c0a]/70 py-2 font-mono"
+        className="console-surface min-h-0 flex-1 overflow-y-auto py-2 font-mono"
         ref={bodyRef}
         onScroll={handleScroll}
       >
