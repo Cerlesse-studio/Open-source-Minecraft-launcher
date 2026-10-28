@@ -88,6 +88,7 @@ async fn main() -> Result<(), String> {
         window_size: None,
         jvm_args: None,
         language: None,
+        auth: None,
     };
 
     println!("Preparing Java and launch arguments…");

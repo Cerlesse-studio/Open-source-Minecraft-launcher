@@ -150,7 +150,15 @@ export function Avatar({
   mojangSkinName?: string;
 }) {
   const [customDataUrl, setCustomDataUrl] = useState<string | null>(null);
+  const [remoteSkinFailed, setRemoteSkinFailed] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // A premium skin comes from a third-party render service (minotar), which is
+  // unreachable on some networks. When it fails the procedural head below takes
+  // over, so a signed-in account never ends up with an empty avatar.
+  useEffect(() => {
+    setRemoteSkinFailed(false);
+  }, [skinType, mojangSkinName, name]);
 
   // Load custom skin data URL when skinType is custom and path is provided
   useEffect(() => {
@@ -210,7 +218,7 @@ export function Avatar({
   }
 
   // 2. Mojang Skin Rendering
-  if (skinType === "mojang") {
+  if (skinType === "mojang" && !remoteSkinFailed) {
     const target = mojangSkinName?.trim() || name || "Steve";
     return (
       <img
@@ -219,9 +227,7 @@ export function Avatar({
         width={size}
         height={size}
         className={cn("shrink-0 object-contain [image-rendering:pixelated]", className)}
-        onError={(e) => {
-          (e.currentTarget as HTMLImageElement).style.display = "none";
-        }}
+        onError={() => setRemoteSkinFailed(true)}
       />
     );
   }

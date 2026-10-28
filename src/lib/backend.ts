@@ -32,6 +32,7 @@ import {
   demoSetBedrockPackEnabled,
   demoDeleteBedrockPack,
   demoImportBedrockPackFile,
+  demoEmit,
 } from "./demo";
 import type {
   BedrockContentItem,
@@ -61,10 +62,25 @@ import type {
   JavaPackItem,
   JavaWorldItem,
   LaunchRequest,
+  LanBridgeInfo,
   LoaderSelection,
+  LocalIpv6Address,
+  MinecraftHostStatus,
+  MsAccount,
+  MsDeviceCode,
+  MsLoginPoll,
+  MultiplayerConfig,
+  MultiplayerFirewallStatus,
+  MultiplayerInstallState,
+  MultiplayerLogPayload,
+  MultiplayerPeer,
+  MultiplayerStatus,
+  RoomResources,
+  RoomResourcesInfo,
   SearchContentResult,
   SystemInfo,
   WikiEntry,
+  VersionIsolation,
   VersionLoadersCatalog,
   VersionManifest,
 } from "./types";
@@ -76,6 +92,9 @@ export interface LauncherEventMap {
   "game:log": GameLogPayload;
   "game:status": GameStatus;
   "game:exit": GameExitPayload;
+  "multiplayer:status": MultiplayerStatus;
+  "multiplayer:log": MultiplayerLogPayload;
+  "multiplayer:install": MultiplayerInstallState;
 }
 
 export async function subscribe<K extends keyof LauncherEventMap>(
@@ -171,6 +190,28 @@ export async function getInstalledVersions(root: string): Promise<InstalledVersi
 export async function readSkinAsDataUrl(path: string): Promise<string> {
   if (!isDesktop) return "";
   return invoke<string>("read_skin_as_data_url", { path });
+}
+
+/** Read a custom home page (HTML) from disk; desktop builds only. */
+export async function readHomePageFile(path: string): Promise<string> {
+  if (!isDesktop) {
+    throw new Error("浏览器预览模式无法读取本地文件，请在桌面版中使用。");
+  }
+  return invoke<string>("read_home_page_file", { path });
+}
+
+/**
+ * Fetch an online home page as text. The desktop build asks Rust for it so the
+ * request is not subject to webview CORS; the browser preview falls back to a
+ * plain fetch, which only works for hosts that allow it.
+ */
+export async function fetchHomePage(url: string): Promise<string> {
+  if (isDesktop) return invoke<string>("fetch_home_page", { url });
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.text();
 }
 
 export async function getVersionLoaders(
@@ -363,13 +404,137 @@ export async function cleanDownloadCache(root?: string): Promise<number> {
   return invoke<number>("clean_download_cache", { root });
 }
 
+/**
+ * Whether Bedrock should boot the offline core or the signed-in Store client.
+ * Pushed from the app whenever the account changes so every launch button —
+ * home, version list, download page — agrees without prop plumbing.
+ */
+let bedrockOfflineAccount: boolean | null = null;
+
+export function setBedrockAccountMode(signedIn: boolean): void {
+  bedrockOfflineAccount = !signedIn;
+}
+
 export async function launchBedrock(
   versionId?: string,
   root?: string,
   offlineAccount?: boolean,
 ): Promise<string> {
+  const offline = offlineAccount ?? bedrockOfflineAccount ?? true;
   if (!isDesktop) return demoLaunchBedrock();
-  return invoke<string>("launch_bedrock", { versionId, root, offlineAccount });
+  return invoke<string>("launch_bedrock", { versionId, root, offlineAccount: offline });
+}
+
+// ---------------------------------------------------------------------------
+// Microsoft account
+// ---------------------------------------------------------------------------
+
+/** Preview builds keep the demo account in localStorage so the UI can be
+ * exercised (sign in, both-edition badges, sign out) without a real login. */
+const DEMO_ACCOUNT_KEY = "cobble.demo.account";
+let demoLoginPolls = 0;
+
+function demoMsAccount(): MsAccount | null {
+  try {
+    const raw = localStorage.getItem(DEMO_ACCOUNT_KEY);
+    return raw ? (JSON.parse(raw) as MsAccount) : null;
+  } catch {
+    return null;
+  }
+}
+
+function demoStoreAccount(account: MsAccount | null): void {
+  try {
+    if (account) localStorage.setItem(DEMO_ACCOUNT_KEY, JSON.stringify(account));
+    else localStorage.removeItem(DEMO_ACCOUNT_KEY);
+  } catch {
+    // Preview only; storage may be unavailable.
+  }
+}
+
+/** Step 1: ask Microsoft for the short code the user types in a browser. */
+export async function beginMsLogin(clientId?: string): Promise<MsDeviceCode> {
+  if (!isDesktop) {
+    demoLoginPolls = 0;
+    return {
+      userCode: "DEMO-CODE",
+      deviceCode: "demo-device-code",
+      verificationUri: "https://microsoft.com/link",
+      verificationUriComplete: "https://microsoft.com/link?otc=DEMO-CODE",
+      expiresIn: 900,
+      interval: 5,
+      message: "预览模式：把下面的代码填进微软登录页即可（不会真的登录）。",
+    };
+  }
+  return invoke<MsDeviceCode>("ms_login_begin", { clientId });
+}
+
+/**
+ * Opens the Microsoft sign-in page in a launcher-owned window.
+ *
+ * Unlike the system browser (which is usually already signed into a Microsoft
+ * account and then locks the page to that address), this window runs on the
+ * launcher's own clean session, so the login form always allows typing any
+ * account e-mail.
+ */
+export async function openMsLoginWindow(url: string): Promise<void> {
+  if (!isDesktop) {
+    window.open(url, "ms-login", "popup,width=520,height=720");
+    return;
+  }
+  await invoke("open_login_window", { url });
+}
+
+/** Closes the launcher's sign-in window after a finished or cancelled login. */
+export async function closeMsLoginWindow(): Promise<void> {
+  if (!isDesktop) return;
+  await invoke("close_login_window");
+}
+
+/** Step 2: poll until the user finished; the backend then stores the account. */
+export async function pollMsLogin(
+  deviceCode: string,
+  clientId?: string,
+): Promise<MsLoginPoll> {
+  if (!isDesktop) {
+    demoLoginPolls += 1;
+    if (demoLoginPolls < 3) return { state: "pending", message: null, account: null };
+    const now = Math.floor(Date.now() / 1000);
+    const account: MsAccount = {
+      signedIn: true,
+      clientId: clientId || "demo-client-id",
+      uuid: "069a79f444e94726a5befca90e38aaf5",
+      name: "Steve",
+      skinUrl: null,
+      xuid: "2535410000000000",
+      entitlements: {
+        java: true,
+        bedrock: true,
+        gamePass: false,
+        items: ["product_minecraft", "product_minecraft_bedrock"],
+      },
+      sessionExpiresAt: now + 86_400,
+      refreshExpiresAt: now + 3600,
+      sessionError: null,
+    };
+    demoStoreAccount(account);
+    return { state: "success", message: null, account };
+  }
+  return invoke<MsLoginPoll>("ms_login_poll", { deviceCode, clientId });
+}
+
+/** The stored account, renewed by the backend when its session expired. */
+export async function getMsAccount(clientId?: string): Promise<MsAccount | null> {
+  if (!isDesktop) return demoMsAccount();
+  return invoke<MsAccount | null>("get_ms_account", { clientId });
+}
+
+export async function signOutMsAccount(): Promise<void> {
+  if (!isDesktop) {
+    demoStoreAccount(null);
+    return;
+  }
+  await invoke("ms_sign_out");
 }
 
 export async function getBedrockRuntimeStatus(force = false): Promise<BedrockRuntimeStatus> {
@@ -801,5 +966,398 @@ export async function importBedrockWorldFile(
 ): Promise<InstallPackResult> {
   if (!isDesktop) return demoImportBedrockPackFile(filePath);
   return invoke<InstallPackResult>("import_bedrock_world_file", { filePath, root });
+}
+
+// ---------------------------------------------------------------------------
+// 联机（EasyTier）
+// ---------------------------------------------------------------------------
+
+/** Preview builds keep a plausible node in memory so the page can be walked
+ * through in a browser without downloading anything. */
+let demoMultiplayerStatus: MultiplayerStatus = {
+  installed: false,
+  version: null,
+  running: false,
+  networkName: null,
+  overlayIpv4: null,
+  pid: null,
+  corePath: null,
+};
+const demoLanBridges = new Map<number, LanBridgeInfo>();
+let demoBridgePort = 25570;
+/** 预览环境的成员列表，形状与真实 `easytier-cli` 输出一致。 */
+let demoMultiplayerPeers: MultiplayerPeer[] = [];
+let demoFirewallReady = false;
+let demoRoomVersion = "1.21.8";
+
+/** 预览环境的房间资源快照：形状与房主后端返回的一致。 */
+function demoRoomResources(versionId: string): RoomResources {
+  const item = (name: string, size: number, enabled = true) => ({
+    name,
+    fileName: name,
+    enabled,
+    size,
+  });
+  return {
+    versionId: versionId || demoRoomVersion,
+    mods: [
+      item("Fabric API", 2_214_912),
+      item("Sodium", 1_842_176),
+      item("Lithium", 684_032),
+      item("Iris Shaders", 1_261_568),
+      item("Just Enough Items", 3_108_864),
+      item("Create", 8_912_896),
+      item("AppleSkin", 148_480),
+      item("Old Combat Tweak", 92_160, false),
+    ],
+    shaders: [
+      item("Complementary Reimagined", 12_582_912),
+      item("BSL Shaders", 9_437_184),
+      item("MakeUp Ultra Fast", 4_194_304),
+      item("Sildur's Basic", 2_097_152, false),
+    ],
+    resourcePacks: [
+      item("Faithful 32x", 27_262_976),
+      item("Fresh Animations", 18_874_368),
+      item("Stay True", 6_291_456, false),
+    ],
+    updatedAt: Date.now(),
+  };
+}
+let demoInstallState: MultiplayerInstallState = {
+  active: false,
+  stage: "",
+  detail: "",
+  doneBytes: 0,
+  totalBytes: 0,
+  speedBps: 0,
+  threads: 0,
+  version: "",
+  error: null,
+  startedAt: 0,
+  finishedAt: null,
+  resumable: false,
+  partialBytes: 0,
+};
+
+function demoPushMultiplayerStatus(): void {
+  demoEmit("multiplayer:status", { ...demoMultiplayerStatus });
+}
+
+const demoWait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+export async function getMultiplayerStatus(root?: string): Promise<MultiplayerStatus> {
+  if (!isDesktop) return { ...demoMultiplayerStatus };
+  return invoke<MultiplayerStatus>("get_multiplayer_status", { root: root ?? "" });
+}
+
+export async function getMultiplayerPeers(root?: string): Promise<MultiplayerPeer[]> {
+  if (!isDesktop) return demoMultiplayerPeers.map((peer) => ({ ...peer }));
+  return invoke<MultiplayerPeer[]>("get_multiplayer_peers", { root: root ?? "" });
+}
+
+export async function getMultiplayerFirewallStatus(
+  root: string,
+  listenPort: number,
+  hostPort: number,
+  overlayIpv4: string,
+): Promise<MultiplayerFirewallStatus> {
+  if (!isDesktop) {
+    return {
+      supported: true,
+      ready: demoFirewallReady,
+      detail: demoFirewallReady ? "预览模式：规则已模拟放行" : "",
+    };
+  }
+  return invoke<MultiplayerFirewallStatus>("get_multiplayer_firewall_status", {
+    root,
+    listenPort,
+    hostPort,
+    overlayIpv4,
+  });
+}
+
+export async function setupMultiplayerFirewall(
+  root: string,
+  listenPort: number,
+  hostPort: number,
+  overlayIpv4: string,
+): Promise<MultiplayerFirewallStatus> {
+  if (!isDesktop) {
+    await demoWait(550);
+    demoFirewallReady = true;
+    return { supported: true, ready: true, detail: "预览模式：规则已模拟放行" };
+  }
+  return invoke<MultiplayerFirewallStatus>("setup_multiplayer_firewall", {
+    root,
+    listenPort,
+    hostPort,
+    overlayIpv4,
+  });
+}
+
+export async function getMultiplayerInstallState(
+  root?: string,
+): Promise<MultiplayerInstallState> {
+  if (!isDesktop) return { ...demoInstallState };
+  return invoke<MultiplayerInstallState>("get_multiplayer_install_state", {
+    root: root ?? "",
+  });
+}
+
+export async function installEasytier(root?: string): Promise<MultiplayerStatus> {
+  if (!isDesktop) {
+    demoInstallState = {
+      ...demoInstallState,
+      active: true,
+      stage: "download",
+      detail: "正在下载 EasyTier v2.6.4（预览）",
+      doneBytes: 0,
+      totalBytes: 0,
+      speedBps: 0,
+      threads: 16,
+      version: "2.6.4",
+      error: null,
+      startedAt: Date.now(),
+      finishedAt: null,
+      resumable: true,
+      partialBytes: 0,
+    };
+    demoEmit("multiplayer:install", { ...demoInstallState });
+    await demoWait(900);
+    demoInstallState = {
+      ...demoInstallState,
+      active: false,
+      stage: "done",
+      detail: "EasyTier v2.6.4 已就绪",
+      doneBytes: 1,
+      totalBytes: 1,
+      speedBps: 0,
+      finishedAt: Date.now(),
+      resumable: false,
+      partialBytes: 0,
+    };
+    demoEmit("multiplayer:install", { ...demoInstallState });
+    demoMultiplayerStatus = {
+      ...demoMultiplayerStatus,
+      installed: true,
+      version: "v2.6.4",
+      corePath: "C:\\demo\\easytier\\easytier-core.exe",
+    };
+    demoPushMultiplayerStatus();
+    return { ...demoMultiplayerStatus };
+  }
+  return invoke<MultiplayerStatus>("install_easytier", { root: root ?? "" });
+}
+
+export async function startMultiplayer(
+  root: string,
+  config: MultiplayerConfig,
+): Promise<MultiplayerStatus> {
+  if (!isDesktop) {
+    demoMultiplayerStatus = {
+      ...demoMultiplayerStatus,
+      running: true,
+      networkName: config.networkName,
+      overlayIpv4: config.overlayIpv4,
+      pid: 4212,
+    };
+    demoEmit("multiplayer:log", {
+      stream: "cobble",
+      line: `启动 EasyTier（模拟）· 虚拟地址 ${config.overlayIpv4}`,
+    });
+    demoMultiplayerPeers =
+      config.peers.length > 0
+        ? [
+            {
+              hostname: "Cobble-Guest",
+              ipv4: config.overlayIpv4,
+              latencyMs: 0,
+              cost: "local",
+              tunnel: "udp",
+              isSelf: true,
+            },
+            {
+              hostname: "MCTier-Host",
+              ipv4: config.hostIpv4 || "10.126.126.5",
+              latencyMs: 12,
+              cost: "p2p",
+              tunnel: "udp",
+              isSelf: false,
+            },
+          ]
+        : [
+            {
+              hostname: "Cobble-Host",
+              ipv4: config.overlayIpv4,
+              latencyMs: 0,
+              cost: "local",
+              tunnel: "udp",
+              isSelf: true,
+            },
+            {
+              hostname: "MCTier-Studio",
+              ipv4: "10.126.126.7",
+              latencyMs: 18,
+              cost: "p2p",
+              tunnel: "udp",
+              isSelf: false,
+            },
+          ];
+    demoPushMultiplayerStatus();
+    return { ...demoMultiplayerStatus };
+  }
+  return invoke<MultiplayerStatus>("start_multiplayer", { root, config });
+}
+
+/** 房主启动只读资源清单服务；重复调用会复用同一个端口。 */
+export async function startRoomResources(
+  root: string,
+  versionId: string,
+  isolation: VersionIsolation,
+  secret: string,
+  token: string,
+  port: number,
+): Promise<RoomResourcesInfo> {
+  if (!isDesktop) {
+    await demoWait(320);
+    demoRoomVersion = versionId || demoRoomVersion;
+    return {
+      port: 25670,
+      token: token || "demo-room-resource-token",
+      resources: demoRoomResources(demoRoomVersion),
+    };
+  }
+  return invoke<RoomResourcesInfo>("start_room_resources", {
+    root,
+    versionId,
+    isolation,
+    secret,
+    token,
+    port,
+  });
+}
+
+/** 访客通过虚拟网络读取房主的资源清单。 */
+export async function fetchRoomResources(
+  host: string,
+  port: number,
+  token: string,
+): Promise<RoomResources> {
+  if (!isDesktop) {
+    await demoWait(420);
+    return demoRoomResources(demoRoomVersion);
+  }
+  return invoke<RoomResources>("fetch_room_resources", { host, port, token });
+}
+
+export async function stopMultiplayer(root?: string): Promise<MultiplayerStatus> {
+  if (!isDesktop) {
+    demoMultiplayerStatus = {
+      ...demoMultiplayerStatus,
+      running: false,
+      networkName: null,
+      overlayIpv4: null,
+      pid: null,
+    };
+    demoLanBridges.clear();
+    demoMultiplayerPeers = [];
+    demoEmit("multiplayer:log", { stream: "cobble", line: "EasyTier 已停止（模拟）" });
+    demoPushMultiplayerStatus();
+    return { ...demoMultiplayerStatus };
+  }
+  return invoke<MultiplayerStatus>("stop_multiplayer", { root: root ?? "" });
+}
+
+export async function getLocalIpv6Addresses(): Promise<LocalIpv6Address[]> {
+  if (!isDesktop) {
+    return [
+      { address: "240e:3b5:7a2c:1f60:8d21:44c7:1b0a:9f3e", interface: "WLAN", global: true, temporary: false },
+      { address: "240e:3b5:7a2c:1f60:1c2a:9b3e:57d0:4a11", interface: "WLAN", global: true, temporary: true },
+      { address: "fd7a:115c:a1e0::1", interface: "Tailscale", global: false, temporary: false },
+    ];
+  }
+  return invoke<LocalIpv6Address[]>("get_local_ipv6_addresses");
+}
+
+/** 直接探测房主的 EasyTier 监听端口，不依赖缓存的成员路由。 */
+export async function probeMultiplayerEndpoint(peer: string): Promise<boolean | null> {
+  if (!isDesktop) {
+    await demoWait(180);
+    return peer.trim() ? true : null;
+  }
+  return invoke<boolean | null>("probe_multiplayer_endpoint", { peer });
+}
+
+/** 读取本次启动的 Minecraft 日志里「对局域网开放」的端口。 */
+export async function readMinecraftLanPort(
+  root: string,
+  versionId: string,
+  isolation?: VersionIsolation,
+): Promise<number | null> {
+  if (!isDesktop) return null;
+  return invoke<number | null>("read_minecraft_lan_port", {
+    root,
+    versionId,
+    isolation: isolation ?? null,
+  });
+}
+
+export async function probeMinecraftHost(
+  host: string,
+  port: number,
+): Promise<MinecraftHostStatus> {
+  if (!isDesktop) {
+    await demoWait(420);
+    if (!host.trim()) {
+      return {
+        ok: false,
+        motd: "",
+        version: "",
+        online: 0,
+        max: 0,
+        latencyMs: 0,
+        error: "地址不能为空",
+      };
+    }
+    return {
+      ok: true,
+      motd: "好友的生存世界",
+      version: "1.21.8",
+      online: 2,
+      max: 8,
+      latencyMs: 38,
+      error: null,
+    };
+  }
+  return invoke<MinecraftHostStatus>("probe_minecraft_host", { host, port });
+}
+
+export async function startLanBridge(
+  host: string,
+  port: number,
+  motd?: string,
+): Promise<LanBridgeInfo> {
+  if (!isDesktop) {
+    demoBridgePort += 1;
+    const info: LanBridgeInfo = {
+      host,
+      port,
+      localPort: demoBridgePort,
+      connectAddress: `127.0.0.1:${demoBridgePort}`,
+    };
+    demoLanBridges.set(info.localPort, info);
+    demoEmit("multiplayer:log", {
+      stream: "cobble",
+      line: `已在局域网广播 ${host}:${port}（模拟）`,
+    });
+    return info;
+  }
+  return invoke<LanBridgeInfo>("start_lan_bridge", { host, port, motd });
+}
+
+export async function stopLanBridge(localPort: number): Promise<boolean> {
+  if (!isDesktop) return demoLanBridges.delete(localPort);
+  return invoke<boolean>("stop_lan_bridge", { localPort });
 }
 

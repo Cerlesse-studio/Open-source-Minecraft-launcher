@@ -13,6 +13,7 @@ import {
   Gauge,
   HardDriveDownload,
   LoaderCircle,
+  Network,
   Pause,
   Play,
   RotateCcw,
@@ -38,6 +39,7 @@ import {
 } from "../lib/format";
 import type {
   ActiveDownloadTask,
+  BackgroundDownloadTask,
   DownloadHistoryRecord,
   InstallProgress,
   InstalledVersion,
@@ -90,6 +92,9 @@ interface DownloadsViewProps {
   onCancelInstall?: () => void;
   onResumeInstall?: (record: DownloadHistoryRecord) => void;
   onRemoveQueueItem?: (index: number) => void;
+  /** 内核、组件这类不依赖版本安装流程的后台下载任务。 */
+  backgroundTasks?: BackgroundDownloadTask[];
+  onRetryBackgroundTask?: (id: string) => void;
 }
 
 const THREAD_PRESETS = [4, 8, 16, 32, 64];
@@ -352,6 +357,8 @@ export function DownloadsView({
   onCancelInstall,
   onResumeInstall,
   onRemoveQueueItem,
+  backgroundTasks = [],
+  onRetryBackgroundTask,
 }: DownloadsViewProps) {
   const [activeTab, setActiveTab] = useState<ListTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -389,12 +396,45 @@ export function DownloadsView({
   }, [activeProgress, downloadedBytes, totalBytes]);
 
   // Tab Counts
-  const activeCount = isDownloading ? 1 : 0;
+  const runningBackground = backgroundTasks.filter((task) => task.status === "running");
+  const pausedBackground = backgroundTasks.filter((task) => task.status === "paused");
+  const finishedBackground = backgroundTasks.filter(
+    (task) => task.status === "done" || task.status === "error",
+  );
+  const activeCount = (isDownloading ? 1 : 0) + runningBackground.length;
   const queuedCount = installQueue.length;
-  const pausedCount = history.filter((h) => h.status === "paused").length;
-  const completedCount = history.filter((h) => h.status === "completed").length;
-  const failedCount = history.filter((h) => h.status === "failed").length;
-  const totalCount = activeCount + queuedCount + history.length;
+  const pausedCount =
+    history.filter((h) => h.status === "paused").length + pausedBackground.length;
+  const completedCount =
+    history.filter((h) => h.status === "completed").length +
+    finishedBackground.filter((task) => task.status === "done").length;
+  const failedCount =
+    history.filter((h) => h.status === "failed").length +
+    finishedBackground.filter((task) => task.status === "error").length;
+  const totalCount =
+    activeCount + queuedCount + history.length + finishedBackground.length + pausedBackground.length;
+
+  const visibleBackgroundTasks = useMemo(() => {
+    let list = backgroundTasks;
+    if (activeTab === "active") {
+      list = list.filter((task) => task.status === "running");
+    } else if (activeTab === "completed") {
+      list = list.filter((task) => task.status === "done");
+    } else if (activeTab === "failed") {
+      list = list.filter((task) => task.status === "error");
+    } else if (activeTab === "paused") {
+      list = list.filter((task) => task.status === "paused");
+    } else if (activeTab === "queued") {
+      return [];
+    }
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return list;
+    return list.filter(
+      (task) =>
+        task.title.toLowerCase().includes(query) ||
+        "easytier 内核 easy-tier core".includes(query),
+    );
+  }, [backgroundTasks, activeTab, searchQuery]);
 
   // Filter history
   const filteredHistory = useMemo(() => {
@@ -429,7 +469,11 @@ export function DownloadsView({
       q.versionId.toLowerCase().includes(searchQuery.trim().toLowerCase())
     );
 
-  const isListEmpty = !showActiveRow && (!showQueuedRows || showQueuedRows.length === 0) && filteredHistory.length === 0;
+  const isListEmpty =
+    !showActiveRow &&
+    (!showQueuedRows || showQueuedRows.length === 0) &&
+    visibleBackgroundTasks.length === 0 &&
+    filteredHistory.length === 0;
 
   return (
     <div className="space-y-4">
@@ -473,16 +517,35 @@ export function DownloadsView({
             </Button>
 
             {history.length > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 px-2.5 text-[11.5px] text-muted-foreground hover:text-destructive"
-                onClick={() => setConfirmClearHistory(true)}
-                title="清空所有已完成与失败记录，支持深度清理残留缓存"
-              >
-                <Trash2 className="size-3.5" />
-                <span>清空记录</span>
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1.5 px-2.5 text-[11.5px] text-muted-foreground hover:text-destructive"
+                  onClick={() => setConfirmClearHistory(true)}
+                  title="清空所有已完成与失败记录，支持深度清理残留缓存"
+                >
+                  <Trash2 className="size-3.5" />
+                  <span>清空记录</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1.5 px-2.5 text-[11.5px] text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    if (window.confirm("确定要清理缓存和日志吗？")) {
+                      cleanDownloadCache(gameRoot).then(() => {
+                        onNotify?.("success", "缓存已清理", "下载缓存和日志已清理完成。");
+                      });
+                    }
+                  }
+                }
+                  title="清理下载缓存和日志"
+                >
+                  <LoaderCircle className="size-3.5" />
+                  <span>清理缓存和日志</span>
+                </Button>
+              </div>
             ) : null}
           </div>
         }
@@ -1053,6 +1116,180 @@ export function DownloadsView({
           </Card>
         ) : null}
 
+        {/* 内核 / 组件类后台任务（不跟随版本安装流程） */}
+        {visibleBackgroundTasks.map((task) => {
+          const running = task.status === "running";
+          const failed = task.status === "error";
+          const paused = task.status === "paused";
+          const percent =
+            task.totalBytes > 0
+              ? Math.max(
+                  0,
+                  Math.min(100, Math.round((task.doneBytes / task.totalBytes) * 100)),
+                )
+              : failed
+                ? 0
+                : running || paused
+                  ? null
+                  : 100;
+          const partialBytes = Math.max(task.partialBytes, task.doneBytes);
+
+          return (
+            <Card
+              key={task.id}
+              className={cn(
+                "border-border/60 bg-card/45 p-4 transition-colors hover:border-border hover:bg-card/70",
+                running && "border-primary/40 bg-primary/[0.02]",
+                paused && "border-amber-500/30 bg-amber-500/[0.02]",
+                failed && "border-destructive/30 bg-destructive/[0.02]",
+              )}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span
+                    className={cn(
+                      "flex size-9 shrink-0 items-center justify-center rounded-lg border",
+                      failed
+                        ? "border-destructive/30 bg-destructive/10 text-destructive"
+                        : paused
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                          : "border-primary/30 bg-primary/10 text-primary",
+                    )}
+                  >
+                    {running ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : failed ? (
+                      <XCircle className="size-4" />
+                    ) : paused ? (
+                      <Pause className="size-4 fill-current" />
+                    ) : (
+                      <CheckCircle2 className="size-4" />
+                    )}
+                  </span>
+
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h4 className="truncate text-[13.5px] font-medium text-foreground">
+                        {task.title}
+                      </h4>
+                      <Badge
+                        variant="outline"
+                        className="h-4.5 shrink-0 gap-1 border-border/70 bg-muted/30 px-1.5 text-[9.5px] font-normal text-muted-foreground"
+                      >
+                        <Network className="size-2.5" />
+                        {task.version ? `v${task.version}` : "内核组件"}
+                      </Badge>
+                      {running ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4.5 shrink-0 border-primary/30 bg-primary/10 px-1.5 text-[9.5px] font-normal text-primary"
+                        >
+                          <LoaderCircle className="mr-0.5 size-2.5 animate-spin" />
+                          下载中
+                        </Badge>
+                      ) : failed ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4.5 shrink-0 border-destructive/30 bg-destructive/10 px-1.5 text-[9.5px] font-normal text-destructive"
+                        >
+                          下载失败
+                        </Badge>
+                      ) : paused ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4.5 shrink-0 border-amber-500/40 bg-amber-500/15 px-1.5 text-[9.5px] font-normal text-amber-400"
+                        >
+                          <Pause className="mr-1 size-2 fill-current" />
+                          已中断
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="h-4.5 shrink-0 border-primary/30 bg-primary/10 px-1.5 text-[9.5px] font-normal text-primary"
+                        >
+                          <Check className="mr-0.5 size-2.5" />
+                          已就绪
+                        </Badge>
+                      )}
+                    </div>
+
+                    <p className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
+                      <span className="truncate">{task.detail || "等待开始"}</span>
+                      <span>·</span>
+                      <span>{task.threads} 线程</span>
+                      {task.totalBytes > 0 ? (
+                        <>
+                          <span>·</span>
+                          <span>
+                            {formatBytes(task.doneBytes)} / {formatBytes(task.totalBytes)}
+                          </span>
+                        </>
+                      ) : partialBytes > 0 ? (
+                        <>
+                          <span>·</span>
+                          <span className="text-amber-400">
+                            已下载 {formatBytes(partialBytes)}
+                            {task.resumable ? "，可继续" : ""}
+                          </span>
+                        </>
+                      ) : null}
+                    </p>
+
+                    {percent !== null ? (
+                      <div className="mt-2 w-full max-w-sm space-y-1">
+                        <Progress
+                          value={percent}
+                          className={cn(
+                            "h-1 rounded-sm",
+                            failed
+                              ? "bg-destructive/15 [&_[data-slot=progress-indicator]]:bg-destructive"
+                              : "bg-primary/15",
+                          )}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {running ? (
+                    <div className="text-right">
+                      <p className="font-mono text-[12px] font-semibold text-foreground">
+                        {formatSpeed(task.speedBps)}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground">
+                        {percent !== null ? `${percent}%` : "分片并行拉取"}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {(failed || paused) && onRetryBackgroundTask ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={cn(
+                        "h-7.5 gap-1.5 px-2.5 text-[11px]",
+                        paused && task.resumable
+                          ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                          : "border-border/80",
+                      )}
+                      onClick={() => onRetryBackgroundTask(task.id)}
+                      title={paused && task.resumable ? "从断点继续下载" : "重新下载并安装"}
+                    >
+                      {paused && task.resumable ? (
+                        <Play className="size-3 fill-current" />
+                      ) : (
+                        <RotateCcw className="size-3" />
+                      )}
+                      <span>{paused && task.resumable ? "继续下载" : "重试"}</span>
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+
         {/* 2. Queued Tasks */}
         {showQueuedRows &&
           showQueuedRows.map((q, idx) => (
@@ -1325,7 +1562,7 @@ export function DownloadsView({
             <p className="mt-1 max-w-md text-[11.5px] leading-5 text-muted-foreground">
               {searchQuery
                 ? `未找到与 “${searchQuery}” 相关的版本记录，请尝试其他关键词。`
-                : "你可以随时前往版本下载页面，选择 Java 版或基岩版开始极速多线程下载。"}
+                : "版本、内核与组件的下载任务都会显示在这里，可随时前往版本下载页面新建任务。"}
             </p>
             <div className="mt-5 flex items-center gap-2">
               <Button

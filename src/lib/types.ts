@@ -353,6 +353,60 @@ export interface LaunchRequest {
   jvmArgs?: string | null;
   /** Locale such as `zh_cn`; the game starts in this language. */
   language?: string | null;
+  /** Microsoft account session; omitted for offline accounts. */
+  auth?: LaunchAuth | null;
+}
+
+/** Credentials the game receives when the player signed in with a real account. */
+export interface LaunchAuth {
+  accessToken: string;
+  /** Profile UUID from Mojang. */
+  uuid: string;
+  /** Profile name — the game rejects a session token paired with another name. */
+  name: string;
+  xuid?: string | null;
+  clientId?: string | null;
+}
+
+/** What one Microsoft sign-in grants, for both editions at once. */
+export interface MsEntitlements {
+  java: boolean;
+  bedrock: boolean;
+  gamePass: boolean;
+  items: string[];
+}
+
+export interface MsAccount {
+  signedIn: boolean;
+  clientId: string;
+  uuid: string;
+  name: string;
+  skinUrl: string | null;
+  xuid: string;
+  entitlements: MsEntitlements;
+  /** Unix seconds; the Java session must still be valid when the game starts. */
+  sessionExpiresAt: number;
+  refreshExpiresAt: number;
+  /** Set when the stored session could not be renewed. */
+  sessionError: string | null;
+}
+
+/** One pending Microsoft device-code login. */
+export interface MsDeviceCode {
+  userCode: string;
+  deviceCode: string;
+  verificationUri: string;
+  /** Verification link with the code already filled in, when Microsoft sends one. */
+  verificationUriComplete?: string | null;
+  expiresIn: number;
+  interval: number;
+  message: string;
+}
+
+export interface MsLoginPoll {
+  state: "pending" | "slow_down" | "success";
+  message: string | null;
+  account: MsAccount | null;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
@@ -366,6 +420,12 @@ export interface DownloadSourceProbe {
 }
 
 export type ThemeMode = "dark" | "light" | "system";
+/**
+ * What the home page shows next to the launch panel: the built-in news feed,
+ * an empty page, a local HTML file the player maintains, or a remote HTML page
+ * that can refresh itself.
+ */
+export type HomePageMode = "preset" | "blank" | "local" | "online";
 /** `default` keeps the flat theme backdrop, `custom` paints one image. */
 export type BackgroundType = "default" | "custom";
 export type LauncherFont = "default" | "pixel" | "system" | "serif";
@@ -389,6 +449,8 @@ export interface LauncherSettings {
   offlineSkinModel: OfflineSkinModel;
   customSkinPath?: string;
   mojangSkinName?: string;
+  /** Azure application id for Microsoft login; empty uses the built-in one. */
+  msClientId?: string;
   bedrockApiSource?: "endstone" | "mcserverjars" | "azure_mirror";
   versionIsolation: VersionIsolation;
   windowTitle: string;
@@ -409,6 +471,14 @@ export interface LauncherSettings {
   enableAnimation: boolean;
   showWorldGrid: boolean;
   customSlogan: string;
+  /** Custom home page source; `preset` keeps the built-in news panel. */
+  homePageMode: HomePageMode;
+  /** Local HTML file shown when `homePageMode` is `local`. */
+  homePageLocalPath: string;
+  /** Remote HTML address shown when `homePageMode` is `online`. */
+  homePageUrl: string;
+  /** Auto-refresh interval for the online home page in minutes; 0 is manual. */
+  homePageRefreshMinutes: number;
   fontFamily: LauncherFont;
   fontWeight: LauncherFontWeight;
   letterSpacing: LauncherLetterSpacing;
@@ -420,6 +490,7 @@ export interface LauncherSettings {
 
 export type ViewId =
   | "home"
+  | "multiplayer"
   | "version-select"
   | "download"
   | "version-install"
@@ -544,6 +615,163 @@ export interface BedrockPackItem {
   /** Which data folder this copy lives in: portable, GDK or UWP. */
   location: string;
   locationPath: string;
+}
+
+// ---------------------------------------------------------------------------
+// 联机（EasyTier 内核）
+// ---------------------------------------------------------------------------
+
+/** Everything the 联机 page needs to know about the local EasyTier node. */
+export interface MultiplayerStatus {
+  installed: boolean;
+  version: string | null;
+  running: boolean;
+  networkName: string | null;
+  overlayIpv4: string | null;
+  pid: number | null;
+  corePath: string | null;
+}
+
+/** Windows Firewall state for the EasyTier listener and the overlay game port. */
+export interface MultiplayerFirewallStatus {
+  /** Windows-only automation; other systems show the manual port hint. */
+  supported: boolean;
+  /** Our inbound rules exist, match the current ports, and the firewall is on. */
+  ready: boolean;
+  /** Human-readable reason when something could not be checked or applied. */
+  detail: string;
+}
+
+/** One device EasyTier reports as connected to the room. */
+export interface MultiplayerPeer {
+  /** EasyTier hostname, normally the other machine's computer name. */
+  hostname: string;
+  /** Overlay IPv4 inside the virtual network. */
+  ipv4: string;
+  latencyMs: number;
+  /** `p2p` / `relay` / `local`; empty when the CLI does not report it. */
+  cost: string;
+  /** `udp` / `tcp` / `wg`; empty when unknown. */
+  tunnel: string;
+  /** True for this machine's own node. */
+  isSelf: boolean;
+}
+
+/** The saved shape of the local EasyTier node. */
+export interface MultiplayerConfig {
+  networkName: string;
+  networkSecret: string;
+  /** This machine's overlay IPv4 inside the virtual network. */
+  overlayIpv4: string;
+  /** Transport addresses of other nodes, e.g. `tcp://[240e:…]:11010`. */
+  peers: string[];
+  listenPort: number;
+  /** Port from Minecraft's "Open to LAN" chat line, written into the share code. */
+  hostPort: number;
+  /** Installed version the host opened; all members see its resource list. */
+  hostVersion: string;
+  /** Overlay IPv4 of the host while this machine is a guest; empty when hosting. */
+  hostIpv4: string;
+  /** Guest bandwidth cap the host sets, in bytes per second; 0 means unlimited. */
+  recvBpsLimit: number;
+  /** Host's local HTTP port that serves the read-only room resource list. */
+  resourcePort: number;
+  /** Token that authorises the room resource endpoint. */
+  resourceToken: string;
+}
+
+/** One mod, shader pack, or resource pack shown in a room. */
+export interface RoomResourceItem {
+  name: string;
+  fileName: string;
+  enabled: boolean;
+  size: number;
+}
+
+/** A read-only snapshot of the host version's content. */
+export interface RoomResources {
+  versionId: string;
+  mods: RoomResourceItem[];
+  shaders: RoomResourceItem[];
+  resourcePacks: RoomResourceItem[];
+  updatedAt: number;
+}
+
+export interface RoomResourcesInfo {
+  port: number;
+  token: string;
+  resources: RoomResources;
+}
+
+export interface LocalIpv6Address {
+  address: string;
+  interface: string;
+  /** Global unicast (`2000::/3`): the only kind reachable from the internet. */
+  global: boolean;
+  /** Privacy-extension address that rotates; poor choice for a share code. */
+  temporary: boolean;
+}
+
+/** Result of a Minecraft server-list ping over the virtual network. */
+export interface MinecraftHostStatus {
+  ok: boolean;
+  motd: string;
+  version: string;
+  online: number;
+  max: number;
+  latencyMs: number;
+  error?: string | null;
+}
+
+/** A remote world proxied onto this machine's LAN list. */
+export interface LanBridgeInfo {
+  host: string;
+  port: number;
+  localPort: number;
+  connectAddress: string;
+}
+
+/** Backend-tracked EasyTier install task, independent of the visible page. */
+export interface MultiplayerInstallState {
+  active: boolean;
+  stage: string;
+  detail: string;
+  doneBytes: number;
+  totalBytes: number;
+  speedBps: number;
+  threads: number;
+  version: string;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+  /** 磁盘上有可续传的 `.part`：再点一次是接着下，不是重头来。 */
+  resumable: boolean;
+  /** 已下载的字节数（可续传时才有意义）。 */
+  partialBytes: number;
+}
+
+/** One non-version download shown on the downloads page. */
+export interface BackgroundDownloadTask extends MultiplayerInstallState {
+  id: string;
+  title: string;
+  status: "running" | "done" | "error" | "paused";
+}
+
+export interface MultiplayerLogPayload {
+  stream: string;
+  line: string;
+}
+
+/** A friend's world as saved locally. */
+export interface MultiplayerHost {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  status?: MinecraftHostStatus | null;
+  /** Local proxy port while this world is announced on the LAN list. */
+  bridgePort?: number | null;
+  checkedAt?: number;
 }
 
 /** One Bedrock world inside a `com.mojang/minecraftWorlds` folder. */

@@ -96,7 +96,9 @@ interface VersionSettingsViewProps {
   [key: string]: any;
 }
 
-type Section = "overview" | "launch" | "mods" | "packs" | "worlds";
+export type VersionSettingsSection = "overview" | "launch" | "mods" | "packs" | "worlds";
+
+type Section = VersionSettingsSection;
 
 /**
  * Locales the launcher can force at start-up. The codes are the ones Minecraft

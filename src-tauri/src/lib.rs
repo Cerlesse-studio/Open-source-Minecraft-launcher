@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod bedrock;
 pub mod bedrock_store;
 pub mod content;
@@ -5,6 +6,7 @@ pub mod java;
 pub mod loaders;
 pub mod mcmod;
 pub mod minecraft;
+pub mod multiplayer;
 mod net;
 pub mod search_i18n;
 
@@ -117,11 +119,7 @@ fn default_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn set_download_preference(
-    source: String,
-    custom_url: Option<String>,
-    threads: Option<u32>,
-) {
+fn set_download_preference(source: String, custom_url: Option<String>, threads: Option<u32>) {
     net::set_download_preference(
         &source,
         custom_url.as_deref().unwrap_or(""),
@@ -196,19 +194,81 @@ async fn read_skin_as_data_url(path: String) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
+/// Custom home pages are rendered as a single in-memory document, so anything
+/// past this size is a mistake (or an asset bundle) rather than a page.
+const MAX_HOME_PAGE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Read the player's custom home page from disk as UTF-8 text.
+#[tauri::command]
+async fn read_home_page_file(path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("请先在设置中选择主页文件".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_file() {
+        return Err(format!("找不到主页文件: {}", path.display()));
+    }
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("无法读取主页文件: {e}"))?
+        .len();
+    if size > MAX_HOME_PAGE_BYTES {
+        return Err(format!(
+            "主页文件过大 ({:.1} MB)，上限 4 MB",
+            size as f64 / 1_048_576.0
+        ));
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("无法读取主页文件: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Fetch an online home page as text. Doing this in Rust rather than the webview
+/// keeps the request clear of CORS, which would reject most hosts.
+#[tauri::command]
+async fn fetch_home_page(url: String) -> Result<String, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("主页地址需要以 http:// 或 https:// 开头".to_string());
+    }
+    let response = net::client()
+        .get(trimmed)
+        .timeout(Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|e| format!("无法连接主页地址: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("主页地址返回 HTTP {status}"));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取主页内容失败: {e}"))?;
+    if bytes.len() as u64 > MAX_HOME_PAGE_BYTES {
+        return Err("主页内容超过 4 MB，已停止加载".to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::image_mime_from_bytes;
 
     #[test]
     fn wallpaper_data_urls_declare_the_real_image_type() {
-        assert_eq!(image_mime_from_bytes(&[0x89, b'P', b'N', b'G', 0x0D]), "image/png");
-        assert_eq!(image_mime_from_bytes(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
-        assert_eq!(image_mime_from_bytes(b"GIF89a"), "image/gif");
         assert_eq!(
-            image_mime_from_bytes(b"RIFF\0\0\0\0WEBPVP8 "),
-            "image/webp"
+            image_mime_from_bytes(&[0x89, b'P', b'N', b'G', 0x0D]),
+            "image/png"
         );
+        assert_eq!(
+            image_mime_from_bytes(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            "image/jpeg"
+        );
+        assert_eq!(image_mime_from_bytes(b"GIF89a"), "image/gif");
+        assert_eq!(image_mime_from_bytes(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
         assert_eq!(image_mime_from_bytes(b"BM6\0\0\0"), "image/bmp");
         // Unknown payloads keep the historical PNG tag (skin uploads).
         assert_eq!(image_mime_from_bytes(b"not an image"), "image/png");
@@ -462,6 +522,33 @@ async fn launch_game(
     state: State<'_, GameState>,
     request: LaunchRequest,
 ) -> Result<u32, String> {
+    // A signed-in account launches online: the session token is read from the
+    // account store instead of travelling through the web UI. Downloading it
+    // from the frontend would put a live credential in JavaScript.
+    let mut request = request;
+    if request.auth.is_none() {
+        if let Ok(dir) = account_dir(&app) {
+            if let Some(record) = auth::session_for_launch(&dir).await {
+                let _ = app.emit(
+                    "game:log",
+                    GameLogPayload {
+                        stream: "cobble".to_string(),
+                        line: format!(
+                            "使用正版账户 {} 启动（UUID {}）",
+                            record.profile.name, record.profile.id
+                        ),
+                    },
+                );
+                request.auth = Some(minecraft::LaunchAuth {
+                    access_token: record.minecraft.access_token.clone(),
+                    uuid: record.profile.id.clone(),
+                    name: record.profile.name.clone(),
+                    xuid: Some(record.minecraft.xuid.clone()),
+                    client_id: Some(record.client_id.clone()),
+                });
+            }
+        }
+    }
     if state
         .child
         .lock()
@@ -572,59 +659,57 @@ async fn launch_game(
     let stopping = state.stopping.clone();
     let app_handle = app.clone();
     let version_id = request.version_id.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(400));
-            let mut slot = match child_slot.lock() {
-                Ok(slot) => slot,
-                Err(_) => break,
-            };
-            let Some(child) = slot.as_mut() else {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(400));
+        let mut slot = match child_slot.lock() {
+            Ok(slot) => slot,
+            Err(_) => break,
+        };
+        let Some(child) = slot.as_mut() else {
+            break;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                *slot = None;
+                drop(slot);
+                let requested_stop = stopping.swap(false, Ordering::Relaxed);
+                let code = if requested_stop {
+                    Some(0)
+                } else {
+                    status.code()
+                };
+                let _ = app_handle.emit(
+                    "game:exit",
+                    GameExitPayload {
+                        code,
+                        version_id: Some(version_id.clone()),
+                    },
+                );
+                let message = match code {
+                    Some(0) => "游戏进程已结束".to_string(),
+                    Some(code) => format!("游戏进程已退出（代码 {code}）"),
+                    None => "游戏进程已结束".to_string(),
+                };
+                let _ = app_handle.emit(
+                    "game:log",
+                    GameLogPayload {
+                        stream: "cobble".to_string(),
+                        line: message,
+                    },
+                );
+                let _ = app_handle.emit(
+                    "game:status",
+                    GameStatus {
+                        state: "idle".to_string(),
+                        detail: None,
+                        pid: None,
+                        version_id: Some(version_id.clone()),
+                    },
+                );
                 break;
-            };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    *slot = None;
-                    drop(slot);
-                    let requested_stop = stopping.swap(false, Ordering::Relaxed);
-                    let code = if requested_stop {
-                        Some(0)
-                    } else {
-                        status.code()
-                    };
-                    let _ = app_handle.emit(
-                        "game:exit",
-                        GameExitPayload {
-                            code,
-                            version_id: Some(version_id.clone()),
-                        },
-                    );
-                    let message = match code {
-                        Some(0) => "游戏进程已结束".to_string(),
-                        Some(code) => format!("游戏进程已退出（代码 {code}）"),
-                        None => "游戏进程已结束".to_string(),
-                    };
-                    let _ = app_handle.emit(
-                        "game:log",
-                        GameLogPayload {
-                            stream: "cobble".to_string(),
-                            line: message,
-                        },
-                    );
-                    let _ = app_handle.emit(
-                        "game:status",
-                        GameStatus {
-                            state: "idle".to_string(),
-                            detail: None,
-                            pid: None,
-                            version_id: Some(version_id.clone()),
-                        },
-                    );
-                    break;
-                }
-                Ok(None) => {}
-                Err(_) => break,
             }
+            Ok(None) => {}
+            Err(_) => break,
         }
     });
 
@@ -651,7 +736,10 @@ fn stop_game(state: State<'_, GameState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_bedrock_status(app: AppHandle, root: Option<String>) -> Result<bedrock::BedrockStatus, String> {
+fn get_bedrock_status(
+    app: AppHandle,
+    root: Option<String>,
+) -> Result<bedrock::BedrockStatus, String> {
     let p = match root.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
@@ -702,15 +790,8 @@ async fn install_bedrock_version(
     let th = threads.unwrap_or(8);
 
     let task = tokio::spawn(async move {
-        bedrock::install_bedrock_version(
-            &app_handle,
-            &p,
-            &ver_id,
-            &url,
-            api_source.as_deref(),
-            th,
-        )
-        .await
+        bedrock::install_bedrock_version(&app_handle, &p, &ver_id, &url, api_source.as_deref(), th)
+            .await
     });
 
     if let Ok(mut guard) = state.abort_handle.lock() {
@@ -734,10 +815,7 @@ async fn install_bedrock_version(
 }
 
 #[tauri::command]
-async fn cancel_install(
-    app: AppHandle,
-    state: State<'_, InstallState>,
-) -> Result<bool, String> {
+async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Result<bool, String> {
     let mut aborted = false;
     if let Ok(mut guard) = state.abort_handle.lock() {
         if let Some(handle) = guard.take() {
@@ -809,14 +887,59 @@ fn launch_bedrock(
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
-    // Offline accounts are the only supported login mode today, and they default to
-    // the BDS core so a fresh install boots something playable without a sign-in.
-    bedrock::launch_bedrock_edition(
+
+    // One account, both editions. Java gets its session token handed to the JVM;
+    // Bedrock cannot be handed a token at all (the UWP/GDK client signs itself
+    // in through the Windows/Xbox account, the same way the Store build does), so
+    // the launcher's job here is to boot the correct core and report what the
+    // shared account is entitled to. The stored account is read synchronously —
+    // Bedrock needs no live token, and a network refresh must not delay startup.
+    let account = account_dir(&app)
+        .ok()
+        .and_then(|dir| auth::load_account(&dir));
+    if let Some(record) = account.as_ref() {
+        let _ = app.emit(
+            "game:log",
+            GameLogPayload {
+                stream: "cobble".to_string(),
+                line: format!(
+                    "使用正版账户 {} 启动基岩版（{}）",
+                    record.profile.name,
+                    bedrock_entitlement_note(&record.entitlements)
+                ),
+            },
+        );
+    }
+
+    // Offline accounts default to the BDS core so a fresh install boots something
+    // playable without a sign-in; a signed-in account boots a real client core.
+    let message = bedrock::launch_bedrock_edition(
         &p,
         version_id.as_deref(),
         Some(&app),
-        offline_account.unwrap_or(true),
-    )
+        offline_account.unwrap_or(account.is_none()),
+    )?;
+    Ok(match account.as_ref() {
+        Some(record) => format!(
+            "{message} · 账户 {}：{}",
+            record.profile.name,
+            bedrock_entitlement_note(&record.entitlements)
+        ),
+        None => message,
+    })
+}
+
+/// What the shared Microsoft account means for a Bedrock start-up. The Windows
+/// client signs in on its own, so this only states whether the account owns the
+/// edition and what to do when it does not.
+fn bedrock_entitlement_note(entitlements: &auth::Entitlements) -> &'static str {
+    if entitlements.bedrock {
+        "该账户已拥有基岩版"
+    } else if entitlements.game_pass {
+        "Game Pass 有效期内可游玩基岩版"
+    } else {
+        "该账户暂无基岩版授权，需要在 Windows 商店登录同一账户"
+    }
 }
 
 #[tauri::command]
@@ -1001,10 +1124,7 @@ async fn delete_bedrock_version(
 }
 
 #[tauri::command]
-async fn clean_download_cache(
-    app: AppHandle,
-    root: Option<String>,
-) -> Result<u64, String> {
+async fn clean_download_cache(app: AppHandle, root: Option<String>) -> Result<u64, String> {
     let p = match root.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
@@ -1115,11 +1235,7 @@ fn set_bedrock_pack_enabled(
 }
 
 #[tauri::command]
-fn delete_bedrock_pack(
-    app: AppHandle,
-    path: String,
-    root: Option<String>,
-) -> Result<(), String> {
+fn delete_bedrock_pack(app: AppHandle, path: String, root: Option<String>) -> Result<(), String> {
     let p = match root {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
@@ -1227,13 +1343,7 @@ fn toggle_java_resource_pack(
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
-    minecraft::toggle_java_resource_pack(
-        &p,
-        &version_id,
-        &file_name,
-        enabled,
-        isolation.as_deref(),
-    )
+    minecraft::toggle_java_resource_pack(&p, &version_id, &file_name, enabled, isolation.as_deref())
 }
 
 #[tauri::command]
@@ -1263,12 +1373,7 @@ fn install_java_resource_pack_file(
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
-    minecraft::install_java_resource_pack_file(
-        &p,
-        &version_id,
-        &file_path,
-        isolation.as_deref(),
-    )
+    minecraft::install_java_resource_pack_file(&p, &version_id, &file_path, isolation.as_deref())
 }
 
 #[tauri::command]
@@ -1282,7 +1387,11 @@ fn get_java_worlds(
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
-    Ok(minecraft::get_java_worlds(&p, &version_id, isolation.as_deref()))
+    Ok(minecraft::get_java_worlds(
+        &p,
+        &version_id,
+        isolation.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -1328,11 +1437,7 @@ fn get_bedrock_worlds(
 }
 
 #[tauri::command]
-fn delete_bedrock_world(
-    app: AppHandle,
-    path: String,
-    root: Option<String>,
-) -> Result<(), String> {
+fn delete_bedrock_world(app: AppHandle, path: String, root: Option<String>) -> Result<(), String> {
     let p = match root {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
@@ -1353,6 +1458,112 @@ fn import_bedrock_world_file(
     bedrock::import_bedrock_world_file(&p, &file_path)
 }
 
+/// Signed-in Microsoft account data lives with the launcher, not inside a game
+/// root, so changing roots does not sign the user out.
+fn account_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|error| format!("无法定位启动器数据目录: {error}"))
+}
+
+#[tauri::command]
+async fn ms_login_begin(client_id: Option<String>) -> Result<auth::DeviceCodeInfo, String> {
+    auth::begin_device_login(client_id.as_deref()).await
+}
+
+#[tauri::command]
+async fn ms_login_poll(
+    app: AppHandle,
+    device_code: String,
+    client_id: Option<String>,
+) -> Result<auth::AccountPoll, String> {
+    let dir = account_dir(&app)?;
+    match auth::poll_device_login(client_id.as_deref(), &device_code).await? {
+        auth::DeviceOutcome::Pending => Ok(auth::AccountPoll::pending()),
+        auth::DeviceOutcome::SlowDown => Ok(auth::AccountPoll::slow_down()),
+        auth::DeviceOutcome::Done(record) => {
+            auth::store_account(&dir, &record)?;
+            Ok(auth::AccountPoll::success(&record))
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_ms_account(
+    app: AppHandle,
+    client_id: Option<String>,
+) -> Result<Option<auth::AccountView>, String> {
+    let dir = account_dir(&app)?;
+    Ok(auth::account_view(&dir, client_id.as_deref()).await)
+}
+
+#[tauri::command]
+async fn ms_sign_out(app: AppHandle) -> Result<(), String> {
+    let dir = account_dir(&app)?;
+    auth::clear_account(&dir)
+}
+
+/// Label of the launcher-owned Microsoft sign-in window.
+const LOGIN_WINDOW_LABEL: &str = "ms-login";
+
+/// Opens the Microsoft sign-in page in a window owned by the launcher.
+///
+/// This exists because the system browser is usually signed into a Microsoft
+/// account already (Edge even ties into the Windows account), and then the
+/// sign-in page locks itself to that address with no way to type another one.
+/// The launcher's own webview shares none of that session, so the page shows a
+/// normal, editable e-mail field every time. Only Microsoft sign-in hosts are
+/// accepted — see `auth::is_microsoft_login_url`.
+///
+/// Must stay `async`. On Windows a synchronous command runs inside WebView2's
+/// own IPC callback, so building another webview from there re-enters the
+/// message pump and deadlocks: the window appears blank and never loads. Async
+/// commands run off the event-loop thread, which is the documented fix.
+#[tauri::command]
+async fn open_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    if !auth::is_microsoft_login_url(&url) {
+        return Err("登录窗口只接受微软官方登录页面地址。".to_string());
+    }
+    let target = url
+        .parse()
+        .map_err(|error| format!("登录地址无效: {error}"))?;
+
+    // Reuse the window when it is already open (a second code would otherwise
+    // stack up windows), just point it at the new page.
+    if let Some(existing) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
+        existing
+            .navigate(target)
+            .map_err(|error| format!("无法打开登录页面: {error}"))?;
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        LOGIN_WINDOW_LABEL,
+        tauri::WebviewUrl::External(target),
+    )
+    .title("Microsoft 账户登录")
+    .inner_size(520.0, 720.0)
+    .resizable(true)
+    .build()
+    .map_err(|error| format!("无法打开登录窗口: {error}"))?;
+    Ok(())
+}
+
+/// Closes the sign-in window once the login finished (or was abandoned).
+#[tauri::command]
+fn close_login_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
+        window
+            .close()
+            .map_err(|error| format!("无法关闭登录窗口: {error}"))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1360,6 +1571,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(InstallState::default())
         .manage(GameState::default())
+        .manage(multiplayer::MultiplayerState::default())
         .invoke_handler(tauri::generate_handler![
             set_download_preference,
             probe_download_sources,
@@ -1367,6 +1579,8 @@ pub fn run() {
             get_betacraft_manifest,
             get_installed_versions,
             read_skin_as_data_url,
+            read_home_page_file,
+            fetch_home_page,
             get_version_loaders,
             search_content,
             get_content_versions,
@@ -1419,7 +1633,37 @@ pub fn run() {
             get_bedrock_worlds,
             delete_bedrock_world,
             import_bedrock_world_file,
+            ms_login_begin,
+            ms_login_poll,
+            get_ms_account,
+            ms_sign_out,
+            open_login_window,
+            close_login_window,
+            multiplayer::get_multiplayer_status,
+            multiplayer::get_multiplayer_peers,
+            multiplayer::get_multiplayer_firewall_status,
+            multiplayer::setup_multiplayer_firewall,
+            multiplayer::get_multiplayer_install_state,
+            multiplayer::install_easytier,
+            multiplayer::start_multiplayer,
+            multiplayer::stop_multiplayer,
+            multiplayer::start_room_resources,
+            multiplayer::fetch_room_resources,
+            multiplayer::get_local_ipv6_addresses,
+            multiplayer::read_minecraft_lan_port,
+            multiplayer::probe_multiplayer_endpoint,
+            multiplayer::probe_minecraft_host,
+            multiplayer::start_lan_bridge,
+            multiplayer::stop_lan_bridge,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 关掉启动器时一起结束 EasyTier 内核与局域网广播，避免留下
+            // 后台进程和仍然可见的「局域网世界」。
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<multiplayer::MultiplayerState>();
+                multiplayer::shutdown(&state);
+            }
+        });
 }

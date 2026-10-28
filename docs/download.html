@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>下载 · Open-source-Minecraft-launcher</title>
+  <meta name="description" content="下载 Open-source-Minecraft-launcher：查看 Windows / macOS / Linux 支持情况、系统要求、GitHub Releases 与源码构建步骤。" />
+  <meta name="theme-color" content="#060a07" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="下载 · Open-source-Minecraft-launcher" />
+  <meta property="og:description" content="选择平台，或从源码构建。当前版本 v0.0.7。" />
+  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="assets/site.css" />
+  <script src="assets/site.js" defer></script>
+</head>
+<body data-page="download">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+        <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+        <span class="brand-text">
+          <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+          <span class="brand-sub">MINECRAFT LAUNCHER</span>
+        </span>
+      </a>
+
+      <nav class="site-nav" aria-label="主导航">
+        <a class="nav-link" href="index.html">首页</a>
+        <a class="nav-link" href="docs.html">技术文档</a>
+        <a class="nav-link" href="download.html" aria-current="page">下载</a>
+        <a class="nav-link" href="about.html">关于</a>
+        <a class="nav-link" href="credits.html">开源声明</a>
+      </nav>
+
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">
+          <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+          下载启动器
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-nav" id="mobile-nav" data-mobile-nav>
+    <div class="mobile-nav-inner">
+      <a class="nav-link" href="index.html">首页</a>
+      <a class="nav-link" href="docs.html">技术文档</a>
+      <a class="nav-link" href="download.html" aria-current="page">下载</a>
+      <a class="nav-link" href="about.html">关于</a>
+      <a class="nav-link" href="credits.html">开源声明</a>
+      <div class="mobile-nav-actions">
+        <a class="btn btn-secondary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub 仓库
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">下载启动器</a>
+      </div>
+    </div>
+  </div>
+
+  <main id="main">
+    <section class="page-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="面包屑">
+          <a href="index.html">首页</a>
+          <span>/</span>
+          <span>下载</span>
+        </nav>
+        <h1 class="page-title">下载启动器</h1>
+        <p class="page-lede">选择你的平台，或直接从源码构建。当前版本 v0.0.7；Windows 是完整功能平台，macOS / Linux 目前以 Java 版源码构建为主。</p>
+        <div class="page-meta">
+          <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
+          <span class="badge">Windows 10 / 11</span>
+          <span class="badge">MIT License</span>
+          <span class="badge">Tauri 2</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="container download-body">
+      <div class="download-status" data-reveal>
+        <div class="download-status-main">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span><strong>发布状态：</strong>当前以源码构建为主；预编译安装包发布后会同步到 GitHub Releases。</span>
+        </div>
+        <span class="os-note" data-os-note>当前系统：自动检测</span>
+      </div>
+
+      <div class="platform-grid">
+        <article class="platform-card" data-os="windows" data-reveal>
+          <div class="platform-head">
+            <span class="platform-icon"><svg class="icon icon-windows" aria-hidden="true"><use href="#icon-windows"></use></svg></span>
+            <div>
+              <div class="platform-name">Windows</div>
+              <div class="platform-sub">Windows 10 / 11 · x64 · 推荐</div>
+            </div>
+          </div>
+          <ul class="platform-list">
+            <li>Java 版 + 基岩版完整功能</li>
+            <li>EasyTier 联机与 Windows 防火墙集成</li>
+            <li>预编译包发布后可直接安装</li>
+          </ul>
+          <div class="platform-actions">
+            <a class="btn btn-primary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/releases" target="_blank" rel="noopener">前往 Releases</a>
+            <a class="btn btn-secondary btn-sm" href="#build">源码构建</a>
+          </div>
+        </article>
+
+        <article class="platform-card" data-os="macos" data-reveal>
+          <div class="platform-head">
+            <span class="platform-icon"><svg class="icon" aria-hidden="true"><use href="#icon-laptop"></use></svg></span>
+            <div>
+              <div class="platform-name">macOS</div>
+              <div class="platform-sub">Java 版 · 需自行构建</div>
+            </div>
+          </div>
+          <ul class="platform-list">
+            <li>Java 版核心可尝试构建运行</li>
+            <li>基岩版与 Xbox 运行时不可用</li>
+            <li>需要 Xcode Command Line Tools</li>
+          </ul>
+          <div class="platform-actions">
+            <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">构建指南</a>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">反馈问题</a>
+          </div>
+        </article>
+
+        <article class="platform-card" data-os="linux" data-reveal>
+          <div class="platform-head">
+            <span class="platform-icon"><svg class="icon" aria-hidden="true"><use href="#icon-terminal"></use></svg></span>
+            <div>
+              <div class="platform-name">Linux</div>
+              <div class="platform-sub">Java 版 · 需自行构建</div>
+            </div>
+          </div>
+          <ul class="platform-list">
+            <li>Java 版核心可尝试构建运行</li>
+            <li>需要 WebKitGTK 等 Tauri 系统依赖</li>
+            <li>基岩版相关功能不可用</li>
+          </ul>
+          <div class="platform-actions">
+            <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">构建指南</a>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">反馈问题</a>
+          </div>
+        </article>
+      </div>
+
+      <div class="download-panel">
+        <section class="release-card" id="releases" data-reveal>
+          <span class="eyebrow">RELEASES</span>
+          <h2>获取最新构建</h2>
+          <p>GitHub Releases 是官方构建的唯一发布渠道。如果已有对应平台的安装包，会在这里提供下载；没有时请使用源码构建。</p>
+          <div class="release-meta">
+            <span class="badge badge-primary">v0.0.7</span>
+            <span class="badge">Windows 10 / 11</span>
+            <span class="badge">MIT</span>
+          </div>
+          <div class="download-actions">
+            <a class="btn btn-primary" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/releases" target="_blank" rel="noopener">
+              <svg class="icon" aria-hidden="true"><use href="#icon-arrow-up-right"></use></svg>
+              打开 GitHub Releases
+            </a>
+            <a class="btn btn-secondary" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/archive/refs/heads/main.zip" target="_blank" rel="noopener">
+              <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+              下载源码 ZIP
+            </a>
+          </div>
+          <div class="callout callout-warn mb-0">
+            <svg class="icon" aria-hidden="true"><use href="#icon-warning"></use></svg>
+            <p><span class="callout-title">只从可信来源下载</span>不要从第三方网盘或陌生链接获取启动器。需要最新代码时，请使用本仓库的 Releases 或自行从源码构建。</p>
+          </div>
+        </section>
+
+        <section class="source-panel" id="build" data-reveal>
+          <span class="eyebrow">BUILD FROM SOURCE</span>
+          <h2>从源码构建</h2>
+          <p>需要 Node.js、Rust 与 Tauri 2 的系统依赖。首次构建会编译全部 Rust 依赖，耗时较长。</p>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
+cd Open-source-Minecraft-launcher
+npm install
+npm run tauri build</code></pre>
+          </div>
+          <div class="download-actions">
+            <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">完整构建文档</a>
+            <a class="link-arrow" href="docs.html#requirements">查看系统要求 <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg></a>
+          </div>
+          <p class="download-note">构建产物：<code>src-tauri/target/release/bundle/</code>。Windows 通常生成 MSI / NSIS，macOS 生成 DMG，Linux 生成 deb / AppImage。</p>
+        </section>
+      </div>
+
+      <section class="section section-tight" id="requirements">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">REQUIREMENTS</span>
+            <h2 class="section-title">开始之前</h2>
+            <p class="section-desc">运行预编译版本与源码构建的要求不同；基岩版和联机还有额外的系统条件。</p>
+          </div>
+        </div>
+        <div class="requirement-grid">
+          <div class="requirement-card" data-reveal>
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-monitor"></use></svg>
+            <strong>Windows 10 / 11 x64</strong>
+            <span>完整功能平台。预编译版本需要 WebView2；Windows 10 / 11 通常已内置。</span>
+          </div>
+          <div class="requirement-card" data-reveal>
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-code"></use></svg>
+            <strong>Node.js + Rust</strong>
+            <span>源码构建需要 Node.js 20.19+ / 22.12+ 与 Rust stable 1.85+，并安装 Tauri 2 系统依赖。</span>
+          </div>
+          <div class="requirement-card" data-reveal>
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-wifi"></use></svg>
+            <strong>网络与联机</strong>
+            <span>首次安装版本、依赖与 Java 需要联网；EasyTier 联机需要双方都有公网 IPv6。</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-tight" id="after-install">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">AFTER LAUNCH</span>
+            <h2 class="section-title">安装之后，先做这三件事。</h2>
+          </div>
+        </div>
+        <div class="steps">
+          <article class="step" data-reveal>
+            <div class="step-top"><span class="step-number">01</span><img class="step-icon" src="assets/minecraft/grass_block.png" alt="" /></div>
+            <h3>确认游戏目录</h3>
+            <p>默认是 <code>~/.cobble</code>。想放在其他磁盘，可以在设置里更换根目录。</p>
+          </article>
+          <article class="step" data-reveal>
+            <div class="step-top"><span class="step-number">02</span><img class="step-icon" src="assets/minecraft/golden_apple.png" alt="" /></div>
+            <h3>登录或使用离线账户</h3>
+            <p>微软账户用于正版会话与基岩版授权检测；离线账户适合单人与离线服务器。</p>
+          </article>
+          <article class="step" data-reveal>
+            <div class="step-top"><span class="step-number">03</span><img class="step-icon" src="assets/minecraft/diamond_pickaxe.png" alt="" /></div>
+            <h3>下载第一个版本</h3>
+            <p>进入下载中心选择 Java 或基岩版；Java 版可以顺便配置 Forge / Fabric 等加载器。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section section-tight" id="download-faq">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">DOWNLOAD FAQ</span>
+            <h2 class="section-title">下载常见问题</h2>
+          </div>
+        </div>
+        <div class="faq-list">
+          <details class="faq">
+            <summary>为什么 Releases 里没有安装包？</summary>
+            <div class="faq-body"><p>项目仍在快速迭代，预编译产物尚未稳定发布。可以先按源码构建；Release 发布后，本页与 GitHub Releases 会提供对应平台的安装包。</p></div>
+          </details>
+          <details class="faq">
+            <summary>Windows 提示「未知发布者」怎么办？</summary>
+            <div class="faq-body"><p>当前构建可能没有代码签名，SmartScreen 会提示未知发布者。请核对下载来源，或从源码自行构建；不要通过第三方链接绕过安全检查。</p></div>
+          </details>
+          <details class="faq">
+            <summary>macOS / Linux 有安装包吗？</summary>
+            <div class="faq-body"><p>目前以源码构建为主。Java 版可以尝试在 macOS / Linux 构建运行；基岩版、Xbox 运行时、winget 与 Windows 防火墙集成仅限 Windows。</p></div>
+          </details>
+          <details class="faq">
+            <summary>构建时提示找不到 Rust 或 Cargo？</summary>
+            <div class="faq-body"><p>先安装 Rust stable，并确认 <code>cargo --version</code> 可用。Tauri 还需要对应平台的系统依赖，详见 <a href="docs.html#requirements">环境要求</a>。</p></div>
+          </details>
+        </div>
+      </section>
+
+      <div class="cta-band" data-reveal>
+        <div class="cta-inner">
+          <div>
+            <span class="eyebrow">NEED HELP?</span>
+            <h2 class="cta-title">遇到问题，去文档或 Issue 里找答案。</h2>
+            <p class="cta-desc">技术文档包含环境要求、构建步骤、数据目录与常见问题；也可以直接在 GitHub 提交反馈。</p>
+          </div>
+          <div class="cta-actions">
+            <a class="btn btn-primary" href="docs.html">阅读技术文档</a>
+            <a class="btn btn-secondary" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">提交 Issue</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+            <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+            <span class="brand-text">
+              <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+              <span class="brand-sub">MINECRAFT LAUNCHER</span>
+            </span>
+          </a>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+        </div>
+        <div class="footer-col">
+          <h3>产品</h3>
+          <div class="footer-links">
+            <a href="index.html#capabilities">功能亮点</a>
+            <a href="index.html#preview">界面预览</a>
+            <a href="download.html">下载</a>
+            <a href="docs.html#quickstart">快速开始</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>项目</h3>
+          <div class="footer-links">
+            <a href="about.html">关于</a>
+            <a href="credits.html">开源声明</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>文档</h3>
+          <div class="footer-links">
+            <a href="docs.html">技术文档</a>
+            <a href="docs.html#architecture">架构设计</a>
+            <a href="docs.html#downloads">下载引擎</a>
+            <a href="docs.html#faq">常见问题</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>© <span data-year>2026</span> Open-source-Minecraft-launcher Contributors · MIT License. Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关联。</p>
+        <div class="footer-legal">
+          <a href="credits.html">第三方声明</a>
+          <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

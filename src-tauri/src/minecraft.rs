@@ -169,15 +169,31 @@ pub struct VersionDetail {
     pub logging: Option<Logging>,
     #[serde(rename = "inheritsFrom")]
     pub inherits_from: Option<String>,
-    #[serde(rename = "clientVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "clientVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mc_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loader: Option<String>,
-    #[serde(rename = "loaderVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "loaderVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub loader_version: Option<String>,
-    #[serde(rename = "optifineVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "optifineVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub optifine_version: Option<String>,
-    #[serde(rename = "fabricApiVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "fabricApiVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fabric_api_version: Option<String>,
 }
 
@@ -481,7 +497,12 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
         let manifest_urls = net::preferred_urls(VERSION_MANIFEST_URL);
         let mut last_err = String::new();
         for u in manifest_urls {
-            match net::client().get(&u).timeout(Duration::from_secs(4)).send().await {
+            match net::client()
+                .get(&u)
+                .timeout(Duration::from_secs(4))
+                .send()
+                .await
+            {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(text) = response.text().await {
                         if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
@@ -560,7 +581,10 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
             .await
             .map_err(|e| format!("无法连接 BetaCraft 版本服务: {e}"))?;
         if !response.status().is_success() {
-            return Err(format!("BetaCraft 版本清单请求失败: HTTP {}", response.status()));
+            return Err(format!(
+                "BetaCraft 版本清单请求失败: HTTP {}",
+                response.status()
+            ));
         }
         let text = response
             .text()
@@ -576,7 +600,9 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
                 let phase_str = v.phase.clone().unwrap_or_else(|| "legacy".to_string());
                 let mapped_type = match phase_str.as_str() {
                     "beta" => "old_beta".to_string(),
-                    "alpha" | "infdev" | "indev" | "classic" | "pre-classic" => "old_alpha".to_string(),
+                    "alpha" | "infdev" | "indev" | "classic" | "pre-classic" => {
+                        "old_alpha".to_string()
+                    }
                     "oddballs" => "april_fools".to_string(),
                     "post-1.0" => v.version_type.clone(),
                     _ => v.version_type.clone(),
@@ -697,7 +723,9 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
         {
             (
                 parsed_detail.as_ref().and_then(|d| d.loader.clone()),
-                parsed_detail.as_ref().and_then(|d| d.loader_version.clone()),
+                parsed_detail
+                    .as_ref()
+                    .and_then(|d| d.loader_version.clone()),
             )
         } else {
             let mut detected = (None, None);
@@ -756,10 +784,7 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
 }
 
 pub async fn delete_version(root: &Path, version_id: &str) -> Result<(), String> {
-    let clean_id = version_id
-        .trim()
-        .trim_start_matches("Minecraft ")
-        .trim();
+    let clean_id = version_id.trim().trim_start_matches("Minecraft ").trim();
     safe_version_id(clean_id)?;
     let root = net::absolute_path(root);
     let target = versions_dir(&root).join(clean_id);
@@ -1029,7 +1054,12 @@ fn artifact_job(artifact: &Artifact, base: &Path, name: &str) -> Option<FileJob>
 
     // Check if the library is a local generated target (e.g. Forge :client or :server)
     if name.contains(":client") || name.contains(":server") {
-        let is_empty_url = artifact.url.as_deref().map(str::trim).unwrap_or("").is_empty();
+        let is_empty_url = artifact
+            .url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty();
         if is_empty_url
             || name.starts_with("net.minecraftforge:forge:")
             || name.starts_with("net.neoforged:neoforge:")
@@ -1189,12 +1219,7 @@ struct DownloadTracker {
 }
 
 impl DownloadTracker {
-    fn new(
-        version_id: &str,
-        threads: usize,
-        has_addons: bool,
-        progress: ProgressFn,
-    ) -> Arc<Self> {
+    fn new(version_id: &str, threads: usize, has_addons: bool, progress: ProgressFn) -> Arc<Self> {
         let now = Instant::now();
         let mut stages = vec![
             StageProgress {
@@ -1376,11 +1401,7 @@ impl DownloadTracker {
             .sum::<usize>()
             .min(self.threads);
 
-        let mut stages_snapshot = self
-            .stages
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let mut stages_snapshot = self.stages.lock().map(|s| s.clone()).unwrap_or_default();
 
         // Include in-flight bytes of active tasks in their corresponding stage snapshot.
         for s in &mut stages_snapshot {
@@ -1634,7 +1655,10 @@ fn extract_natives(jars: &[PathBuf], natives_dir: &Path) -> Result<usize, String
                 continue;
             }
             #[cfg(target_arch = "aarch64")]
-            if lower_name.contains("/x86/") || lower_name.contains("/x64/") || lower_name.contains("/x86_64/") {
+            if lower_name.contains("/x86/")
+                || lower_name.contains("/x64/")
+                || lower_name.contains("/x86_64/")
+            {
                 continue;
             }
             let Some(file_name) = Path::new(&name).file_name() else {
@@ -1809,14 +1833,8 @@ async fn ensure_assets_with_tracker(
     let count = prepared.jobs.len();
     let objects_dir = assets_dir(root).join("objects");
 
-    download_jobs_with_tracker(
-        prepared.jobs,
-        "assets",
-        tracker,
-        concurrency,
-        worker_offset,
-    )
-    .await?;
+    download_jobs_with_tracker(prepared.jobs, "assets", tracker, concurrency, worker_offset)
+        .await?;
 
     if prepared.index.is_virtual() {
         tracker.emit_now("assets", count as u64, count as u64, "整理旧版资源目录");
@@ -1930,12 +1948,7 @@ async fn download_client_with_tracker(
 
     tracker.add_stage_completed("client", 1, downloaded.max(total));
     tracker.set_stage_status("client", "done");
-    tracker.emit_now(
-        "client",
-        total.max(1),
-        total.max(1),
-        "客户端下载完成",
-    );
+    tracker.emit_now("client", total.max(1), total.max(1), "客户端下载完成");
     Ok(())
 }
 
@@ -2000,25 +2013,37 @@ pub async fn install_version_with_options(
 
     if !is_betacraft_prefixed {
         if let Ok(manifest) = fetch_manifest(root, false).await {
-            summary = manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+            summary = manifest
+                .versions
+                .into_iter()
+                .find(|v| v.id == clean_version_id);
         }
     }
 
     if summary.is_none() {
         if let Ok(b_manifest) = fetch_betacraft_manifest(root, false).await {
-            summary = b_manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+            summary = b_manifest
+                .versions
+                .into_iter()
+                .find(|v| v.id == clean_version_id);
         }
     }
 
     if summary.is_none() {
         if !is_betacraft_prefixed {
             if let Ok(manifest) = fetch_manifest(root, true).await {
-                summary = manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+                summary = manifest
+                    .versions
+                    .into_iter()
+                    .find(|v| v.id == clean_version_id);
             }
         }
         if summary.is_none() {
             if let Ok(b_manifest) = fetch_betacraft_manifest(root, true).await {
-                summary = b_manifest.versions.into_iter().find(|v| v.id == clean_version_id);
+                summary = b_manifest
+                    .versions
+                    .into_iter()
+                    .find(|v| v.id == clean_version_id);
             }
         }
     }
@@ -2060,12 +2085,7 @@ pub async fn install_version_with_options(
 
     let mut extra_mod_jobs = Vec::new();
     if has_addons {
-        tracker.emit_now(
-            "prepare",
-            2,
-            prepare_steps,
-            "获取模组加载器与附加工具配置",
-        );
+        tracker.emit_now("prepare", 2, prepare_steps, "获取模组加载器与附加工具配置");
         let extra_mods = crate::loaders::prepare_addons(
             root,
             &instance_dir,
@@ -2093,8 +2113,8 @@ pub async fn install_version_with_options(
 
     // Write the merged version JSON to versions/<instance_id>/<instance_id>.json
     let instance_json_path = instance_dir.join(format!("{instance_id}.json"));
-    let serialized = serde_json::to_string_pretty(&version)
-        .map_err(|e| format!("序列化版本配置失败: {e}"))?;
+    let serialized =
+        serde_json::to_string_pretty(&version).map_err(|e| format!("序列化版本配置失败: {e}"))?;
     tokio::fs::write(&instance_json_path, serialized)
         .await
         .map_err(|e| format!("保存版本配置失败: {e}"))?;
@@ -2120,11 +2140,7 @@ pub async fn install_version_with_options(
     tracker.set_stage_plan("assets", 0, initial_assets_bytes);
     if has_addons {
         let addon_bytes: u64 = extra_mod_jobs.iter().filter_map(|j| j.size).sum();
-        tracker.set_stage_plan(
-            "addons",
-            (extra_mod_jobs.len() as u64).max(1),
-            addon_bytes,
-        );
+        tracker.set_stage_plan("addons", (extra_mod_jobs.len() as u64).max(1), addon_bytes);
     }
     tracker.emit_now(
         "prepare",
@@ -2144,7 +2160,11 @@ pub async fn install_version_with_options(
     tracker.add_stage_completed("prepare", 1, 0);
     tracker.set_stage_status("prepare", "done");
 
-    let client_threads = if threads <= 4 { 1 } else { 2.min(threads / 8).max(2) };
+    let client_threads = if threads <= 4 {
+        1
+    } else {
+        2.min(threads / 8).max(2)
+    };
     let available = threads.saturating_sub(1);
     let (libs_threads, assets_threads, addons_threads) = if has_addons {
         let addon = (available * 2 / 10).clamp(1, 8);
@@ -2175,7 +2195,8 @@ pub async fn install_version_with_options(
         let root = root.to_path_buf();
         let version = version.clone();
         async move {
-            download_client_with_tracker(&root, &version, &tracker, client_threads, client_offset).await?;
+            download_client_with_tracker(&root, &version, &tracker, client_threads, client_offset)
+                .await?;
             let _ = download_log_config(&root, &version).await?;
             Ok::<(), String>(())
         }
@@ -2186,12 +2207,7 @@ pub async fn install_version_with_options(
         let plan = plan.clone();
         let instance_dir = instance_dir.clone();
         async move {
-            tracker.emit_now(
-                "libraries",
-                0,
-                plan.jobs.len() as u64,
-                "准备依赖库",
-            );
+            tracker.emit_now("libraries", 0, plan.jobs.len() as u64, "准备依赖库");
             let (library_count, _) = download_jobs_with_tracker(
                 plan.jobs,
                 "libraries",
@@ -2254,18 +2270,13 @@ pub async fn install_version_with_options(
         }
     };
 
-    let (_client_res, libs_res, assets_res, _addons_res) = tokio::try_join!(
-        client_task,
-        libraries_task,
-        assets_task,
-        addons_task
-    )?;
+    let (_client_res, libs_res, assets_res, _addons_res) =
+        tokio::try_join!(client_task, libraries_task, assets_task, addons_task)?;
 
     if has_addons {
-        if let (Some(loader_type), Some(loader_ver)) = (
-            version.loader.as_deref(),
-            version.loader_version.as_deref(),
-        ) {
+        if let (Some(loader_type), Some(loader_ver)) =
+            (version.loader.as_deref(), version.loader_version.as_deref())
+        {
             if loader_type == "forge" || loader_type == "neoforge" {
                 tracker.emit_now("addons", 1, 1, "正在通过安装器构建模组核心");
                 // Ensure vanilla jar exists at versions/<clean_version_id>/<clean_version_id>.jar
@@ -2329,6 +2340,73 @@ pub struct LaunchRequest {
     pub jvm_args: Option<String>,
     /// Locale code such as `zh_cn`; written to `options.txt` before start-up.
     pub language: Option<String>,
+    /// Microsoft account session. `None` launches an offline account, which
+    /// keeps the legacy dummy session the game accepts in single-player.
+    #[serde(default)]
+    pub auth: Option<LaunchAuth>,
+}
+
+/// Credentials handed to the game when the user signed in with a real account.
+/// Built by the account module after the Xbox -> Minecraft exchange.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchAuth {
+    pub access_token: String,
+    /// Profile UUID from Mojang; empty falls back to the offline UUID.
+    #[serde(default)]
+    pub uuid: String,
+    /// Profile name; empty falls back to the configured player name.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub xuid: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+/// The six auth values the launch arguments are built from.
+#[derive(Debug, Clone, PartialEq)]
+struct AuthVars {
+    name: String,
+    uuid: String,
+    access_token: String,
+    xuid: String,
+    client_id: String,
+    user_type: String,
+}
+
+/// Online sessions use the profile identity and `msa`; offline sessions keep
+/// the legacy placeholders the game tolerates without a network session.
+fn auth_vars(request: &LaunchRequest, fallback_uuid: &str, fallback_name: &str) -> AuthVars {
+    match request.auth.as_ref() {
+        Some(auth) => {
+            let name = if auth.name.trim().is_empty() {
+                fallback_name.to_string()
+            } else {
+                auth.name.trim().to_string()
+            };
+            AuthVars {
+                name,
+                uuid: if auth.uuid.trim().is_empty() {
+                    fallback_uuid.to_string()
+                } else {
+                    auth.uuid.trim().to_string()
+                },
+                access_token: auth.access_token.trim().to_string(),
+                xuid: auth.xuid.clone().unwrap_or_default(),
+                client_id: auth.client_id.clone().unwrap_or_default(),
+                user_type: "msa".to_string(),
+            }
+        }
+        None => AuthVars {
+            name: fallback_name.to_string(),
+            uuid: fallback_uuid.to_string(),
+            access_token: "0".to_string(),
+            xuid: String::new(),
+            client_id: String::new(),
+            user_type: "legacy".to_string(),
+        },
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2398,9 +2476,8 @@ async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
     let val: serde_json::Value = resp.json().await.ok()?;
     let id = val.get("id")?.as_str()?;
 
-    let session_url = format!(
-        "https://sessionserver.mojang.com/session/minecraft/profile/{id}?unsigned=false"
-    );
+    let session_url =
+        format!("https://sessionserver.mojang.com/session/minecraft/profile/{id}?unsigned=false");
     let s_resp = tokio::time::timeout(
         Duration::from_secs(3),
         net::client().get(&session_url).send(),
@@ -2416,7 +2493,11 @@ async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
     for prop in properties {
         if prop.get("name")?.as_str()? == "textures" {
             let val = prop.get("value")?.as_str()?.to_string();
-            let sig = prop.get("signature").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let sig = prop
+                .get("signature")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
             return Some((val, sig, id.to_string()));
         }
     }
@@ -2424,10 +2505,28 @@ async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
 }
 
 async fn setup_custom_skin_pack(root: &Path, version_id: &str, skin_path: &Path) {
-    let pack_dir = game_dir(root, version_id).join("resourcepacks").join("OfflineSkinPack");
-    let wide_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity").join("player").join("wide");
-    let slim_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity").join("player").join("slim");
-    let legacy_dir = pack_dir.join("assets").join("minecraft").join("textures").join("entity");
+    let pack_dir = game_dir(root, version_id)
+        .join("resourcepacks")
+        .join("OfflineSkinPack");
+    let wide_dir = pack_dir
+        .join("assets")
+        .join("minecraft")
+        .join("textures")
+        .join("entity")
+        .join("player")
+        .join("wide");
+    let slim_dir = pack_dir
+        .join("assets")
+        .join("minecraft")
+        .join("textures")
+        .join("entity")
+        .join("player")
+        .join("slim");
+    let legacy_dir = pack_dir
+        .join("assets")
+        .join("minecraft")
+        .join("textures")
+        .join("entity");
 
     let _ = tokio::fs::create_dir_all(&wide_dir).await;
     let _ = tokio::fs::create_dir_all(&slim_dir).await;
@@ -2450,11 +2549,15 @@ async fn setup_custom_skin_pack(root: &Path, version_id: &str, skin_path: &Path)
     if let Ok(content) = tokio::fs::read_to_string(&options_txt).await {
         if content.contains("resourcePacks:") {
             if !content.contains("OfflineSkinPack") {
-                let updated = content.replace("resourcePacks:[", "resourcePacks:[\"file/OfflineSkinPack\",");
+                let updated = content.replace(
+                    "resourcePacks:[",
+                    "resourcePacks:[\"file/OfflineSkinPack\",",
+                );
                 let _ = tokio::fs::write(&options_txt, updated).await;
             }
         } else {
-            let updated = format!("{content}\nresourcePacks:[\"file/OfflineSkinPack\",\"vanilla\"]\n");
+            let updated =
+                format!("{content}\nresourcePacks:[\"file/OfflineSkinPack\",\"vanilla\"]\n");
             let _ = tokio::fs::write(&options_txt, updated).await;
         }
     } else {
@@ -2470,7 +2573,11 @@ fn valid_player_name(name: &str) -> bool {
 }
 
 fn classpath_separator() -> &'static str {
-    if cfg!(windows) { ";" } else { ":" }
+    if cfg!(windows) {
+        ";"
+    } else {
+        ":"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2657,8 +2764,17 @@ fn build_launch_spec(
     user_properties_override: Option<String>,
     mojang_uuid_override: Option<String>,
 ) -> Result<LaunchSpec, String> {
-    let player_name = request.player_name.trim();
-    if !valid_player_name(player_name) {
+    // A signed-in account plays under its profile name, not under whatever the
+    // launcher's offline nickname field happens to hold.
+    let configured_name = request.player_name.trim().to_string();
+    let player_name = request
+        .auth
+        .as_ref()
+        .map(|auth| auth.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(configured_name.as_str())
+        .to_string();
+    if !valid_player_name(&player_name) {
         return Err("游戏昵称只能包含英文字母、数字和下划线，长度 1-16 位".to_string());
     }
 
@@ -2716,7 +2832,11 @@ fn build_launch_spec(
 
     let memory = request.memory_mb.unwrap_or(4096).clamp(512, 65536);
     let skin_type = request.skin_type.as_deref().unwrap_or("random");
-    let uuid = mojang_uuid_override.unwrap_or_else(|| offline_uuid_with_skin(player_name, Some(skin_type)));
+    let uuid = match request.auth.as_ref().map(|auth| auth.uuid.trim()) {
+        Some(online_uuid) if !online_uuid.is_empty() => online_uuid.to_string(),
+        _ => mojang_uuid_override
+            .unwrap_or_else(|| offline_uuid_with_skin(&player_name, Some(skin_type))),
+    };
     let assets_index_name = version
         .asset_index
         .as_ref()
@@ -2769,7 +2889,8 @@ fn build_launch_spec(
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
     insert(&mut vars, "instance_icon", instance_icon);
-    insert(&mut vars, "auth_player_name", player_name.to_string());
+    let credentials = auth_vars(request, &uuid, &player_name);
+    insert(&mut vars, "auth_player_name", credentials.name.clone());
     insert(&mut vars, "version_name", version.id.clone());
     insert(
         &mut vars,
@@ -2783,14 +2904,22 @@ fn build_launch_spec(
     );
     insert(&mut vars, "game_assets", asset_game_dir(root, version));
     insert(&mut vars, "assets_index_name", assets_index_name);
-    insert(&mut vars, "auth_uuid", uuid.clone());
-    insert(&mut vars, "auth_access_token", "0".to_string());
-    insert(&mut vars, "auth_session", format!("token:0:{uuid}"));
-    insert(&mut vars, "user_type", "legacy".to_string());
+    insert(&mut vars, "auth_uuid", credentials.uuid.clone());
+    insert(
+        &mut vars,
+        "auth_access_token",
+        credentials.access_token.clone(),
+    );
+    insert(
+        &mut vars,
+        "auth_session",
+        format!("token:{}:{}", credentials.access_token, credentials.uuid),
+    );
+    insert(&mut vars, "user_type", credentials.user_type.clone());
     let user_props = user_properties_override.unwrap_or_else(|| "{}".to_string());
     insert(&mut vars, "user_properties", user_props);
-    insert(&mut vars, "clientid", String::new());
-    insert(&mut vars, "auth_xuid", String::new());
+    insert(&mut vars, "clientid", credentials.client_id.clone());
+    insert(&mut vars, "auth_xuid", credentials.xuid.clone());
     insert(
         &mut vars,
         "version_type",
@@ -2953,7 +3082,7 @@ fn build_launch_spec(
             game_args.extend(["--uuid".into(), vars["auth_uuid"].clone()]);
         }
         if !game_args.iter().any(|a| a == "--accessToken") {
-            game_args.extend(["--accessToken".into(), "0".into()]);
+            game_args.extend(["--accessToken".into(), vars["auth_access_token"].clone()]);
         }
     }
 
@@ -3634,7 +3763,9 @@ fn bytes_look_like_image(bytes: &[u8], mime: &str) -> bool {
         "image/webp" => bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
         "image/svg+xml" => {
             let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).to_string();
-            head.trim_start_matches('\u{feff}').trim_start().starts_with('<')
+            head.trim_start_matches('\u{feff}')
+                .trim_start()
+                .starts_with('<')
         }
         _ => false,
     }
@@ -3721,7 +3852,16 @@ fn chrono_format_timestamp(secs: u64) -> String {
     let month_days = [
         31,
         if is_leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month = 1;
     for &d in &month_days {
@@ -3827,7 +3967,11 @@ pub fn install_java_mod_file(
 pub fn resolve_java_game_dir(root: &Path, version_id: &str, isolation: Option<&str>) -> PathBuf {
     let root = net::absolute_path(root);
     let instance = root.join("versions").join(version_id);
-    match isolation.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("all") {
+    match isolation
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("all")
+    {
         "none" => root,
         "modded" => {
             if version_dir_is_modded(&instance) {
@@ -3941,8 +4085,7 @@ fn read_text_lines(path: &Path) -> Vec<String> {
 
 fn write_text_lines(path: &Path, lines: &[String]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建游戏目录失败: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建游戏目录失败: {e}"))?;
     }
     let mut text = lines.join("\n");
     if !text.is_empty() {
@@ -3963,7 +4106,9 @@ fn normalize_locale(raw: &str) -> Option<String> {
     }
     let mut parts = cleaned.split('_');
     let language = parts.next()?.to_ascii_lowercase();
-    if language.len() < 2 || language.len() > 3 || !language.chars().all(|c| c.is_ascii_alphabetic())
+    if language.len() < 2
+        || language.len() > 3
+        || !language.chars().all(|c| c.is_ascii_alphabetic())
     {
         return None;
     }
@@ -4279,7 +4424,11 @@ pub fn delete_java_resource_pack(
 ) -> Result<(), String> {
     let game_dir = resolve_java_game_dir(root, version_id, isolation);
     let path = game_dir.join("resourcepacks").join(file_name);
-    if path.file_name().map(|name| name.to_string_lossy().to_string()) != Some(file_name.to_string()) {
+    if path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        != Some(file_name.to_string())
+    {
         return Err("资源包名称无效".to_string());
     }
     if path.is_dir() {
@@ -4420,7 +4569,9 @@ pub fn delete_java_world(
     let game_dir = resolve_java_game_dir(root, version_id, isolation);
     let saves_dir = game_dir.join("saves");
     let target = saves_dir.join(folder);
-    if target.file_name().map(|name| name.to_string_lossy().to_string())
+    if target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
         != Some(folder.to_string())
         || !target.is_dir()
         || !target.join("level.dat").is_file()
@@ -4438,7 +4589,12 @@ fn extract_world_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path).map_err(|e| format!("打开存档压缩包失败: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取存档压缩包失败: {e}"))?;
     let names: Vec<String> = (0..archive.len())
-        .filter_map(|index| archive.by_index(index).ok().map(|entry| entry.name().to_string()))
+        .filter_map(|index| {
+            archive
+                .by_index(index)
+                .ok()
+                .map(|entry| entry.name().to_string())
+        })
         .collect();
 
     let prefix = names
@@ -4475,19 +4631,17 @@ fn extract_world_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
         }
         let target = dest.join(relative);
         if name.ends_with('/') {
-            std::fs::create_dir_all(&target)
-                .map_err(|e| format!("创建存档目录失败: {e}"))?;
+            std::fs::create_dir_all(&target).map_err(|e| format!("创建存档目录失败: {e}"))?;
             continue;
         }
         let mut entry = archive
             .by_name(name)
             .map_err(|e| format!("读取存档文件失败: {e}"))?;
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建存档目录失败: {e}"))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建存档目录失败: {e}"))?;
         }
-        let mut out = std::fs::File::create(&target)
-            .map_err(|e| format!("写入存档文件失败: {e}"))?;
+        let mut out =
+            std::fs::File::create(&target).map_err(|e| format!("写入存档文件失败: {e}"))?;
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let read = entry
@@ -4678,6 +4832,75 @@ mod tests {
     }
 
     #[test]
+    fn online_accounts_replace_offline_credentials() {
+        let request = |auth: Option<LaunchAuth>| LaunchRequest {
+            version_id: "1.21.8".to_string(),
+            root: "C:\\games".to_string(),
+            player_name: "OfflineName".to_string(),
+            memory_mb: None,
+            java_path: None,
+            width: None,
+            height: None,
+            skin_type: None,
+            custom_skin_path: None,
+            custom_skin_model: None,
+            mojang_skin_name: None,
+            version_isolation: None,
+            window_title: None,
+            custom_info: None,
+            launcher_visibility: None,
+            process_priority: None,
+            window_size: None,
+            jvm_args: None,
+            language: None,
+            auth,
+        };
+
+        let offline = auth_vars(&request(None), "offline-uuid", "OfflineName");
+        assert_eq!(offline.access_token, "0");
+        assert_eq!(offline.user_type, "legacy");
+        assert_eq!(offline.uuid, "offline-uuid");
+        assert!(offline.xuid.is_empty());
+        assert!(offline.client_id.is_empty());
+
+        let online = auth_vars(
+            &request(Some(LaunchAuth {
+                access_token: "mc-session".to_string(),
+                uuid: "069a79f444e94726a5befca90e38aaf5".to_string(),
+                name: "Notch".to_string(),
+                xuid: Some("2535410000000000".to_string()),
+                client_id: Some("launcher-client".to_string()),
+            })),
+            "offline-uuid",
+            "OfflineName",
+        );
+        assert_eq!(online.access_token, "mc-session");
+        // The profile identity wins: the game rejects a mismatched name/UUID
+        // against the session token.
+        assert_eq!(online.name, "Notch");
+        assert_eq!(online.uuid, "069a79f444e94726a5befca90e38aaf5");
+        assert_eq!(online.user_type, "msa");
+        assert_eq!(online.xuid, "2535410000000000");
+        assert_eq!(online.client_id, "launcher-client");
+
+        // A session without profile fields must not produce empty arguments.
+        let partial = auth_vars(
+            &request(Some(LaunchAuth {
+                access_token: "token".to_string(),
+                uuid: "  ".to_string(),
+                name: String::new(),
+                xuid: None,
+                client_id: None,
+            })),
+            "offline-uuid",
+            "OfflineName",
+        );
+        assert_eq!(partial.name, "OfflineName");
+        assert_eq!(partial.uuid, "offline-uuid");
+        assert_eq!(partial.user_type, "msa");
+    }
+
+    #[test]
     fn player_name_validation() {
         assert!(valid_player_name("Steve_01"));
         assert!(!valid_player_name(""));
@@ -4698,16 +4921,27 @@ mod tests {
 
         let (f_path, f_url, _, _) =
             maven_artifact_from_name("net.minecraftforge:forgespi:8.0.0").unwrap();
-        assert_eq!(f_path, "net/minecraftforge/forgespi/8.0.0/forgespi-8.0.0.jar");
+        assert_eq!(
+            f_path,
+            "net/minecraftforge/forgespi/8.0.0/forgespi-8.0.0.jar"
+        );
         assert!(f_url.starts_with("https://maven.minecraftforge.net/"));
 
         let artifact = Artifact {
-            path: Some("net/minecraftforge/forge/1.21.11-61.2.4/forge-1.21.11-61.2.4-client.jar".to_string()),
+            path: Some(
+                "net/minecraftforge/forge/1.21.11-61.2.4/forge-1.21.11-61.2.4-client.jar"
+                    .to_string(),
+            ),
             url: Some("".to_string()),
             sha1: None,
             size: None,
         };
-        assert!(artifact_job(&artifact, Path::new("test"), "net.minecraftforge:forge:1.21.11-61.2.4:client").is_none());
+        assert!(artifact_job(
+            &artifact,
+            Path::new("test"),
+            "net.minecraftforge:forge:1.21.11-61.2.4:client"
+        )
+        .is_none());
     }
 
     #[test]
@@ -5068,8 +5302,7 @@ description="A minimap."
         )
         .unwrap();
 
-        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", true, Some("all"))
-            .unwrap();
+        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", true, Some("all")).unwrap();
         let options = std::fs::read_to_string(instance.join("options.txt")).unwrap();
         assert!(
             options.contains("resourcePacks:[\"vanilla\",\"file/Cartoon\"]"),
@@ -5079,8 +5312,7 @@ description="A minimap."
         assert!(options.contains("lang:zh_cn") && options.contains("fov:0.5"));
         assert!(get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"))[0].enabled);
 
-        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", false, Some("all"))
-            .unwrap();
+        toggle_java_resource_pack(&temp, "1.20.1-fabric", "Cartoon", false, Some("all")).unwrap();
         let options = std::fs::read_to_string(instance.join("options.txt")).unwrap();
         assert!(options.contains("resourcePacks:[\"vanilla\"]"), "{options}");
         assert!(!get_java_resource_packs(&temp, "1.20.1-fabric", Some("all"))[0].enabled);
@@ -5148,18 +5380,14 @@ description="A minimap."
                 .compression_method(zip::CompressionMethod::Stored);
             writer.start_file("Skyblock/level.dat", options).unwrap();
             writer.write_all(b"nbt").unwrap();
-            writer.start_file("Skyblock/levelname.txt", options).unwrap();
+            writer
+                .start_file("Skyblock/levelname.txt", options)
+                .unwrap();
             writer.write_all("空岛生存".as_bytes()).unwrap();
             writer.finish().unwrap();
         }
 
-        install_java_world_file(
-            &temp,
-            "1.20.1",
-            &zip_path.to_string_lossy(),
-            Some("all"),
-        )
-        .unwrap();
+        install_java_world_file(&temp, "1.20.1", &zip_path.to_string_lossy(), Some("all")).unwrap();
 
         let worlds = get_java_worlds(&temp, "1.20.1", Some("all"));
         assert_eq!(worlds.len(), 1);

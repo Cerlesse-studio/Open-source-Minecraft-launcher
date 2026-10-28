@@ -6,6 +6,7 @@ import {
   Download,
   House,
   Minus,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   Settings2,
@@ -117,6 +118,12 @@ const NAV_ITEMS: Array<{
   icon: typeof House;
 }> = [
   { id: "home", label: "主页", hint: "更新新闻与快速启动", icon: House },
+  {
+    id: "multiplayer",
+    label: "联机",
+    hint: "把局域网世界通过公网 IPv6 分享给好友",
+    icon: Network,
+  },
   { id: "download", label: "下载", hint: "下载新的游戏版本与进入下载进度", icon: Download },
   { id: "settings", label: "设置", hint: "启动器总设置", icon: Settings2 },
 ];
@@ -137,6 +144,7 @@ export function Sidebar({
   skinType,
   customSkinPath,
   mojangSkinName,
+  signedInName,
 }: {
   view: ViewId;
   onNavigate: (view: ViewId) => void;
@@ -153,6 +161,8 @@ export function Sidebar({
   skinType?: OfflineSkinType;
   customSkinPath?: string;
   mojangSkinName?: string;
+  /** Gamertag of the signed-in Microsoft account, shared by both editions. */
+  signedInName?: string | null;
 }) {
   const javaLabel = javaMajor
     ? `Java ${javaMajor}`
@@ -181,7 +191,13 @@ export function Sidebar({
           collapsed ? "mx-auto size-12 justify-center p-0" : "w-full gap-3 p-2.5",
         )}
         onClick={() => onNavigate("settings")}
-        title={collapsed ? `${playerName} · 打开启动器设置` : "打开启动器设置"}
+        title={
+          collapsed
+            ? `${signedInName || playerName} · 打开启动器设置`
+            : signedInName
+              ? `已登录正版账户 ${signedInName} · 打开启动器设置`
+              : "打开启动器设置"
+        }
       >
         <div
           className={cn(
@@ -201,16 +217,23 @@ export function Sidebar({
           <>
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5">
-                <span className="truncate text-[13px] font-medium">{playerName}</span>
+                <span className="truncate text-[13px] font-medium">
+                  {signedInName || playerName}
+                </span>
                 <Badge
                   variant="outline"
-                  className="h-4 shrink-0 border-border/80 px-1.5 text-[9px] font-normal text-muted-foreground"
+                  className={cn(
+                    "h-4 shrink-0 px-1.5 text-[9px] font-normal",
+                    signedInName
+                      ? "border-primary/40 text-primary"
+                      : "border-border/80 text-muted-foreground",
+                  )}
                 >
-                  离线
+                  {signedInName ? "正版" : "离线"}
                 </Badge>
               </span>
               <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                本地账户
+                {signedInName ? "Java 与基岩版共用此账户" : "本地账户"}
               </span>
             </span>
             <Settings2 className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />

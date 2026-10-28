@@ -133,9 +133,11 @@ async fn fetch_fabric(mc_version: &str) -> Vec<LoaderVersionItem> {
         ];
 
         for url in specific_urls {
-            if let Ok(entries) =
-                get_json_with_timeout_duration::<Vec<FabricLoaderEntry>>(&url, Duration::from_secs(6))
-                    .await
+            if let Ok(entries) = get_json_with_timeout_duration::<Vec<FabricLoaderEntry>>(
+                &url,
+                Duration::from_secs(6),
+            )
+            .await
             {
                 if !entries.is_empty() {
                     return entries
@@ -173,9 +175,11 @@ async fn fetch_fabric(mc_version: &str) -> Vec<LoaderVersionItem> {
     ];
 
     for url in global_urls {
-        if let Ok(entries) =
-            get_json_with_timeout_duration::<Vec<FabricGlobalLoaderEntry>>(url, Duration::from_secs(6))
-                .await
+        if let Ok(entries) = get_json_with_timeout_duration::<Vec<FabricGlobalLoaderEntry>>(
+            url,
+            Duration::from_secs(6),
+        )
+        .await
         {
             if !entries.is_empty() {
                 return entries
@@ -228,7 +232,8 @@ async fn fetch_quilt(mc_version: &str) -> Vec<LoaderVersionItem> {
     for ver in candidates {
         let url = format!("https://meta.quiltmc.org/v3/versions/loader/{ver}");
         if let Ok(entries) =
-            get_json_with_timeout_duration::<Vec<QuiltLoaderEntry>>(&url, Duration::from_secs(6)).await
+            get_json_with_timeout_duration::<Vec<QuiltLoaderEntry>>(&url, Duration::from_secs(6))
+                .await
         {
             if !entries.is_empty() {
                 return entries
@@ -236,7 +241,8 @@ async fn fetch_quilt(mc_version: &str) -> Vec<LoaderVersionItem> {
                     .take(35)
                     .map(|entry| {
                         let v = entry.loader.version;
-                        let stable = !v.contains("beta") && !v.contains("alpha") && !v.contains("-rc");
+                        let stable =
+                            !v.contains("beta") && !v.contains("alpha") && !v.contains("-rc");
                         LoaderVersionItem {
                             version: v,
                             stable,
@@ -275,7 +281,9 @@ struct ForgePromotions {
 async fn fetch_forge_official(mc_version: &str) -> Option<Vec<LoaderVersionItem>> {
     let promo_url =
         "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
-    let promos_res = get_json_with_timeout::<ForgePromotions>(promo_url).await.ok();
+    let promos_res = get_json_with_timeout::<ForgePromotions>(promo_url)
+        .await
+        .ok();
     let promos = promos_res.map(|p| p.promos).unwrap_or_default();
 
     let rec_key = format!("{mc_version}-recommended");
@@ -366,7 +374,11 @@ async fn fetch_forge(mc_version: &str) -> Vec<LoaderVersionItem> {
         return Vec::new();
     };
     // Sort newest first by modified timestamp or version string
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.version.cmp(&a.version)));
+    entries.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| b.version.cmp(&a.version))
+    });
     entries
         .into_iter()
         .take(40)
@@ -570,7 +582,8 @@ async fn fetch_fabric_api(mc_version: &str) -> Vec<LoaderVersionItem> {
             "https://api.modrinth.com/v2/project/P7dR8mSH/version?game_versions=%5B%22{ver}%22%5D&loaders=%5B%22fabric%22%5D"
         );
         if let Ok(entries) =
-            get_json_with_timeout_duration::<Vec<ModrinthVersion>>(&url, Duration::from_secs(7)).await
+            get_json_with_timeout_duration::<Vec<ModrinthVersion>>(&url, Duration::from_secs(7))
+                .await
         {
             if !entries.is_empty() {
                 return entries
@@ -707,7 +720,9 @@ async fn apply_fabric_or_quilt(
 
     let mut last_err = String::new();
     for url in urls {
-        match get_json_with_timeout_duration::<LoaderProfileJson>(&url, Duration::from_secs(8)).await {
+        match get_json_with_timeout_duration::<LoaderProfileJson>(&url, Duration::from_secs(8))
+            .await
+        {
             Ok(profile) => {
                 merge_profile_into_version(base, profile);
                 return Ok(());
@@ -759,8 +774,8 @@ fn extract_installer_archive(
     libraries_dir: &Path,
     default_maven_base: &str,
 ) -> Result<(LoaderProfileJson, Vec<Library>), String> {
-    let file = std::fs::File::open(installer_path)
-        .map_err(|e| format!("无法打开加载器安装包: {e}"))?;
+    let file =
+        std::fs::File::open(installer_path).map_err(|e| format!("无法打开加载器安装包: {e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("安装包格式无效 (非 ZIP/JAR): {e}"))?;
 
@@ -887,8 +902,13 @@ pub fn is_valid_patched_client_jar(path: &Path) -> bool {
     let Ok(mut archive) = zip::ZipArchive::new(file) else {
         return false;
     };
-    let has_mc = archive.by_name("net/minecraft/client/Minecraft.class").is_ok();
-    has_mc || archive.by_name("net/minecraft/client/main/Main.class").is_ok()
+    let has_mc = archive
+        .by_name("net/minecraft/client/Minecraft.class")
+        .is_ok();
+    has_mc
+        || archive
+            .by_name("net/minecraft/client/main/Main.class")
+            .is_ok()
 }
 
 pub async fn ensure_forge_or_neoforge_client_jar(
@@ -918,9 +938,10 @@ pub async fn ensure_forge_or_neoforge_client_jar(
 
     // Check if client jar already exists and contains net/minecraft/client/Minecraft.class
     let check_path = client_jar_path.clone();
-    let already_valid = tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
-        .await
-        .unwrap_or(false);
+    let already_valid =
+        tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+            .await
+            .unwrap_or(false);
     if already_valid {
         return Ok(());
     }
@@ -1074,7 +1095,11 @@ pub async fn ensure_forge_or_neoforge_client_jar(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let tail_out = if stdout.len() > 1000 { &stdout[stdout.len() - 1000..] } else { &stdout };
+    let tail_out = if stdout.len() > 1000 {
+        &stdout[stdout.len() - 1000..]
+    } else {
+        &stdout
+    };
     Err(format!(
         "构建 {loader_type} 客户端核心失败 (exit code: {:?}):\n{stderr}\n{tail_out}",
         output.status.code()
@@ -1179,10 +1204,7 @@ pub async fn prepare_addons(
 
         if dl_url.is_none() {
             let api_list = fetch_fabric_api(mc_version).await;
-            if let Some(found) = api_list
-                .into_iter()
-                .find(|item| item.version == fab_ver)
-            {
+            if let Some(found) = api_list.into_iter().find(|item| item.version == fab_ver) {
                 dl_url = found.download_url;
                 fname = found.file_name;
                 sha1 = found.sha1;
@@ -1277,7 +1299,10 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_fabric_loaders() {
         let items = fetch_fabric("1.20.1").await;
-        assert!(!items.is_empty(), "Fabric loaders for 1.20.1 should not be empty");
+        assert!(
+            !items.is_empty(),
+            "Fabric loaders for 1.20.1 should not be empty"
+        );
         assert!(items.iter().any(|i| i.stable));
     }
 }

@@ -20,6 +20,9 @@ import type {
   JavaInstall,
   LaunchRequest,
   LoaderSelection,
+  MultiplayerInstallState,
+  MultiplayerLogPayload,
+  MultiplayerStatus,
   SearchContentResult,
   SystemInfo,
   VersionLoadersCatalog,
@@ -31,6 +34,9 @@ export interface DemoEventMap {
   "game:log": GameLogPayload;
   "game:status": GameStatus;
   "game:exit": GameExitPayload;
+  "multiplayer:status": MultiplayerStatus;
+  "multiplayer:log": MultiplayerLogPayload;
+  "multiplayer:install": MultiplayerInstallState;
 }
 
 export type DemoEventName = keyof DemoEventMap;
@@ -54,6 +60,11 @@ function emit<K extends DemoEventName>(event: K, payload: DemoEventMap[K]): void
   listeners.get(event)?.forEach((handler) => {
     (handler as (value: DemoEventMap[K]) => void)(payload);
   });
+}
+
+/** Preview builds push multiplayer events through the same listeners. */
+export function demoEmit<K extends DemoEventName>(event: K, payload: DemoEventMap[K]): void {
+  emit(event, payload);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));

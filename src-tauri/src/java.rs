@@ -57,7 +57,11 @@ struct AdoptiumVersion {
 }
 
 fn java_exe() -> &'static str {
-    if cfg!(windows) { "java.exe" } else { "java" }
+    if cfg!(windows) {
+        "java.exe"
+    } else {
+        "java"
+    }
 }
 
 fn no_window(cmd: &mut Command) {

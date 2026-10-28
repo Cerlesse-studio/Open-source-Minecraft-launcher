@@ -15,8 +15,8 @@
 //! reports for that exact file (never a hand-written URL).
 
 use crate::content::{ContentFile, ContentHit, ContentVersionItem, SearchContentResult};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use std::time::Duration;
 
 /// CurseForge game id for Minecraft Bedrock Edition.

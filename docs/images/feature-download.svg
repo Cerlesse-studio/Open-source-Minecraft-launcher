@@ -25,10 +25,10 @@
     </g>
   </g>
   <text x="128" y="62" font-size="22" font-weight="700" fill="#eaf6ff">多线程下载</text>
-  <text x="128" y="90" font-size="13.5" fill="#8fa8c2">最高 64 线程并发拉取</text>
+  <text x="128" y="90" font-size="13.5" fill="#8fa8c2">最高 16 路并发分片</text>
   <text x="128" y="112" font-size="13.5" fill="#8fa8c2">大文件 HTTP Range 分片 · SHA-1 校验</text>
     <rect x="36" y="160" width="84" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
-    <text x="78" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">1–64 线程</text>
+    <text x="78" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">1–64 档位</text>
     <rect x="128" y="160" width="68" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>
     <text x="162" y="176.5" text-anchor="middle" font-size="12" fill="#c6f86a">断点分片</text>
     <rect x="204" y="160" width="68" height="24" rx="12" fill="#c6f86a" fill-opacity="0.08" stroke="#c6f86a" stroke-opacity="0.35"/>

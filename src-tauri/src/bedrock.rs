@@ -554,7 +554,9 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
                     }
 
                     let pkg_ext = insp.package_file.as_ref().and_then(|p| {
-                        p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase())
+                        p.extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_lowercase())
                     });
                     let is_gdk = pkg_ext.as_deref() == Some("msixvc");
                     let package_type = if is_gdk {
@@ -570,10 +572,23 @@ pub fn get_bedrock_status(game_root: &Path) -> BedrockStatus {
                     };
 
                     version_details.push(BedrockInstalledVersionDetail {
-                        id: if !insp.version_id.is_empty() { insp.version_id } else { name.clone() },
-                        name: if insp.display_name.is_empty() { name } else { insp.display_name },
+                        id: if !insp.version_id.is_empty() {
+                            insp.version_id
+                        } else {
+                            name.clone()
+                        },
+                        name: if insp.display_name.is_empty() {
+                            name
+                        } else {
+                            insp.display_name
+                        },
                         is_server: insp.is_server,
-                        package_file: insp.package_file.map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string()),
+                        package_file: insp.package_file.map(|p| {
+                            p.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string()
+                        }),
                         package_type,
                         is_gdk,
                     });
@@ -653,8 +668,12 @@ impl BdsRegistryResponse {
                             name: format!("Minecraft 基岩版 {v}"),
                             version: v.clone(),
                             release_type: "release".to_string(),
-                            download_url: format!("https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"),
-                            store_url: Some("ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string()),
+                            download_url: format!(
+                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
+                            ),
+                            store_url: Some(
+                                "ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string(),
+                            ),
                             date: "第三方 API 同步".to_string(),
                             size: 85_983_232,
                             sha256: None,
@@ -676,8 +695,12 @@ impl BdsRegistryResponse {
                             name: format!("Minecraft 基岩预览版 {v}"),
                             version: v.clone(),
                             release_type: "preview".to_string(),
-                            download_url: format!("https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"),
-                            store_url: Some("ms-windows-store://pdp/?ProductId=9P5X4QVLC2XR".to_string()),
+                            download_url: format!(
+                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
+                            ),
+                            store_url: Some(
+                                "ms-windows-store://pdp/?ProductId=9P5X4QVLC2XR".to_string(),
+                            ),
                             date: "预览测试版".to_string(),
                             size: 89_128_960,
                             sha256: None,
@@ -703,9 +726,17 @@ impl BdsRegistryResponse {
                                 format!("Minecraft 基岩版 {v}")
                             },
                             version: v.clone(),
-                            release_type: if is_preview { "preview".to_string() } else { "release".to_string() },
-                            download_url: format!("https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"),
-                            store_url: Some("ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string()),
+                            release_type: if is_preview {
+                                "preview".to_string()
+                            } else {
+                                "release".to_string()
+                            },
+                            download_url: format!(
+                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
+                            ),
+                            store_url: Some(
+                                "ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string(),
+                            ),
                             date: "BDS-Versions 同步".to_string(),
                             size: 85_983_232,
                             sha256: None,
@@ -899,7 +930,20 @@ fn format_iso8601_utc(secs: u64) -> String {
         year += 1;
     }
     let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-    let m_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let m_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1;
     for &dim in &m_days {
         if days < dim {
@@ -909,7 +953,10 @@ fn format_iso8601_utc(secs: u64) -> String {
         month += 1;
     }
     let day = days + 1;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, h, m, s)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, h, m, s
+    )
 }
 
 pub async fn resolve_fe3_soap_update_url(update_id: &str) -> Option<String> {
@@ -1002,13 +1049,27 @@ pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<Bedro
     };
 
     let parse_build = |key: &str, obj: &serde_json::Value| -> Option<BedrockVersionItem> {
-        let game_type = obj.get("Type").and_then(|v| v.as_str()).unwrap_or("Release");
-        let build_type = obj.get("BuildType").and_then(|v| v.as_str()).unwrap_or("UWP");
-        let id = obj.get("ID").and_then(|v| v.as_str()).unwrap_or(key).to_string();
+        let game_type = obj
+            .get("Type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Release");
+        let build_type = obj
+            .get("BuildType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UWP");
+        let id = obj
+            .get("ID")
+            .and_then(|v| v.as_str())
+            .unwrap_or(key)
+            .to_string();
         if id.is_empty() {
             return None;
         }
-        let date = obj.get("Date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let date = obj
+            .get("Date")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let variations = obj.get("Variations").and_then(|v| v.as_array())?;
         if variations.is_empty() {
@@ -1035,7 +1096,10 @@ pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<Bedro
             })
             .unwrap_or_default();
 
-        let md5 = var.get("MD5").and_then(|m| m.as_str()).map(|s| s.to_string());
+        let md5 = var
+            .get("MD5")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
         let direct_url = metadata
             .iter()
             .find(|s| s.starts_with("http://") || s.starts_with("https://"))
@@ -1049,20 +1113,24 @@ pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<Bedro
             String::new()
         };
 
-        let curated_match = get_curated_fallback_versions().into_iter().find(|c| c.id == id || c.version == id);
-        let (final_url, final_md5) = if download_url.starts_with("http://") || download_url.starts_with("https://") {
-            (download_url, md5)
-        } else if let Some(curated) = curated_match {
-            (curated.download_url, md5.or(curated.md5))
-        } else {
-            (download_url, md5)
-        };
+        let curated_match = get_curated_fallback_versions()
+            .into_iter()
+            .find(|c| c.id == id || c.version == id);
+        let (final_url, final_md5) =
+            if download_url.starts_with("http://") || download_url.starts_with("https://") {
+                (download_url, md5)
+            } else if let Some(curated) = curated_match {
+                (curated.download_url, md5.or(curated.md5))
+            } else {
+                (download_url, md5)
+            };
 
         if final_url.is_empty() {
             return None;
         }
 
-        let is_preview = game_type.eq_ignore_ascii_case("preview") || game_type.eq_ignore_ascii_case("beta");
+        let is_preview =
+            game_type.eq_ignore_ascii_case("preview") || game_type.eq_ignore_ascii_case("beta");
         let release_type = if is_preview { "preview" } else { "release" };
 
         let display_name = if is_preview {
@@ -1135,8 +1203,9 @@ pub fn parse_bedrockboot_db_json(json_str: &str, source_name: &str) -> Vec<Bedro
     items
 }
 
-static BEDROCK_VERSIONS_MEMORY_CACHE: std::sync::Mutex<Option<(Instant, String, Vec<BedrockVersionItem>)>> =
-    std::sync::Mutex::new(None);
+static BEDROCK_VERSIONS_MEMORY_CACHE: std::sync::Mutex<
+    Option<(Instant, String, Vec<BedrockVersionItem>)>,
+> = std::sync::Mutex::new(None);
 
 pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<BedrockVersionItem> {
     let source = api_source.unwrap_or("mcappx");
@@ -1147,7 +1216,10 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
 
     if let Ok(guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
         if let Some((ts, cached_src, items)) = guard.as_ref() {
-            if cached_src == source && ts.elapsed() < std::time::Duration::from_secs(300) && !items.is_empty() {
+            if cached_src == source
+                && ts.elapsed() < std::time::Duration::from_secs(300)
+                && !items.is_empty()
+            {
                 return items.clone();
             }
         }
@@ -1159,7 +1231,11 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
         .unwrap_or_default();
 
     // BedrockBoot sources (McAppx, Gitee, BMCBL)
-    if source == "mcappx" || source == "bedrockboot_gitee" || source == "bmcbl" || source == "bedrockboot" {
+    if source == "mcappx"
+        || source == "bedrockboot_gitee"
+        || source == "bmcbl"
+        || source == "bedrockboot"
+    {
         let (primary_url, label) = match source {
             "bedrockboot_gitee" => (
                 "https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json",
@@ -1490,7 +1566,10 @@ pub async fn get_bedrock_content_async(category: Option<&str>) -> Vec<BedrockCon
     filter_bedrock_content(fallback, category)
 }
 
-fn filter_bedrock_content(items: Vec<BedrockContentItem>, category: Option<&str>) -> Vec<BedrockContentItem> {
+fn filter_bedrock_content(
+    items: Vec<BedrockContentItem>,
+    category: Option<&str>,
+) -> Vec<BedrockContentItem> {
     match category {
         Some(c) if !c.is_empty() && c != "all" => items
             .into_iter()
@@ -1523,11 +1602,19 @@ fn spawn_bedrock_exe(exe: &Path, working_dir: &Path, is_console: bool) -> Result
 
         // Auto-enable UWP loopback exemption so clients can join localhost BDS without Windows isolation blocks
         let _ = Command::new("CheckNetIsolation")
-            .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe"])
+            .args([
+                "LoopbackExempt",
+                "-a",
+                "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe",
+            ])
             .spawn();
 
         let _ = Command::new("CheckNetIsolation")
-            .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe"])
+            .args([
+                "LoopbackExempt",
+                "-a",
+                "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
+            ])
             .spawn();
 
         let mut cmd = Command::new(exe);
@@ -1710,7 +1797,13 @@ pub fn ensure_game_input_installed(_work_dir: &Path, _app: Option<&tauri::AppHan
 fn compare_windows_versions(v1: &str, v2: &str) -> std::cmp::Ordering {
     let parse_nums = |s: &str| -> Vec<u64> {
         s.split('.')
-            .filter_map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().ok())
+            .filter_map(|p| {
+                p.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .ok()
+            })
             .collect()
     };
     let n1 = parse_nums(v1);
@@ -1929,7 +2022,8 @@ pub fn check_bedrockboot_dependencies(force: bool) -> BedrockFullDependencyRepor
         // 10. WinAppRuntime (Windows App SDK)
         let (win_app_rt_ok, win_app_rt_ver) = {
             let found = installed_pkgs.iter().find(|(k, _)| {
-                k.starts_with("microsoft.windowsappruntime") || k.starts_with("microsoftcorporationii.winappruntime")
+                k.starts_with("microsoft.windowsappruntime")
+                    || k.starts_with("microsoftcorporationii.winappruntime")
             });
             if let Some((_, v)) = found {
                 (true, Some(v.clone()))
@@ -1979,7 +2073,9 @@ pub fn check_bedrockboot_dependencies(force: bool) -> BedrockFullDependencyRepor
     }
 }
 
-pub fn auto_fix_bedrockboot_dependencies(app: Option<&tauri::AppHandle>) -> BedrockFullDependencyReport {
+pub fn auto_fix_bedrockboot_dependencies(
+    app: Option<&tauri::AppHandle>,
+) -> BedrockFullDependencyReport {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1991,9 +2087,18 @@ pub fn auto_fix_bedrockboot_dependencies(app: Option<&tauri::AppHandle>) -> Bedr
         }
 
         if !check_vc_redist_x64() {
-            emit_bedrock_log(app, "【自动修复】正在安装 Visual C++ 2015-2022 (x64) 运行库…");
+            emit_bedrock_log(
+                app,
+                "【自动修复】正在安装 Visual C++ 2015-2022 (x64) 运行库…",
+            );
             let _ = Command::new("winget")
-                .args(["install", "Microsoft.VCRedist.2015+.x64", "--silent", "--accept-package-agreements", "--accept-source-agreements"])
+                .args([
+                    "install",
+                    "Microsoft.VCRedist.2015+.x64",
+                    "--silent",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ])
                 .creation_flags(0x0800_0000)
                 .output();
         }
@@ -2164,16 +2269,27 @@ pub fn ensure_gaming_services_running(app: Option<&tauri::AppHandle>) {
 
     // 2. Configure network loopback exemption for both standard and preview Bedrock UWP
     let _ = Command::new("CheckNetIsolation")
-        .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe"])
+        .args([
+            "LoopbackExempt",
+            "-a",
+            "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 
     let _ = Command::new("CheckNetIsolation")
-        .args(["LoopbackExempt", "-a", "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe"])
+        .args([
+            "LoopbackExempt",
+            "-a",
+            "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 
-    emit_bedrock_log(app, "已自动检查并激活游戏服务 (Gaming Services) 与网络环回豁免。");
+    emit_bedrock_log(
+        app,
+        "已自动检查并激活游戏服务 (Gaming Services) 与网络环回豁免。",
+    );
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2242,7 +2358,10 @@ fn winget_install_store_product(
     use std::os::windows::process::CommandExt;
 
     let winget_bin = find_winget_exe().unwrap_or_else(|| PathBuf::from("winget"));
-    emit_bedrock_log(app, format!("正在通过 winget 自动安装 {label}（Store ID: {product_id}）…"));
+    emit_bedrock_log(
+        app,
+        format!("正在通过 winget 自动安装 {label}（Store ID: {product_id}）…"),
+    );
     let mut cmd = Command::new(&winget_bin);
     cmd.args([
         "install",
@@ -2391,11 +2510,7 @@ fn strip_missing_appx_dependencies(manifest: &Path) -> Vec<String> {
 
     let missing: Vec<String> = declared
         .iter()
-        .filter(|name| {
-            !installed
-                .iter()
-                .any(|have| have.eq_ignore_ascii_case(name))
-        })
+        .filter(|name| !installed.iter().any(|have| have.eq_ignore_ascii_case(name)))
         .cloned()
         .collect();
     if missing.is_empty() {
@@ -2556,9 +2671,7 @@ fn register_loose_appx(dir: &Path, manifest: &Path) -> Result<(String, Vec<Strin
             fallback
         }
     });
-    Err(format!(
-        "本地部署 AppX 核心失败: {message}"
-    ))
+    Err(format!("本地部署 AppX 核心失败: {message}"))
 }
 
 /// Package family name of a client this launcher deployed itself (development
@@ -2658,7 +2771,11 @@ fn launch_uwp_package(
         );
     };
     Command::new("explorer")
-        .arg(format!("shell:AppsFolder\\{}!{}", pfn.trim(), application_id))
+        .arg(format!(
+            "shell:AppsFolder\\{}!{}",
+            pfn.trim(),
+            application_id
+        ))
         .spawn()
         .map_err(|e| format!("按应用标识启动基岩版失败: {e}"))?;
     Ok(())
@@ -2686,9 +2803,8 @@ fn launch_appx_core(
     let seeded = seed_package_data_dir(&pfn, game_root);
     let app_id = appx_application_id(manifest).unwrap_or_else(|| "App".to_string());
     launch_uwp_package(Some(pfn.as_str()), &app_id)?;
-    let mut message = format!(
-        "已从本地核心启动 Minecraft 基岩版 ({label})，未经过 Microsoft Store"
-    );
+    let mut message =
+        format!("已从本地核心启动 Minecraft 基岩版 ({label})，未经过 Microsoft Store");
     if !stripped.is_empty() {
         message.push_str(&format!(
             "；已跳过本机未安装的框架依赖: {}",
@@ -2756,7 +2872,11 @@ pub fn provision_bedrock_runtime(app: Option<&tauri::AppHandle>) -> BedrockRunti
         }
 
         if !status.gaming_services_installed {
-            if let Err(err) = winget_install_store_product(GAMING_SERVICES_STORE_ID, "游戏服务 Gaming Services", app) {
+            if let Err(err) = winget_install_store_product(
+                GAMING_SERVICES_STORE_ID,
+                "游戏服务 Gaming Services",
+                app,
+            ) {
                 emit_bedrock_log(app, err);
             }
         }
@@ -2767,11 +2887,17 @@ pub fn provision_bedrock_runtime(app: Option<&tauri::AppHandle>) -> BedrockRunti
 
         // Whatever winget could not deliver is handed over to the Store UI automatically
         if !refreshed.xbox_app_installed {
-            emit_bedrock_log(app, "winget 未能完成 Xbox 应用安装，已自动打开 Microsoft Store 页面。");
+            emit_bedrock_log(
+                app,
+                "winget 未能完成 Xbox 应用安装，已自动打开 Microsoft Store 页面。",
+            );
             let _ = open_store_page(XBOX_APP_STORE_ID);
         }
         if !refreshed.gaming_services_installed {
-            emit_bedrock_log(app, "winget 未能完成游戏服务安装，已自动打开 Microsoft Store 页面。");
+            emit_bedrock_log(
+                app,
+                "winget 未能完成游戏服务安装，已自动打开 Microsoft Store 页面。",
+            );
             let _ = open_store_page(GAMING_SERVICES_STORE_ID);
         }
         if !refreshed.minecraft_uwp_installed {
@@ -2796,10 +2922,7 @@ fn spawn_gdk_auto_provision(
     launch_after_install: bool,
 ) {
     if GDK_AUTOFIX_ACTIVE.swap(true, Ordering::SeqCst) {
-        emit_bedrock_log(
-            app.as_ref(),
-            "Xbox 运行环境自动程序已在执行中，请稍候…",
-        );
+        emit_bedrock_log(app.as_ref(), "Xbox 运行环境自动程序已在执行中，请稍候…");
         return;
     }
 
@@ -3083,7 +3206,11 @@ pub async fn find_or_install_bds_fallback(
     let target = bds_versions
         .iter()
         .find(|v| v.release_type == "release" && version_ids_match(&clean_id, &v.id))
-        .or_else(|| bds_versions.iter().find(|v| version_ids_match(&clean_id, &v.id)))
+        .or_else(|| {
+            bds_versions
+                .iter()
+                .find(|v| version_ids_match(&clean_id, &v.id))
+        })
         .or_else(|| bds_versions.iter().find(|v| v.release_type == "release"))
         .or_else(|| bds_versions.first());
 
@@ -3093,7 +3220,10 @@ pub async fn find_or_install_bds_fallback(
 
     emit_bedrock_log(
         Some(app),
-        format!("【自动程序】正在为您下载并部署免密独立 BDS 核心: {}…", target.name),
+        format!(
+            "【自动程序】正在为您下载并部署免密独立 BDS 核心: {}…",
+            target.name
+        ),
     );
     install_bedrock_version(
         app,
@@ -3311,9 +3441,10 @@ fn start_bds_core_deployment(
         };
         match find_or_install_bds_fallback(&handle, &root, &requested).await {
             Ok(msg) => emit_bedrock_log(Some(&handle), format!("【自动程序】{msg}")),
-            Err(err) => {
-                emit_bedrock_log(Some(&handle), format!("【自动程序】BDS 核心自动部署失败: {err}"))
-            }
+            Err(err) => emit_bedrock_log(
+                Some(&handle),
+                format!("【自动程序】BDS 核心自动部署失败: {err}"),
+            ),
         }
     });
 
@@ -3329,7 +3460,8 @@ fn launch_offline_bedrock_core(
     game_root: &Path,
     version_id: &str,
 ) -> Result<String, String> {
-    if let Some((exe, work_dir, is_server, name)) = find_installed_standalone_core(game_root, true) {
+    if let Some((exe, work_dir, is_server, name)) = find_installed_standalone_core(game_root, true)
+    {
         if is_server {
             spawn_bedrock_exe(&exe, &work_dir, true)?;
             return Ok(format!(
@@ -3370,7 +3502,9 @@ pub fn launch_bedrock_edition(
                 .trim_start_matches("基岩版 ")
                 .trim();
 
-            if clean_vid.eq_ignore_ascii_case("uwp") || clean_vid.eq_ignore_ascii_case("bedrock-uwp") {
+            if clean_vid.eq_ignore_ascii_case("uwp")
+                || clean_vid.eq_ignore_ascii_case("bedrock-uwp")
+            {
                 if is_uwp_installed() {
                     return ensure_and_launch_uwp(app);
                 }
@@ -3404,7 +3538,11 @@ pub fn launch_bedrock_edition(
                 if let Some(exe) = insp.main_executable {
                     let work_dir = exe.parent().unwrap_or(&target_dir);
                     spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
-                    let type_desc = if insp.is_server { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
+                    let type_desc = if insp.is_server {
+                        "服务端核心，已开启独立控制台窗口"
+                    } else {
+                        "客户端"
+                    };
                     return Ok(format!("已启动基岩版{type_desc} ({clean_vid})"));
                 }
 
@@ -3477,12 +3615,7 @@ pub fn launch_bedrock_edition(
                     let insp = inspect_bedrock_version_dir(&dir);
                     if let Some(exe) = insp.main_executable {
                         let work_dir = exe.parent().unwrap_or(&dir).to_path_buf();
-                        candidates.push((
-                            exe,
-                            work_dir,
-                            insp.is_server,
-                            insp.folder_name,
-                        ));
+                        candidates.push((exe, work_dir, insp.is_server, insp.folder_name));
                     } else if gdk_package.is_none() {
                         if let Some(pkg) = insp.package_file.as_ref() {
                             let ext = pkg
@@ -3503,7 +3636,11 @@ pub fn launch_bedrock_edition(
 
             if let Some((exe, dir, is_console, name)) = candidates.into_iter().next() {
                 spawn_bedrock_exe(&exe, &dir, is_console)?;
-                let type_desc = if is_console { "服务端核心，已开启独立控制台窗口" } else { "客户端" };
+                let type_desc = if is_console {
+                    "服务端核心，已开启独立控制台窗口"
+                } else {
+                    "客户端"
+                };
                 return Ok(format!("已启动本地基岩版{type_desc} ({name})"));
             }
 
@@ -3572,7 +3709,8 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
     // 2. Check curated verified catalog for direct package URLs
     for item in get_curated_fallback_versions() {
         if item.id == version_id || item.version == version_id {
-            if item.download_url.starts_with("http://") || item.download_url.starts_with("https://") {
+            if item.download_url.starts_with("http://") || item.download_url.starts_with("https://")
+            {
                 add_xbox_mirrors(&mut candidate_urls, &item.download_url);
             }
             break;
@@ -3581,7 +3719,10 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
 
     // 3. Check cached versions to see if this version has a direct URL or UpdateID
     if let Some(cached) = load_cached_versions() {
-        if let Some(item) = cached.iter().find(|v| v.id == version_id || v.version == version_id) {
+        if let Some(item) = cached
+            .iter()
+            .find(|v| v.id == version_id || v.version == version_id)
+        {
             let u = item.download_url.trim();
             if u.starts_with("http://") || u.starts_with("https://") {
                 add_xbox_mirrors(&mut candidate_urls, u);
@@ -3594,9 +3735,8 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
     }
 
     // 4. If download_url looks like an UpdateID GUID (e.g. 985d1ee4-0e9d-49de-9a99-e208adc08d0c)
-    let is_guid = download_url.len() >= 32
-        && download_url.contains('-')
-        && !download_url.starts_with("http");
+    let is_guid =
+        download_url.len() >= 32 && download_url.contains('-') && !download_url.starts_with("http");
     if is_guid {
         if let Some(soap_url) = resolve_fe3_soap_update_url(download_url.trim()).await {
             add_xbox_mirrors(&mut candidate_urls, &soap_url);
@@ -3627,10 +3767,17 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
     let client = net::client();
     if !has_client_package {
         for meta_url in meta_endpoints {
-            if let Ok(resp) = client.get(&meta_url).timeout(std::time::Duration::from_secs(3)).send().await {
+            if let Ok(resp) = client
+                .get(&meta_url)
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if let Some(win_url) = json.pointer("/binary/windows/url").and_then(|u| u.as_str()) {
+                        if let Some(win_url) =
+                            json.pointer("/binary/windows/url").and_then(|u| u.as_str())
+                        {
                             let azure_variant = win_url.replace(
                                 "https://www.minecraft.net/bedrockdedicatedserver",
                                 "https://minecraft.azureedge.net",
@@ -3677,7 +3824,10 @@ pub async fn install_bedrock_version(
     // Detect file type by candidate URLs
     let pkg_filename = if candidate_urls.iter().any(|u| u.contains(".msixvc")) {
         format!("{version_id}.msixvc")
-    } else if candidate_urls.iter().any(|u| u.contains(".appx") || u.contains(".msix")) {
+    } else if candidate_urls
+        .iter()
+        .any(|u| u.contains(".appx") || u.contains(".msix"))
+    {
         format!("{version_id}.appx")
     } else {
         format!("{version_id}.insPack")
@@ -3842,13 +3992,18 @@ pub async fn install_bedrock_version(
         }
 
         if !downloaded {
-            return Err(format!("通过 BedrockBoot 引擎下载基岩版核心失败: {last_error}"));
+            return Err(format!(
+                "通过 BedrockBoot 引擎下载基岩版核心失败: {last_error}"
+            ));
         }
     }
 
     // MD5 verification if available
     let expected_md5 = load_cached_versions()
-        .and_then(|list| list.into_iter().find(|v| v.id == version_id || v.version == version_id))
+        .and_then(|list| {
+            list.into_iter()
+                .find(|v| v.id == version_id || v.version == version_id)
+        })
         .and_then(|v| v.md5);
 
     if let Some(expected) = &expected_md5 {
@@ -3916,7 +4071,9 @@ pub async fn install_bedrock_version(
         );
 
         for i in 0..total_entries {
-            let mut entry = archive.by_index(i).map_err(|e| format!("读取文件失败: {e}"))?;
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| format!("读取文件失败: {e}"))?;
             let outpath = match entry.enclosed_name() {
                 Some(path) => dest_dir.join(path),
                 None => continue,
@@ -3930,7 +4087,8 @@ pub async fn install_bedrock_version(
                 }
                 let mut outfile =
                     File::create(&outpath).map_err(|e| format!("创建目标文件失败: {e}"))?;
-                std::io::copy(&mut entry, &mut outfile).map_err(|e| format!("解压写入失败: {e}"))?;
+                std::io::copy(&mut entry, &mut outfile)
+                    .map_err(|e| format!("解压写入失败: {e}"))?;
             }
 
             if i % 25 == 0 || i + 1 == total_entries {
@@ -4067,19 +4225,13 @@ pub async fn install_bedrock_version(
             skipped_files: 0,
             retried_files: 0,
             active_tasks: vec![],
-            stages: make_stages(
-                "done",
-                "done",
-                "done",
-                85_983_232,
-                85_983_232,
-                1,
-                1,
-            ),
+            stages: make_stages("done", "done", "done", 85_983_232, 85_983_232, 1, 1),
         },
     );
 
-    Ok(format!("基岩版 {version_id} 核心已通过 {src_label} 下载并就绪"))
+    Ok(format!(
+        "基岩版 {version_id} 核心已通过 {src_label} 下载并就绪"
+    ))
 }
 
 pub fn force_remove_file(path: &Path) -> std::io::Result<()> {
@@ -4280,11 +4432,9 @@ pub async fn delete_bedrock_version(game_root: &Path, version_id: &str) -> Resul
     // The Store client is an installed application, not a folder this launcher
     // owns; deleting it here would uninstall an app behind the user's back.
     if clean_id.eq_ignore_ascii_case("uwp") || clean_id.eq_ignore_ascii_case("bedrock-uwp") {
-        return Err(
-            "「正版 UWP」由 Microsoft Store 管理，无法从启动器删除。\
+        return Err("「正版 UWP」由 Microsoft Store 管理，无法从启动器删除。\
              如需卸载，请在 Windows「设置 → 应用」中操作。"
-                .to_string(),
-        );
+            .to_string());
     }
 
     let target = resolve_bedrock_version_dir(&root, version_id);
@@ -4387,7 +4537,10 @@ pub async fn clean_download_cache(game_root: &Path) -> Result<u64, String> {
                 if let Ok(sub) = std::fs::read_dir(&path) {
                     for f in sub.flatten() {
                         let fp = f.path();
-                        if fp.extension().map_or(false, |e| e.eq_ignore_ascii_case("part")) {
+                        if fp
+                            .extension()
+                            .map_or(false, |e| e.eq_ignore_ascii_case("part"))
+                        {
                             if let Ok(meta) = fp.metadata() {
                                 total_freed += meta.len();
                             }
@@ -4408,7 +4561,10 @@ pub async fn clean_download_cache(game_root: &Path) -> Result<u64, String> {
                 if let Ok(sub) = std::fs::read_dir(&path) {
                     for f in sub.flatten() {
                         let fp = f.path();
-                        if fp.extension().map_or(false, |e| e.eq_ignore_ascii_case("part")) {
+                        if fp
+                            .extension()
+                            .map_or(false, |e| e.eq_ignore_ascii_case("part"))
+                        {
                             if let Ok(meta) = fp.metadata() {
                                 total_freed += meta.len();
                             }
@@ -4660,10 +4816,7 @@ fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
             if !base.is_dir() && !(create && deployed_here) {
                 continue;
             }
-            let candidate = base
-                .join("LocalState")
-                .join("games")
-                .join("com.mojang");
+            let candidate = base.join("LocalState").join("games").join("com.mojang");
             if create {
                 if std::fs::create_dir_all(&candidate).is_ok() {
                     dirs.push(candidate);
@@ -4761,8 +4914,8 @@ fn bedrock_install_dirs(game_root: &Path) -> Vec<PathBuf> {
 
 fn zip_entry_names(path: &Path) -> Result<Vec<String>, String> {
     let file = File::open(path).map_err(|e| format!("无法读取附加包 {}: {e}", path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("不是有效的附加包压缩文件: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("不是有效的附加包压缩文件: {e}"))?;
     let mut names = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {
         let entry = archive
@@ -4829,7 +4982,11 @@ fn module_target_kinds(modules: Option<&Vec<PackModule>>) -> Vec<&'static str> {
     kinds
 }
 
-fn discover_packs(file_path: &Path, names: &[String], file_stem: &str) -> Result<Vec<PackSpec>, String> {
+fn discover_packs(
+    file_path: &Path,
+    names: &[String],
+    file_stem: &str,
+) -> Result<Vec<PackSpec>, String> {
     let mut specs: Vec<PackSpec> = Vec::new();
 
     for (index, name) in names.iter().enumerate() {
@@ -4908,8 +5065,8 @@ fn extract_entries(
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
         }
-        let mut output = File::create(&target)
-            .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
+        let mut output =
+            File::create(&target).map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
         std::io::copy(&mut entry, &mut output)
             .map_err(|e| format!("写入 {} 失败: {e}", target.display()))?;
     }
@@ -4926,13 +5083,18 @@ fn extract_single_entry(archive_path: &Path, index: usize, dest: &Path) -> Resul
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let mut output = File::create(dest).map_err(|e| format!("写入 {} 失败: {e}", dest.display()))?;
+    let mut output =
+        File::create(dest).map_err(|e| format!("写入 {} 失败: {e}", dest.display()))?;
     std::io::copy(&mut entry, &mut output)
         .map_err(|e| format!("写入 {} 失败: {e}", dest.display()))?;
     Ok(())
 }
 
-fn relative_entries_under(names: &[String], prefix: &str, skip_mcpack: bool) -> Vec<(usize, String)> {
+fn relative_entries_under(
+    names: &[String],
+    prefix: &str,
+    skip_mcpack: bool,
+) -> Vec<(usize, String)> {
     let prefix_with_slash = if prefix.is_empty() {
         String::new()
     } else {
@@ -5070,9 +5232,7 @@ fn install_archive(
     let nested: Vec<(usize, String)> = names
         .iter()
         .enumerate()
-        .filter(|(_, name)| {
-            !name.ends_with('/') && name.to_lowercase().ends_with(".mcpack")
-        })
+        .filter(|(_, name)| !name.ends_with('/') && name.to_lowercase().ends_with(".mcpack"))
         .map(|(index, name)| (index, name.clone()))
         .collect();
 
@@ -5337,9 +5497,7 @@ fn parse_version_triple(value: &serde_json::Value) -> Option<(u32, u32, u32)> {
             found.then_some((numbers[0], numbers[1], numbers[2]))
         }
         serde_json::Value::String(text) => parse_version_text(text),
-        serde_json::Value::Number(number) => {
-            number.as_u64().map(|value| (value as u32, 0, 0))
-        }
+        serde_json::Value::Number(number) => number.as_u64().map(|value| (value as u32, 0, 0)),
         _ => None,
     }
 }
@@ -5408,7 +5566,11 @@ fn manifest_description_text(value: Option<&serde_json::Value>) -> String {
 }
 
 fn pack_type_from_modules(manifest: Option<&PackManagerManifest>, fallback: &str) -> String {
-    for module in manifest.and_then(|m| m.modules.as_ref()).into_iter().flatten() {
+    for module in manifest
+        .and_then(|m| m.modules.as_ref())
+        .into_iter()
+        .flatten()
+    {
         let kind = match module.module_type.as_deref().unwrap_or("").trim() {
             "resources" => "resource",
             "skin" => "skin",
@@ -5784,8 +5946,7 @@ pub fn delete_bedrock_pack(game_root: &Path, path: &str) -> Result<(), String> {
         if resolve_pack_location(&root, &candidate).is_err() || !candidate.exists() {
             continue;
         }
-        force_remove_dir_all(&candidate)
-            .map_err(|e| format!("删除附加包失败: {e}{hint}"))?;
+        force_remove_dir_all(&candidate).map_err(|e| format!("删除附加包失败: {e}{hint}"))?;
     }
     Ok(())
 }
@@ -5949,8 +6110,7 @@ fn resolve_world_copies(root: &Path, path: &Path) -> Result<Vec<PathBuf>, String
             }
         }
     }
-    let folder = folder
-        .ok_or_else(|| "该路径不在基岩版存档目录内，已拒绝操作".to_string())?;
+    let folder = folder.ok_or_else(|| "该路径不在基岩版存档目录内，已拒绝操作".to_string())?;
 
     let mut copies = Vec::new();
     for data_dir in bedrock_game_data_dirs(root) {
@@ -5972,8 +6132,7 @@ pub fn delete_bedrock_world(game_root: &Path, path: &str) -> Result<(), String> 
 
     let hint = "（若游戏正在运行，请先完全关闭游戏）";
     for candidate in copies {
-        force_remove_dir_all(&candidate)
-            .map_err(|e| format!("删除存档失败: {e}{hint}"))?;
+        force_remove_dir_all(&candidate).map_err(|e| format!("删除存档失败: {e}{hint}"))?;
     }
     Ok(())
 }
@@ -6189,7 +6348,10 @@ struct LeviLaminaVersionDb {
 
 pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
     let raw_mc = mc_version.trim();
-    let clean_mc = raw_mc.trim_start_matches("v").trim_start_matches("Minecraft 基岩版 ").trim();
+    let clean_mc = raw_mc
+        .trim_start_matches("v")
+        .trim_start_matches("Minecraft 基岩版 ")
+        .trim();
 
     let mut catalog = BedrockLoadersCatalog {
         mc_version: raw_mc.to_string(),
@@ -6209,7 +6371,12 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
 
     let client = net::client();
     for ep in endpoints {
-        if let Ok(resp) = client.get(ep).timeout(std::time::Duration::from_secs(4)).send().await {
+        if let Ok(resp) = client
+            .get(ep)
+            .timeout(std::time::Duration::from_secs(4))
+            .send()
+            .await
+        {
             if resp.status().is_success() {
                 if let Ok(db) = resp.json::<LeviLaminaVersionDb>().await {
                     for (k, v_list) in &db.versions {
@@ -6247,7 +6414,11 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
             "1.9.0".to_string(),
             "1.8.0-rc.2".to_string(),
         ];
-        matched_key = if clean_mc.is_empty() { "通用".to_string() } else { clean_mc.to_string() };
+        matched_key = if clean_mc.is_empty() {
+            "通用".to_string()
+        } else {
+            clean_mc.to_string()
+        };
     }
 
     matched_versions.reverse();
@@ -6288,7 +6459,10 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
     catalog
 }
 
-pub fn get_bedrock_loader_config(game_root: &Path, version_id: &str) -> BedrockInstanceLoaderConfig {
+pub fn get_bedrock_loader_config(
+    game_root: &Path,
+    version_id: &str,
+) -> BedrockInstanceLoaderConfig {
     let root = net::absolute_path(game_root);
     let ver_dir = resolve_bedrock_version_dir(&root, version_id);
     let cfg_file = ver_dir.join("loader.json");
@@ -6339,7 +6513,9 @@ pub async fn install_bedrock_loader(
         std::fs::create_dir_all(&plugins_dir).map_err(|e| format!("创建插件目录失败: {e}"))?;
 
         for i in 0..archive.len() {
-            let mut entry = archive.by_index(i).map_err(|e| format!("读取压缩文件条目失败: {e}"))?;
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| format!("读取压缩文件条目失败: {e}"))?;
             let outpath = match entry.enclosed_name() {
                 Some(path) => ver_dir.join(path),
                 None => continue,
@@ -6353,8 +6529,10 @@ pub async fn install_bedrock_loader(
                         std::fs::create_dir_all(p).map_err(|e| format!("创建父目录失败: {e}"))?;
                     }
                 }
-                let mut outfile = File::create(&outpath).map_err(|e| format!("解压文件失败: {e}"))?;
-                std::io::copy(&mut entry, &mut outfile).map_err(|e| format!("写入文件失败: {e}"))?;
+                let mut outfile =
+                    File::create(&outpath).map_err(|e| format!("解压文件失败: {e}"))?;
+                std::io::copy(&mut entry, &mut outfile)
+                    .map_err(|e| format!("写入文件失败: {e}"))?;
             }
         }
 
@@ -6367,7 +6545,9 @@ pub async fn install_bedrock_loader(
             let _ = std::fs::write(ver_dir.join("loader.json"), json_str);
         }
 
-        Ok(format!("LeviLamina v{loader_version} 已成功安装到基岩版实例 {version_id}！"))
+        Ok(format!(
+            "LeviLamina v{loader_version} 已成功安装到基岩版实例 {version_id}！"
+        ))
     } else if loader_lower == "amethyst" {
         let zip_url = format!(
             "https://github.com/FreerGit/Amethyst/releases/download/v{loader_version}/Amethyst-Windows.zip"
@@ -6393,7 +6573,9 @@ pub async fn install_bedrock_loader(
             let _ = std::fs::write(ver_dir.join("loader.json"), json_str);
         }
 
-        Ok(format!("Amethyst v{loader_version} 已成功安装到基岩版实例 {version_id}！"))
+        Ok(format!(
+            "Amethyst v{loader_version} 已成功安装到基岩版实例 {version_id}！"
+        ))
     } else {
         Err(format!("不支持的基岩版模组加载器类型: {loader_type}"))
     }
@@ -6406,7 +6588,10 @@ pub fn get_bedrock_mods(game_root: &Path, version_id: &str) -> Result<Vec<Bedroc
 
     let scan_dirs = [
         (ver_dir.join("mods"), "dll_mod"),
-        (ver_dir.join("config").join("BedrockBoot2").join("mods"), "dll_mod"),
+        (
+            ver_dir.join("config").join("BedrockBoot2").join("mods"),
+            "dll_mod",
+        ),
         (ver_dir.join("plugins"), "levilamina_plugin"),
     ];
 
@@ -6449,7 +6634,10 @@ pub fn get_bedrock_mods(game_root: &Path, version_id: &str) -> Result<Vec<Bedroc
 
                     items.push(BedrockModItem {
                         id: fname.clone(),
-                        name: clean_name.replace(".dll", "").replace(".mcpack", "").replace(".zip", ""),
+                        name: clean_name
+                            .replace(".dll", "")
+                            .replace(".mcpack", "")
+                            .replace(".zip", ""),
                         file_name: fname.clone(),
                         path: p.to_string_lossy().to_string(),
                         mod_type: mod_type.to_string(),
@@ -6478,13 +6666,21 @@ pub fn toggle_bedrock_mod(
 
     let candidates = [
         ver_dir.join("mods").join(mod_id),
-        ver_dir.join("config").join("BedrockBoot2").join("mods").join(mod_id),
+        ver_dir
+            .join("config")
+            .join("BedrockBoot2")
+            .join("mods")
+            .join(mod_id),
         ver_dir.join("plugins").join(mod_id),
     ];
 
     for current_path in candidates {
         if current_path.exists() {
-            let fname = current_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let fname = current_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let parent = current_path.parent().unwrap();
 
             if enabled && fname.ends_with(".disabled") {
@@ -6513,7 +6709,11 @@ pub fn delete_bedrock_mod(game_root: &Path, version_id: &str, mod_id: &str) -> R
 
     let candidates = [
         ver_dir.join("mods").join(mod_id),
-        ver_dir.join("config").join("BedrockBoot2").join("mods").join(mod_id),
+        ver_dir
+            .join("config")
+            .join("BedrockBoot2")
+            .join("mods")
+            .join(mod_id),
         ver_dir.join("plugins").join(mod_id),
     ];
 
@@ -6543,7 +6743,11 @@ pub fn install_bedrock_mod_file(
 
     let root = net::absolute_path(game_root);
     let ver_dir = resolve_bedrock_version_dir(&root, version_id);
-    let fname = src.file_name().ok_or("无效的文件名")?.to_string_lossy().to_string();
+    let fname = src
+        .file_name()
+        .ok_or("无效的文件名")?
+        .to_string_lossy()
+        .to_string();
 
     let dest_dir = if fname.ends_with(".dll") {
         ver_dir.join("mods")
@@ -6702,7 +6906,10 @@ mod tests {
         assert_eq!(parsed[0].id, "1.21.60.25");
         assert_eq!(parsed[0].release_type, "preview");
         assert_eq!(parsed[0].build_type.as_deref(), Some("GDK"));
-        assert_eq!(parsed[0].md5.as_deref(), Some("8710a04f17d13850d51c2186d3e7acfd"));
+        assert_eq!(
+            parsed[0].md5.as_deref(),
+            Some("8710a04f17d13850d51c2186d3e7acfd")
+        );
         assert_eq!(parsed[1].id, "1.20.15");
         assert_eq!(parsed[1].release_type, "release");
         assert_eq!(parsed[1].build_type.as_deref(), Some("UWP"));
@@ -6781,7 +6988,9 @@ mod tests {
         delete_bedrock_version(&temp_dir, "1.26.42").await.unwrap();
         assert!(!core_dir.exists(), "read-only core should be deleted");
 
-        delete_bedrock_version(&temp_dir, "9.9.9-empty").await.unwrap();
+        delete_bedrock_version(&temp_dir, "9.9.9-empty")
+            .await
+            .unwrap();
         assert!(!empty_dir.exists(), "leftover dir should be deleted");
 
         let _ = force_remove_dir_all(&temp_dir);
@@ -6857,7 +7066,11 @@ mod tests {
         std::fs::write(&dummy_exe, b"dummy exe").unwrap();
 
         let res = delete_bedrock_version(&temp_dir, "Minecraft 基岩版 1.26.42").await;
-        assert!(res.is_ok(), "delete_bedrock_version should succeed: {:?}", res);
+        assert!(
+            res.is_ok(),
+            "delete_bedrock_version should succeed: {:?}",
+            res
+        );
         assert!(!ver_dir.exists(), "Version directory should be deleted");
         assert!(!dummy_zip.exists(), "Cache zip residue should be deleted");
 
@@ -6867,16 +7080,28 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_bedrock_loaders() {
         let catalog = fetch_bedrock_loaders("1.21.132").await;
-        assert!(!catalog.levilamina.is_empty(), "LeviLamina catalog should not be empty");
-        assert!(catalog.levilamina.iter().any(|l| l.loader_type == "levilamina"));
-        assert!(!catalog.amethyst.is_empty(), "Amethyst catalog should not be empty");
+        assert!(
+            !catalog.levilamina.is_empty(),
+            "LeviLamina catalog should not be empty"
+        );
+        assert!(catalog
+            .levilamina
+            .iter()
+            .any(|l| l.loader_type == "levilamina"));
+        assert!(
+            !catalog.amethyst.is_empty(),
+            "Amethyst catalog should not be empty"
+        );
     }
 
     #[test]
     fn test_get_bedrock_mods() {
         let temp_dir = std::env::temp_dir().join(format!(
             "cobble_bds_mods_{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
         ));
         let ver_dir = temp_dir.join("bedrock").join("versions").join("1.21.132");
         let mods_dir = ver_dir.join("mods");
@@ -6996,7 +7221,10 @@ mod tests {
     fn test_inspect_and_get_bedrock_status() {
         let temp_dir = std::env::temp_dir().join(format!(
             "cobble_bds_insp_{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
         ));
 
         // 1. Version with version.json and msixvc
@@ -7028,7 +7256,9 @@ mod tests {
         // Check get_bedrock_status
         let status = get_bedrock_status(&temp_dir);
         assert!(status.standalone_installed);
-        assert!(status.installed_versions.contains(&"1.21.60.25".to_string()));
+        assert!(status
+            .installed_versions
+            .contains(&"1.21.60.25".to_string()));
         assert!(status.installed_versions.contains(&"1.21.50".to_string()));
 
         let _ = force_remove_dir_all(&temp_dir);
@@ -7104,7 +7334,7 @@ mod tests {
         let chosen = find_installed_standalone_core(&root, true).unwrap();
         assert_eq!(chosen.3, "1.21.50");
         assert!(chosen.2, "the selected core must be a server core");
-        assert_eq!(chosen.0, bds.join("bedrock_server.exe"));        // Online-capable accounts keep the newest installed core.
+        assert_eq!(chosen.0, bds.join("bedrock_server.exe")); // Online-capable accounts keep the newest installed core.
         let newest = find_installed_standalone_core(&root, false).unwrap();
         assert_eq!(newest.3, "1.21.90");
         assert!(!newest.2);
@@ -7226,8 +7456,12 @@ mod pack_install_tests {
             &[
                 (
                     "manifest.json",
-                    manifest("Nested RP", "99999999-8888-7777-6666-555555555555", "resources")
-                        .as_bytes(),
+                    manifest(
+                        "Nested RP",
+                        "99999999-8888-7777-6666-555555555555",
+                        "resources",
+                    )
+                    .as_bytes(),
                 ),
                 ("textures/nested.png", b"png"),
             ],
@@ -7245,14 +7479,22 @@ mod pack_install_tests {
             &[
                 (
                     "Combined RP/manifest.json",
-                    manifest("Combined RP", "11111111-2222-3333-4444-555555555555", "resources")
-                        .as_bytes(),
+                    manifest(
+                        "Combined RP",
+                        "11111111-2222-3333-4444-555555555555",
+                        "resources",
+                    )
+                    .as_bytes(),
                 ),
                 ("Combined RP/textures/terrain_texture.json", b"{}"),
                 (
                     "Combined BP/manifest.json",
-                    manifest("Combined BP", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "data")
-                        .as_bytes(),
+                    manifest(
+                        "Combined BP",
+                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "data",
+                    )
+                    .as_bytes(),
                 ),
                 ("Combined BP/entities/zombie.json", b"{}"),
             ],
@@ -7264,9 +7506,7 @@ mod pack_install_tests {
         let mut outcome = InstalledPacks::default();
         install_archive(&archive, &targets, 0, &mut outcome).unwrap();
 
-        let resource_dir = mojang
-            .join("resource_packs")
-            .join("Combined_RP_11111111");
+        let resource_dir = mojang.join("resource_packs").join("Combined_RP_11111111");
         assert!(
             resource_dir.join("manifest.json").is_file(),
             "resource pack missing at {}",
@@ -7274,9 +7514,7 @@ mod pack_install_tests {
         );
         assert!(resource_dir.join("textures/terrain_texture.json").is_file());
 
-        let behavior_dir = mojang
-            .join("behavior_packs")
-            .join("Combined_BP_aaaaaaaa");
+        let behavior_dir = mojang.join("behavior_packs").join("Combined_BP_aaaaaaaa");
         assert!(
             behavior_dir.join("manifest.json").is_file(),
             "behavior pack missing at {}",
@@ -7307,8 +7545,11 @@ mod pack_install_tests {
             .join("Shared_1");
         for copy in [&enabled_copy, &disabled_copy] {
             std::fs::create_dir_all(copy).unwrap();
-            std::fs::write(copy.join("manifest.json"), manifest("Shared", uuid, "resources"))
-                .unwrap();
+            std::fs::write(
+                copy.join("manifest.json"),
+                manifest("Shared", uuid, "resources"),
+            )
+            .unwrap();
         }
         // A different pack in the same folders must not be swept up.
         let other = client_a.join("resource_packs").join("Other_1");
@@ -7320,7 +7561,11 @@ mod pack_install_tests {
         .unwrap();
 
         let copies = pack_copy_paths(&[client_a, client_b], uuid, "resource");
-        assert_eq!(copies.len(), 2, "both data dirs must be covered: {copies:?}");
+        assert_eq!(
+            copies.len(),
+            2,
+            "both data dirs must be covered: {copies:?}"
+        );
         assert!(copies.contains(&enabled_copy));
         assert!(copies.contains(&disabled_copy));
 
@@ -7389,9 +7634,7 @@ mod pack_install_tests {
         let mut outcome = InstalledPacks::default();
         install_archive(&archive, &[mojang.clone()], 0, &mut outcome).unwrap();
 
-        let nested_dir = mojang
-            .join("resource_packs")
-            .join("Nested_RP_99999999");
+        let nested_dir = mojang.join("resource_packs").join("Nested_RP_99999999");
         assert!(
             nested_dir.join("textures/nested.png").is_file(),
             "nested pack was not installed at {}",
@@ -7457,8 +7700,12 @@ mod pack_install_tests {
             &archive,
             &[(
                 "manifest.json",
-                manifest("§dSlime §7Pack", "11111111-2222-3333-4444-555555555555", "resources")
-                    .as_bytes(),
+                manifest(
+                    "§dSlime §7Pack",
+                    "11111111-2222-3333-4444-555555555555",
+                    "resources",
+                )
+                .as_bytes(),
             )],
         );
 
@@ -7539,10 +7786,7 @@ mod pack_install_tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let data_dir = dir
-            .join("bedrock")
-            .join("games")
-            .join("com.mojang");
+        let data_dir = dir.join("bedrock").join("games").join("com.mojang");
         let pack_dir = data_dir.join("resource_packs").join("TestPack_1111");
         std::fs::create_dir_all(&pack_dir).unwrap();
         std::fs::write(

@@ -11,6 +11,7 @@ import { Sidebar, TitleBar } from "./components/Chrome";
 import { DownloadCatalogView } from "./components/DownloadCatalogView";
 import { DownloadsView, type DownloadFileEvent } from "./components/DownloadsView";
 import { HomeView } from "./components/HomeView";
+import { MultiplayerView } from "./components/MultiplayerView";
 import { SettingsView } from "./components/SettingsView";
 import { VersionInstallView } from "./components/VersionInstallView";
 import { VersionSelectView } from "./components/VersionSelectView";
@@ -24,19 +25,24 @@ import {
   deleteVersion,
   detectJava,
   getInstalledVersions,
+  getMsAccount,
+  getMultiplayerInstallState,
   getSystemInfo,
   getVersionManifest,
   installBedrockVersion,
+  installEasytier,
   installVersion,
   isDesktop,
   launchBedrock,
   launchGame,
   openFolderPath,
   readSkinAsDataUrl,
+  setBedrockAccountMode,
   setDownloadPreference,
   stopGame,
   subscribe,
 } from "./lib/backend";
+import { AccountDialog } from "./components/AccountDialog";
 import { applyThemeToDom } from "./lib/theme";
 import { timeNow } from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
@@ -47,6 +53,7 @@ import {
   type VersionLaunchSettings,
 } from "./lib/versionSettings";
 import type {
+  BackgroundDownloadTask,
   BedrockVersionItem,
   DownloadHistoryRecord,
   GameEdition,
@@ -57,6 +64,8 @@ import type {
   LauncherSettings,
   LauncherVisibility,
   LoaderSelection,
+  MsAccount,
+  MultiplayerInstallState,
   SystemInfo,
   VersionManifest,
   VersionSummary,
@@ -73,6 +82,28 @@ interface RuntimeView {
 const MAX_LOGS = 1500;
 const MAX_FILE_EVENTS = 180;
 const HISTORY_STORAGE_KEY = "cobble.download-history.v1";
+
+/** EasyTier 安装任务转换成下载管理器里的一条后台任务。 */
+function toBackgroundDownloadTask(
+  state: MultiplayerInstallState,
+): BackgroundDownloadTask | null {
+  if (!state.stage) return null;
+  const finished = state.stage === "done" || state.stage === "error" || state.stage === "paused";
+  if (!state.active && !finished) return null;
+  const status: BackgroundDownloadTask["status"] = state.active
+    ? "running"
+    : state.stage === "error"
+      ? "error"
+      : state.stage === "paused"
+        ? "paused"
+        : "done";
+  return {
+    ...state,
+    id: "easytier",
+    title: "EasyTier 内核",
+    status,
+  };
+}
 
 function loadDownloadHistory(): DownloadHistoryRecord[] {
   try {
@@ -93,6 +124,8 @@ export default function App() {
   const [javaInstalls, setJavaInstalls] = useState<JavaInstall[]>([]);
   const [javaDetecting, setJavaDetecting] = useState(true);
   const [selectedVersion, setSelectedVersion] = useState("");
+  const [account, setAccount] = useState<MsAccount | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<VersionSummary | null>(null);
   const [view, setView] = useState<ViewId>("home");
   const [manifestLoading, setManifestLoading] = useState(true);
@@ -118,6 +151,7 @@ export default function App() {
   const [fileEvents, setFileEvents] = useState<DownloadFileEvent[]>([]);
   const [downloadHistory, setDownloadHistory] =
     useState<DownloadHistoryRecord[]>(loadDownloadHistory);
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundDownloadTask[]>([]);
   const [launchProgress, setLaunchProgress] = useState<InstallProgress | null>(null);
   const [runtime, setRuntime] = useState<RuntimeView>({ status: "idle" });
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -197,6 +231,18 @@ export default function App() {
   const contentRef = useRef<HTMLElement>(null);
   const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
 
+  // 主页有启动器自己的右键菜单，其他区域也不再需要 WebView 的刷新/另存为菜单；
+  // 输入框保留系统菜单，否则复制、粘贴都会失效。
+  useEffect(() => {
+    const onContextMenu = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, []);
+
   useEffect(() => {
     applyThemeToDom(settings);
   }, [
@@ -208,6 +254,45 @@ export default function App() {
     settings.enableAnimation,
     settings.uiOpacity,
   ]);
+
+  // Declared before the account effects below: a failed token renewal has to
+  // surface as a toast, and toasts are shared by the whole app.
+  const pushToast = useCallback(
+    (tone: "success" | "error" | "info", title: string, detail?: string) => {
+      const options = {
+        description: detail,
+        duration: tone === "error" ? 8000 : 5000,
+      };
+      if (tone === "success") toast.success(title, options);
+      else if (tone === "error") toast.error(title, options);
+      else toast.info(title, options);
+    },
+    [],
+  );
+
+  // The account decides which Bedrock core a launch may use, so the preference
+  // is pushed once here instead of at every launch button.
+  useEffect(() => {
+    setBedrockAccountMode(Boolean(account?.signedIn));
+  }, [account]);
+
+  // Pick up an already signed-in account on startup; the backend renews the
+  // session when it aged out (and reports why when it could not).
+  useEffect(() => {
+    let alive = true;
+    getMsAccount(settings.msClientId || undefined)
+      .then((value) => {
+        if (!alive) return;
+        setAccount(value);
+        if (value?.sessionError) {
+          pushToast("info", `${value.name} 的登录状态需要刷新`, value.sessionError);
+        }
+      })
+      .catch((error) => console.warn("无法读取 Microsoft 账户", error));
+    return () => {
+      alive = false;
+    };
+  }, [settings.msClientId, pushToast]);
 
   // The mirror preference is process state on the Rust side: push it whenever
   // it changes so downloads really start from the selected source.
@@ -340,17 +425,39 @@ export default function App() {
     }
   }, [sidebarCollapsed]);
 
-  const pushToast = useCallback(
-    (tone: "success" | "error" | "info", title: string, detail?: string) => {
-      const options = {
-        description: detail,
-        duration: tone === "error" ? 8000 : 5000,
-      };
-      if (tone === "success") toast.success(title, options);
-      else if (tone === "error") toast.error(title, options);
-      else toast.info(title, options);
+  /** 内核/组件类下载统一记录在这里，下载页只读这一份状态。 */
+  const applyBackgroundTask = useCallback((state: MultiplayerInstallState) => {
+    const task = toBackgroundDownloadTask(state);
+    if (!task) return;
+    setBackgroundTasks((current) => {
+      const others = current.filter((item) => item.id !== task.id);
+      return [...others, task].sort((a, b) => a.startedAt - b.startedAt);
+    });
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    getMultiplayerInstallState(settingsRef.current.gameRoot)
+      .then((state) => {
+        if (!disposed) applyBackgroundTask(state);
+      })
+      .catch((error) => console.warn("无法读取 EasyTier 安装状态", error));
+    return () => {
+      disposed = true;
+    };
+  }, [applyBackgroundTask]);
+
+  const handleRetryBackgroundTask = useCallback(
+    async (id: string) => {
+      if (id !== "easytier") return;
+      try {
+        const next = await installEasytier(settingsRef.current.gameRoot);
+        pushToast("success", "EasyTier 内核已就绪", next.version ?? undefined);
+      } catch (error) {
+        pushToast("error", "下载 EasyTier 失败", String(error));
+      }
     },
-    [],
+    [pushToast],
   );
 
   const pushLog = useCallback((stream: string, line: string) => {
@@ -580,11 +687,17 @@ export default function App() {
       }),
     );
 
+    track(
+      subscribe("multiplayer:install", (state) => {
+        applyBackgroundTask(state);
+      }),
+    );
+
     return () => {
       disposed = true;
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [pushLog, pushToast, refreshInstalled]);
+  }, [applyBackgroundTask, pushLog, pushToast, refreshInstalled]);
 
   const bestJava = useMemo(() => {
     if (settings.javaPath) {
@@ -1045,7 +1158,8 @@ export default function App() {
         pushToast("error", "游戏目录为空", "请先在设置中选择游戏目录。");
         return;
       }
-      if (!/^[A-Za-z0-9_]{1,16}$/.test(settings.playerName.trim())) {
+      const launchPlayerName = account?.signedIn ? account.name : settings.playerName.trim();
+      if (!account?.signedIn && !/^[A-Za-z0-9_]{1,16}$/.test(launchPlayerName)) {
         pushToast("error", "昵称无效", "昵称只能包含字母、数字和下划线，长度 1–16 位。");
         setView("settings");
         return;
@@ -1085,7 +1199,7 @@ export default function App() {
         await launchGame({
           versionId,
           root: settingsRef.current.gameRoot,
-          playerName: settings.playerName.trim(),
+          playerName: launchPlayerName,
           memoryMb: launchSettings.memoryMb,
           javaPath: launchSettings.javaPath?.trim() || settings.javaPath.trim() || null,
           width: effectiveWidth,
@@ -1121,6 +1235,7 @@ export default function App() {
       selectedVersion,
       settings.javaPath,
       settings.playerName,
+      account,
     ],
   );
 
@@ -1211,6 +1326,7 @@ export default function App() {
           skinType={settings.offlineSkinType}
           customSkinPath={settings.customSkinPath}
           mojangSkinName={settings.mojangSkinName}
+          signedInName={account?.signedIn ? account.name : null}
         />
 
         <main
@@ -1240,6 +1356,7 @@ export default function App() {
               onStop={() => void handleStop()}
               onOpenVersionSelect={() => setView("version-select")}
               onOpenVersionSettings={() => setView("version-settings")}
+              onOpenSettings={() => setView("settings")}
               gameRoot={settings.gameRoot}
               onOpenDownloadBedrock={() => setView("download")}
               onNotify={pushToast}
@@ -1248,10 +1365,27 @@ export default function App() {
               selectedBedrockVersion={selectedBedrockVersion}
               settings={settings}
               onUpdateSettings={updateSettings}
-              accountType="offline"
+              accountType={account?.signedIn ? "microsoft" : "offline"}
+              account={account}
+              onOpenAccount={() => setAccountOpen(true)}
             />
           ) : (
             <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
+              {view === "multiplayer" ? (
+                <MultiplayerView
+                  gameRoot={settings.gameRoot}
+                  onNotify={pushToast}
+                  edition={edition}
+                  selectedVersion={selectedVersion}
+                  versionIsolation={effectiveLaunchSettings.versionIsolation}
+                  gameRunning={
+                    runtime.status === "running" || Boolean(systemInfo?.gameRunning)
+                  }
+                  installed={installed}
+                  onLaunchVersion={(versionId) => void handleLaunch(versionId)}
+                />
+              ) : null}
+
               {view === "version-select" ? (
                 <VersionSelectView
                   manifest={manifest}
@@ -1343,6 +1477,7 @@ export default function App() {
                   speedHistory={speedHistory}
                   fileEvents={fileEvents}
                   history={downloadHistory}
+                  backgroundTasks={backgroundTasks}
                   installQueue={installQueue}
                   gameRoot={settings.gameRoot}
                   onSelectVersion={handleSelectVersion}
@@ -1355,7 +1490,15 @@ export default function App() {
                   onCancelInstall={() => void handleCancelInstall()}
                   onResumeInstall={(record) => void handleResumeInstall(record)}
                   onRemoveQueueItem={(idx) => handleRemoveQueueItem(idx)}
-                  onClearHistory={() => setDownloadHistory([])}
+                  onClearHistory={() => {
+                    setDownloadHistory([]);
+                    setBackgroundTasks((current) =>
+                      current.filter(
+                        (task) => task.status === "running" || task.status === "paused",
+                      ),
+                    );
+                  }}
+                  onRetryBackgroundTask={(id) => void handleRetryBackgroundTask(id)}
                   onDeleteHistoryItem={(id) =>
                     setDownloadHistory((prev) => prev.filter((r) => r.id !== id))
                   }
@@ -1417,6 +1560,26 @@ export default function App() {
           )}
         </main>
       </div>
+
+      <AccountDialog
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        account={account}
+        clientId={settings.msClientId ?? ""}
+        onClientIdChange={(msClientId) => updateSettings({ msClientId })}
+        onSignedIn={async (next) => {
+          setAccount(next);
+          // 登录成功后从后端重新获取以确保主界面立即更新
+          try {
+            const fresh = await getMsAccount(settings.msClientId || undefined);
+            if (fresh) setAccount(fresh);
+          } catch {
+            // 忽略错误，使用对话框传入的账户即可
+          }
+        }}
+        onSignedOut={() => setAccount(null)}
+        onNotify={pushToast}
+      />
 
       <Toaster theme="dark" position="bottom-right" />
     </div>

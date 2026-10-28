@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Open-source-Minecraft-launcher · 轻量、现代、开源的 Minecraft 启动器</title>
+  <meta name="description" content="Open-source-Minecraft-launcher 是一个基于 Tauri 2 + Rust + React 19 的开源 Minecraft 启动器，原生支持 Java 版与基岩版，内置多线程下载、微软/离线账户、Modrinth 内容市场与 EasyTier 联机。" />
+  <meta name="theme-color" content="#060a07" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Open-source-Minecraft-launcher · 轻量、现代、开源的 Minecraft 启动器" />
+  <meta property="og:description" content="Java 版 × 基岩版双架构。版本、模组、账户、下载与联机，一个界面全部搞定。" />
+  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" as="image" href="images/home.png" />
+  <link rel="stylesheet" href="assets/site.css" />
+  <script src="assets/site.js" defer></script>
+</head>
+<body data-page="home">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+        <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+        <span class="brand-text">
+          <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+          <span class="brand-sub">MINECRAFT LAUNCHER</span>
+        </span>
+      </a>
+
+      <nav class="site-nav" aria-label="主导航">
+        <a class="nav-link" href="index.html" aria-current="page">首页</a>
+        <a class="nav-link" href="docs.html">技术文档</a>
+        <a class="nav-link" href="download.html">下载</a>
+        <a class="nav-link" href="about.html">关于</a>
+        <a class="nav-link" href="credits.html">开源声明</a>
+      </nav>
+
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">
+          <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+          下载启动器
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-nav" id="mobile-nav" data-mobile-nav>
+    <div class="mobile-nav-inner">
+      <a class="nav-link" href="index.html" aria-current="page">首页</a>
+      <a class="nav-link" href="docs.html">技术文档</a>
+      <a class="nav-link" href="download.html">下载</a>
+      <a class="nav-link" href="about.html">关于</a>
+      <a class="nav-link" href="credits.html">开源声明</a>
+      <div class="mobile-nav-actions">
+        <a class="btn btn-secondary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub 仓库
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">下载启动器</a>
+      </div>
+    </div>
+  </div>
+
+  <main id="main">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <span class="eyebrow"><span class="eyebrow-dot"></span> OPEN SOURCE · v0.0.7</span>
+          <h1 class="hero-title">
+            轻量、现代、<span class="gradient-text">开源</span><br />
+            <span class="gradient-text">Minecraft 启动器</span>
+          </h1>
+          <p class="hero-lede">
+            把 <strong>Java 版与基岩版</strong> 的版本、模组、账户、下载和联机收进一个界面。
+            基于 Tauri 2 + Rust + React 19，为 Windows 带来原生、干净、可掌控的开玩体验。
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="download.html">
+              <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+              下载启动器
+            </a>
+            <a class="btn btn-secondary btn-lg" href="docs.html">
+              <svg class="icon" aria-hidden="true"><use href="#icon-book"></use></svg>
+              阅读技术文档
+            </a>
+          </div>
+          <div class="hero-meta">
+            <span class="hero-meta-item">Windows 10 / 11</span>
+            <span class="hero-meta-item">MIT License</span>
+            <span class="hero-meta-item">无广告 · 本地优先</span>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          <div class="hero-shot">
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-title">Open-source-Minecraft-launcher · 主页</span>
+              <span>v0.0.7</span>
+            </div>
+            <img src="images/home.png" width="1024" height="672" alt="Open-source-Minecraft-launcher 主页界面：更新新闻、账户面板与启动按钮" fetchpriority="high" />
+          </div>
+          <div class="float-chip chip-1"><span class="dot"></span> Java 21 · 自动匹配</div>
+          <div class="float-chip chip-2"><span class="dot"></span> EasyTier · IPv6 直连</div>
+          <div class="float-chip chip-3"><span class="dot"></span> Modrinth · 一键安装</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="项目数据">
+      <div class="container">
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="stat-value">2<span> 种</span></div>
+            <div class="stat-label">Java 版 + 基岩版统一管理</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value">90<span>+</span></div>
+            <div class="stat-label">官方 Xbox CDN 直链</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value">1–64</div>
+            <div class="stat-label">下载线程档位可调</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value">MIT</div>
+            <div class="stat-label">开源协议，代码可审计</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="capabilities">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">CAPABILITIES</span>
+            <h2 class="section-title">从下载到开玩，<br />每一步都更省心。</h2>
+            <p class="section-desc">启动器不只是把游戏叫起来。版本、加载器、资源包、存档、账户、下载源与联机，都被整理成可以理解、可以调整的模块。</p>
+          </div>
+          <a class="link-arrow section-link" href="docs.html#overview">
+            查看技术概览
+            <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+          </a>
+        </div>
+
+        <div class="visual-grid" data-reveal>
+          <a class="visual-card" href="docs.html#accounts" aria-label="了解一键启动与账户体系">
+            <img src="images/feature-launch.svg" alt="一键启动：微软 / 离线账户、版本独立目录与实时日志" loading="lazy" />
+          </a>
+          <a class="visual-card" href="docs.html#downloads" aria-label="了解多线程下载">
+            <img src="images/feature-download.svg" alt="多线程下载：最高 16 路并发分片、断点续传与进度追踪" loading="lazy" />
+          </a>
+          <a class="visual-card" href="docs.html#overview" aria-label="了解模组加载器">
+            <img src="images/feature-loaders.svg" alt="模组加载器：Forge、NeoForge、Fabric、Quilt 与 OptiFine" loading="lazy" />
+          </a>
+          <a class="visual-card" href="docs.html#downloads" aria-label="了解资源中心">
+            <img src="images/feature-resources.svg" alt="资源中心：Modrinth 与 CurseForge 内容搜索和下载" loading="lazy" />
+          </a>
+          <a class="visual-card" href="docs.html#downloads" aria-label="了解就近镜像">
+            <img src="images/feature-mirror.svg" alt="就近镜像：官方亚太 CDN、BMCLAPI 与自定义源" loading="lazy" />
+          </a>
+          <a class="visual-card" href="docs.html#requirements" aria-label="了解 Java 自动管理">
+            <img src="images/feature-java.svg" alt="Java 自动管理：检测本机 Java，缺失时下载 Temurin JRE" loading="lazy" />
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="features">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">BEYOND LAUNCHING</span>
+            <h2 class="section-title">不止是启动器。</h2>
+            <p class="section-desc">它更像一套完整的 Minecraft 工作台：把常用的、容易出错的地方做好，把选择权留给玩家。</p>
+          </div>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/grass_block.png" alt="" /></div>
+            <h3>双版本统一</h3>
+            <p>Java 版与基岩版共用一套版本库。正式版、快照、愚人节版本、远古版本与基岩版核心，都在同一个入口里。</p>
+            <div class="feature-tags"><span class="feature-tag">Java</span><span class="feature-tag">Bedrock</span><span class="feature-tag">Unified</span></div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/golden_apple.png" alt="" /></div>
+            <h3>微软 / 离线双账户</h3>
+            <p>微软 OAuth 设备码登录与离线账户并存；正版皮肤、离线皮肤包、Java 会话与基岩版授权检测都已接好。</p>
+            <div class="feature-tags"><span class="feature-tag">OAuth</span><span class="feature-tag">Offline</span><span class="feature-tag">Skin</span></div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/crafting_table.png" alt="" /></div>
+            <h3>实例级设置</h3>
+            <p>每个版本独立配置内存、窗口、JVM 参数、启动语言、版本隔离、进程优先级与启动器行为，互不干扰。</p>
+            <div class="feature-tags"><span class="feature-tag">Memory</span><span class="feature-tag">JVM</span><span class="feature-tag">Isolation</span></div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/chest.png" alt="" /></div>
+            <h3>内容市场</h3>
+            <p>Modrinth 与 CurseForge 搜索，中文关键词自动翻译成英文；模组落到对应实例，光影、资源包与数据包各归其位。</p>
+            <div class="feature-tags"><span class="feature-tag">Modrinth</span><span class="feature-tag">CurseForge</span><span class="feature-tag">i18n</span></div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/compass.png" alt="" /></div>
+            <h3>EasyTier 联机</h3>
+            <p>公网 IPv6 点对点直连，分享码一键加入；局域网广播让好友的世界直接出现在「多人游戏 → 局域网」。</p>
+            <div class="feature-tags"><span class="feature-tag">IPv6</span><span class="feature-tag">P2P</span><span class="feature-tag">LAN</span></div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="feature-icon"><img src="assets/minecraft/command_block.png" alt="" /></div>
+            <h3>深度个性化</h3>
+            <p>主题、壁纸、模糊与透明度、字体、自定义主页与窗口文案。启动器可以完全长成你喜欢的样子。</p>
+            <div class="feature-tags"><span class="feature-tag">Theme</span><span class="feature-tag">Wallpaper</span><span class="feature-tag">PCL2 XAML</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="preview">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">PREVIEW</span>
+            <h2 class="section-title">先看看它长什么样。</h2>
+            <p class="section-desc">深色界面、像素图标、清爽的层级。截图来自开发版，实际界面会随版本继续打磨。</p>
+          </div>
+          <a class="link-arrow section-link" href="download.html">
+            下载体验
+            <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+          </a>
+        </div>
+
+        <div class="gallery" data-gallery data-reveal>
+          <div class="gallery-tabs" role="group" aria-label="选择界面截图">
+            <button class="gallery-tab is-active" type="button" data-shot data-src="images/home.png" data-alt="主页：更新新闻、账户面板与启动按钮" data-caption="主页 · Mojang 更新新闻、账户面板与一键启动" aria-pressed="true">
+              <span class="gallery-tab-label">主页</span>
+              <span class="gallery-tab-desc">更新新闻与快速启动</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/download.png" data-alt="下载中心：版本、加载器与内容分类" data-caption="下载中心 · 版本 / 加载器 / 内容分类" aria-pressed="false">
+              <span class="gallery-tab-label">下载中心</span>
+              <span class="gallery-tab-desc">版本、加载器与内容</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/settings.png" data-alt="设置：下载源、并发线程与界面个性化" data-caption="设置 · 下载镜像、并发线程与界面个性化" aria-pressed="false">
+              <span class="gallery-tab-label">设置</span>
+              <span class="gallery-tab-desc">下载源、线程与外观</span>
+            </button>
+          </div>
+
+          <div class="gallery-stage">
+            <figure class="gallery-frame">
+              <div class="window-bar">
+                <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="window-title">Open-source-Minecraft-launcher · 预览</span>
+                <span>v0.0.7</span>
+              </div>
+              <img src="images/home.png" width="1024" height="672" alt="主页：更新新闻、账户面板与启动按钮" data-gallery-image loading="lazy" />
+              <figcaption class="gallery-caption">
+                <span data-gallery-caption>主页 · Mojang 更新新闻、账户面板与一键启动</span>
+                <a class="gallery-link" href="images/home.png" target="_blank" rel="noopener" data-gallery-link>打开原图</a>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="get-started">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">GET STARTED</span>
+            <h2 class="section-title">三步，开始开玩。</h2>
+            <p class="section-desc">不需要先读完整本手册。下载版本、选个账户、点启动，剩下的交给启动器。</p>
+          </div>
+        </div>
+
+        <div class="steps">
+          <article class="step" data-reveal>
+            <div class="step-top">
+              <span class="step-number">STEP 01</span>
+              <img class="step-icon" src="assets/minecraft/diamond_pickaxe.png" alt="" />
+            </div>
+            <h3>下载版本</h3>
+            <p>在下载中心选择 Java 或基岩版核心；需要模组时顺手挑一个 Forge、NeoForge、Fabric 或 Quilt 实例。</p>
+          </article>
+          <article class="step" data-reveal>
+            <div class="step-top">
+              <span class="step-number">STEP 02</span>
+              <img class="step-icon" src="assets/minecraft/golden_apple.png" alt="" />
+            </div>
+            <h3>配置账户与 Java</h3>
+            <p>登录微软账户，或直接用离线昵称。Java 会自动匹配；缺失时启动器会下载 Temurin JRE。</p>
+          </article>
+          <article class="step" data-reveal>
+            <div class="step-top">
+              <span class="step-number">STEP 03</span>
+              <img class="step-icon" src="assets/minecraft/compass.png" alt="" />
+            </div>
+            <h3>启动或联机</h3>
+            <p>一键进入游戏。想和朋友一起玩，就在联机页创建房间，把分享码发过去。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="tech">
+      <div class="container">
+        <div class="about-grid">
+          <div class="about-copy" data-reveal>
+            <span class="eyebrow section-kicker">BUILT ON</span>
+            <h2 class="section-title">原生性能，透明的技术底座。</h2>
+            <p class="mt-16">界面使用系统 WebView，下载、解包、校验、启动编排与 EasyTier 进程都在 Rust 侧完成。React 只负责把状态与操作呈现出来，下载任务不会因为切换页面而中断。</p>
+            <div class="tech-strip mt-22">
+              <span class="tech-item"><img src="assets/icons/tauri.svg" alt="" /> Tauri 2</span>
+              <span class="tech-item"><img src="assets/icons/rust.svg" alt="" /> Rust 2024</span>
+              <span class="tech-item"><img src="assets/icons/react.svg" alt="" /> React 19</span>
+              <span class="tech-item"><img src="assets/icons/vite.svg" alt="" /> Vite 8</span>
+              <span class="tech-item"><img src="assets/icons/tailwindcss.svg" alt="" /> Tailwind CSS 4</span>
+            </div>
+            <a class="link-arrow mt-24" href="docs.html#architecture">
+              查看架构设计
+              <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+            </a>
+          </div>
+
+          <aside class="about-aside" data-reveal aria-label="项目摘要">
+            <h3>项目摘要</h3>
+            <div class="fact-list">
+              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.0.7</span></div>
+              <div class="fact"><span class="fact-label">开源协议</span><span class="fact-value">MIT</span></div>
+              <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows 10 / 11</span></div>
+              <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Tauri 2</span></div>
+              <div class="fact"><span class="fact-label">后端</span><span class="fact-value">Rust 2024</span></div>
+              <div class="fact"><span class="fact-label">仓库</span><span class="fact-value">Cerlesse-studio</span></div>
+            </div>
+            <a class="btn btn-secondary btn-sm btn-block mt-18" href="about.html">了解项目</a>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="download-cta">
+      <div class="container">
+        <div class="cta-band" data-reveal>
+          <div class="cta-inner">
+            <div>
+              <span class="eyebrow">READY TO PLAY</span>
+              <h2 class="cta-title">准备好开始了吗？</h2>
+              <p class="cta-desc">下载启动器，或先从源码构建。所有代码、构建方式与第三方声明都公开在 GitHub 上。</p>
+            </div>
+            <div class="cta-actions">
+              <a class="btn btn-primary btn-lg" href="download.html">
+                <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+                下载启动器
+              </a>
+              <a class="btn btn-secondary btn-lg" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+                <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+                GitHub 仓库
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+            <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+            <span class="brand-text">
+              <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+              <span class="brand-sub">MINECRAFT LAUNCHER</span>
+            </span>
+          </a>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+        </div>
+
+        <div class="footer-col">
+          <h3>产品</h3>
+          <div class="footer-links">
+            <a href="index.html#capabilities">功能亮点</a>
+            <a href="index.html#preview">界面预览</a>
+            <a href="download.html">下载</a>
+            <a href="docs.html#quickstart">快速开始</a>
+          </div>
+        </div>
+
+        <div class="footer-col">
+          <h3>项目</h3>
+          <div class="footer-links">
+            <a href="about.html">关于</a>
+            <a href="credits.html">开源声明</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
+          </div>
+        </div>
+
+        <div class="footer-col">
+          <h3>文档</h3>
+          <div class="footer-links">
+            <a href="docs.html">技术文档</a>
+            <a href="docs.html#architecture">架构设计</a>
+            <a href="docs.html#downloads">下载引擎</a>
+            <a href="docs.html#faq">常见问题</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <p>© <span data-year>2026</span> Open-source-Minecraft-launcher Contributors · MIT License. Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关联。</p>
+        <div class="footer-legal">
+          <a href="credits.html">第三方声明</a>
+          <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

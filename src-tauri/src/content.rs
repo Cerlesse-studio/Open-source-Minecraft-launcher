@@ -19,7 +19,8 @@ const VERSION_CACHE_MAX_ENTRIES: usize = 64;
 type VersionListCache = std::collections::HashMap<String, (Instant, Vec<ContentVersionItem>)>;
 
 fn version_list_cache() -> &'static std::sync::Mutex<VersionListCache> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<VersionListCache>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<VersionListCache>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -257,11 +258,17 @@ async fn search_modrinth(
     // Project type facet: "project_type:mod" / "project_type:shader" / etc.
     facets.push(vec![format!("project_type:{project_type}")]);
 
-    if let Some(v) = game_version.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
+    if let Some(v) = game_version
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock")
+    {
         facets.push(vec![format!("versions:{v}")]);
     }
 
-    if let Some(l) = loader.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
+    if let Some(l) = loader
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock")
+    {
         facets.push(vec![format!("categories:{}", l.to_lowercase())]);
     }
 
@@ -391,7 +398,11 @@ pub async fn get_content_versions(
         }
     }
 
-    let url = build_version_list_url(&project_id_or_slug, game_version.as_deref(), loader.as_deref());
+    let url = build_version_list_url(
+        &project_id_or_slug,
+        game_version.as_deref(),
+        loader.as_deref(),
+    );
     // A version list can exceed a megabyte, and the old 12s request-wide cap
     // cut the body mid-transfer on slow links: reqwest then reported the
     // useless "error decoding response body". Use a body-inclusive timeout and
@@ -448,11 +459,17 @@ fn build_version_list_url(
     let mut query_params = Vec::new();
 
     // Do NOT pass "基岩版" or "bedrock" to Modrinth version filter
-    if let Some(v) = game_version.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock") {
+    if let Some(v) = game_version
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock")
+    {
         let gv_json = serde_json::to_string(&vec![v]).unwrap_or_default();
         query_params.push(format!("game_versions={}", urlencoding(&gv_json)));
     }
-    if let Some(l) = loader.map(str::trim).filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock") {
+    if let Some(l) = loader
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock")
+    {
         let l_json = serde_json::to_string(&vec![l.to_lowercase()]).unwrap_or_default();
         query_params.push(format!("loaders={}", urlencoding(&l_json)));
     }
@@ -616,10 +633,7 @@ pub async fn download_content_file(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let mut auto_matched = false;
-    if instance_id.is_none()
-        && request.project_type == "mod"
-        && !request.game_versions.is_empty()
-    {
+    if instance_id.is_none() && request.project_type == "mod" && !request.game_versions.is_empty() {
         let installed = crate::minecraft::list_installed(&root).unwrap_or_default();
         if let Some(found) = pick_mod_instance(
             &installed,
@@ -631,11 +645,8 @@ pub async fn download_content_file(
         }
     }
 
-    let target_dir = match content_target_dir(
-        &root,
-        &request.project_type,
-        instance_id.as_deref(),
-    ) {
+    let target_dir = match content_target_dir(&root, &request.project_type, instance_id.as_deref())
+    {
         Some(dir) => dir,
         None => {
             // No local instance was built for this file: refuse instead of
@@ -771,14 +782,24 @@ mod tests {
 
     #[test]
     fn mod_instance_ignores_other_game_versions() {
-        let installed = vec![instance("1.21.4-fabric", Some("1.21.4"), Some("fabric"), 10)];
+        let installed = vec![instance(
+            "1.21.4-fabric",
+            Some("1.21.4"),
+            Some("fabric"),
+            10,
+        )];
         assert!(pick_mod_instance(&installed, &["1.20.1".to_string()], Some("fabric")).is_none());
         assert!(pick_mod_instance(&installed, &[], Some("fabric")).is_none());
     }
 
     #[test]
     fn mod_instance_matches_through_qualified_labels() {
-        let installed = vec![instance("1.20.1-fabric", Some("v1.20.1"), Some("fabric"), 5)];
+        let installed = vec![instance(
+            "1.20.1-fabric",
+            Some("v1.20.1"),
+            Some("fabric"),
+            5,
+        )];
         let picked = pick_mod_instance(&installed, &[" 1.20.1 ".to_string()], None)
             .expect("labels are normalized before comparing");
         assert_eq!(picked.id, "1.20.1-fabric");

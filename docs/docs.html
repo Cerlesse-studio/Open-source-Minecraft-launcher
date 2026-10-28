@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>技术文档 · Open-source-Minecraft-launcher</title>
+  <meta name="description" content="Open-source-Minecraft-launcher 技术文档：环境要求、快速开始、架构设计、下载引擎、账户体系、EasyTier 联机、基岩版、项目结构、数据目录、构建测试与常见问题。" />
+  <meta name="theme-color" content="#060a07" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="技术文档 · Open-source-Minecraft-launcher" />
+  <meta property="og:description" content="从源码结构到下载引擎、账户、联机与基岩版的完整技术文档。" />
+  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="assets/site.css" />
+  <script src="assets/site.js" defer></script>
+</head>
+<body data-page="docs">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+        <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+        <span class="brand-text">
+          <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+          <span class="brand-sub">MINECRAFT LAUNCHER</span>
+        </span>
+      </a>
+
+      <nav class="site-nav" aria-label="主导航">
+        <a class="nav-link" href="index.html">首页</a>
+        <a class="nav-link" href="docs.html" aria-current="page">技术文档</a>
+        <a class="nav-link" href="download.html">下载</a>
+        <a class="nav-link" href="about.html">关于</a>
+        <a class="nav-link" href="credits.html">开源声明</a>
+      </nav>
+
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">
+          <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+          下载启动器
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-nav" id="mobile-nav" data-mobile-nav>
+    <div class="mobile-nav-inner">
+      <a class="nav-link" href="index.html">首页</a>
+      <a class="nav-link" href="docs.html" aria-current="page">技术文档</a>
+      <a class="nav-link" href="download.html">下载</a>
+      <a class="nav-link" href="about.html">关于</a>
+      <a class="nav-link" href="credits.html">开源声明</a>
+      <div class="mobile-nav-actions">
+        <a class="btn btn-secondary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub 仓库
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">下载启动器</a>
+      </div>
+    </div>
+  </div>
+
+  <main id="main">
+    <section class="page-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="面包屑">
+          <a href="index.html">首页</a>
+          <span>/</span>
+          <span>技术文档</span>
+        </nav>
+        <h1 class="page-title">技术文档</h1>
+        <p class="page-lede">从环境准备、源码结构到下载引擎、账户体系、EasyTier 联机与基岩版核心。这里记录启动器实际如何工作，而不只是功能清单。</p>
+        <div class="page-meta">
+          <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
+          <span class="badge">Tauri 2</span>
+          <span class="badge">Rust 2024</span>
+          <span class="badge">React 19</span>
+          <span class="badge">Windows 10 / 11</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="container docs-shell">
+      <aside class="docs-sidebar" data-docs-nav aria-label="文档目录">
+        <div class="docs-nav-group">
+          <div class="docs-nav-title">入门</div>
+          <a href="#overview">概览</a>
+          <a href="#requirements">环境要求</a>
+          <a href="#quickstart">快速开始</a>
+        </div>
+        <div class="docs-nav-group">
+          <div class="docs-nav-title">核心</div>
+          <a href="#architecture">架构设计</a>
+          <a href="#downloads">下载引擎</a>
+          <a href="#accounts">账户体系</a>
+          <a href="#multiplayer">联机</a>
+          <a href="#bedrock">基岩版</a>
+        </div>
+        <div class="docs-nav-group">
+          <div class="docs-nav-title">参考</div>
+          <a href="#structure">项目结构</a>
+          <a href="#data">数据目录</a>
+          <a href="#build">构建与测试</a>
+          <a href="#faq">常见问题</a>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="doc-toolbar">
+          <span>文档适用于 v0.0.7 · 以仓库当前代码为准</span>
+          <div class="doc-toolbar-links">
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/README.md" target="_blank" rel="noopener">GitHub README</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
+          </div>
+        </div>
+
+        <section class="doc-section" id="overview">
+          <h2><span class="h2-index">01</span>概览</h2>
+          <p>Open-source-Minecraft-launcher 是一个基于 <strong>Tauri 2</strong> 的桌面 Minecraft 启动器：前端使用 React 19 + TypeScript，后端使用 Rust 2024。界面通过 Tauri Command 调用后端能力，下载、解包、校验、启动与 EasyTier 进程都由 Rust 持有。</p>
+          <p>项目主要面向 Windows 10 / 11 做完整适配；Java 版核心保持跨平台，可在 macOS / Linux 尝试构建运行，基岩版与 Xbox 运行时相关能力目前仅限 Windows。</p>
+
+          <div class="doc-grid">
+            <div class="doc-mini-card"><strong>双版本</strong><span>Java 版与基岩版共用一套版本库与启动入口。</span></div>
+            <div class="doc-mini-card"><strong>原生后端</strong><span>下载、安装、启动、账户、联机都在 Rust 侧完成。</span></div>
+            <div class="doc-mini-card"><strong>本地优先</strong><span>账户令牌、下载断点与游戏数据默认保存在本机。</span></div>
+            <div class="doc-mini-card"><strong>可替换</strong><span>内容源、下载源、Java、主题与主页都可以自行配置。</span></div>
+          </div>
+
+          <h3>技术栈</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>层级</th><th>技术</th><th>职责</th></tr></thead>
+              <tbody>
+                <tr><td>桌面容器</td><td>Tauri 2</td><td>原生窗口、进程管理、IPC、打包</td></tr>
+                <tr><td>前端</td><td>React 19 · TypeScript · Vite</td><td>页面、状态与交互</td></tr>
+                <tr><td>UI</td><td>Tailwind CSS 4 · Radix UI · Lucide · Sonner</td><td>样式、组件原语、图标、通知</td></tr>
+                <tr><td>后端</td><td>Rust 2024 · tokio · reqwest · serde</td><td>下载、安装、启动、账户、联机</td></tr>
+                <tr><td>存储</td><td>本地文件系统 + JSON</td><td>版本、配置、账户、存档与缓存</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="doc-section" id="requirements">
+          <h2><span class="h2-index">02</span>环境要求</h2>
+          <p>运行预编译版本与从源码构建的要求不同。预编译版本主要需要系统 WebView 与网络；源码构建还需要 Node.js、Rust 与 Tauri 的系统依赖。</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>项目</th><th>要求</th></tr></thead>
+              <tbody>
+                <tr><td>操作系统</td><td><strong>Windows 10 / 11 x64</strong>（推荐，功能完整）；macOS / Linux 可尝试构建运行 Java 版</td></tr>
+                <tr><td>Node.js</td><td>20.19+ 或 22.12+</td></tr>
+                <tr><td>Rust</td><td>stable，1.85+（项目使用 edition 2024）</td></tr>
+                <tr><td>Tauri 2 系统依赖</td><td>Windows WebView2；macOS Xcode Command Line Tools；Linux 的 WebKitGTK 等依赖，见 <a href="https://v2.tauri.app/start/prerequisites/" target="_blank" rel="noopener">Tauri 前置条件</a></td></tr>
+                <tr><td>网络</td><td>首次安装版本、依赖和 Java 需要联网</td></tr>
+                <tr><td>其他</td><td>基岩版需要 Windows 10 / 11；联机需要公网 IPv6</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout callout-note">
+            <svg class="icon" aria-hidden="true"><use href="#icon-info"></use></svg>
+            <p><span class="callout-title">平台说明</span>Windows 是完整功能平台；macOS / Linux 目前以 Java 版构建运行为主，基岩版、Xbox 运行时、winget 与 Windows 防火墙集成不可用。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="quickstart">
+          <h2><span class="h2-index">03</span>快速开始</h2>
+          <p>从源码运行开发版，或者直接构建安装包。</p>
+
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
+cd Open-source-Minecraft-launcher
+npm install
+npm run tauri dev</code></pre>
+          </div>
+
+          <div class="callout callout-warn">
+            <svg class="icon" aria-hidden="true"><use href="#icon-warning"></use></svg>
+            <p><span class="callout-title">Windows PowerShell</span>如果提示「无法加载 npm.ps1，因为在此系统上禁止运行脚本」，改用 <code>npm.cmd run tauri dev</code>，或在 <code>cmd</code> 中执行 <code>npm run tauri dev</code>。</p>
+          </div>
+
+          <h3>构建安装包</h3>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>npm run tauri build</code></pre>
+          </div>
+          <p>构建产物输出在 <code>src-tauri/target/release/bundle/</code>。首次构建需要编译全部 Rust 依赖，会比日常开发慢很多。</p>
+
+          <h3>测试</h3>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code># 前端类型检查 + 生产构建
+npm run build
+
+# Rust 单元测试
+cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
+          </div>
+        </section>
+
+        <section class="doc-section" id="architecture">
+          <h2><span class="h2-index">04</span>架构设计</h2>
+          <p>整体分为四层：React 前端负责呈现，Tauri IPC 负责通信，Rust 后端负责所有耗时与关键状态，外部服务提供版本、内容、账户与联机能力。</p>
+
+          <div class="arch-flow" aria-label="启动器架构图">
+            <div class="arch-node">
+              <span class="arch-node-kicker">FRONTEND</span>
+              <strong>React 19 + TypeScript</strong>
+              <p>页面、设置、主题、PCL2 主页、IPC 桥接</p>
+            </div>
+            <div class="arch-arrow" aria-hidden="true">→</div>
+            <div class="arch-node">
+              <span class="arch-node-kicker">BRIDGE</span>
+              <strong>Tauri 2 IPC</strong>
+              <p>Command 调用 · Event 推送 · 窗口与进程</p>
+            </div>
+            <div class="arch-arrow" aria-hidden="true">→</div>
+            <div class="arch-node">
+              <span class="arch-node-kicker">BACKEND</span>
+              <strong>Rust 2024</strong>
+              <p>版本、下载、账户、基岩版、EasyTier</p>
+            </div>
+          </div>
+          <div class="arch-external"><strong>外部服务：</strong>Mojang / BMCLAPI / Betacraft · Modrinth / CurseForge / MC百科 · Microsoft / Xbox Live · EasyTier</div>
+
+          <h3>设计取舍</h3>
+          <ul>
+            <li><strong>后端持有状态</strong>：安装与下载任务挂在 Rust 侧，切换页面不会中断；前端重新进入页面时读回真实进度。</li>
+            <li><strong>原子写入</strong>：下载先写 <code>.part</code>，校验 SHA-1 后再提交到目标路径；失败不会留下半成品文件。</li>
+            <li><strong>下载源透明</strong>：镜像失败会自动回退，用户不需要知道每个文件来自哪个源。</li>
+            <li><strong>账户令牌不经过前端</strong>：启动时会话由后端账户存储直接读取，减少令牌在 UI 层暴露的机会。</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="downloads">
+          <h2><span class="h2-index">05</span>下载引擎</h2>
+          <p>下载引擎是启动器最核心的基础设施。版本核心、依赖、资源文件、模组、资源包与 EasyTier 内核都走同一套下载流程。</p>
+
+          <h3>分片与自适应</h3>
+          <p>文件 ≥ 1 MB 时按 HTTP Range 分片，每片至少 512 KB；线程档位 1–64 可调，分片并发实际上限 16 路。单文件小于 1 MB 仍走单线程。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>场景</th><th>处理方式</th></tr></thead>
+              <tbody>
+                <tr><td>分片启动后 12 秒内</td><td>低速不判失败，给镜像爬坡时间</td></tr>
+                <tr><td>12 秒后总吞吐持续 &lt; 8 KB/s</td><td>放弃分片，改用单连接继续下载</td></tr>
+                <tr><td>单个分片 30 秒收不到字节</td><td>判定连接失效，重试或回退</td></tr>
+                <tr><td>镜像返回 429 / 503</td><td>退避后逐个补齐剩余分片，避免整体失败</td></tr>
+                <tr><td>文件 &lt; 1 MB</td><td>直接单线程</td></tr>
+                <tr><td>分片 &lt; 512 KB</td><td>合并分片，避免过度切分</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>镜像容灾</h3>
+          <p>候选地址覆盖官方 / 亚太 Anycast CDN、BMCLAPI、Forge / NeoForge / Fabric / Quilt Maven、Betacraft 旧版本资源、GitHub 加速镜像与 10 个 Xbox Live CDN 主机。遇到 404、超时或连接失败会自动换源；自定义镜像按 BMCLAPI 兼容路径重写，并校验必须为 http(s) 地址。</p>
+
+          <h3>断点续传</h3>
+          <p>任务通过 <code>.part.meta</code> 记录分片布局与完成情况，<code>.part</code> 不会在失败或换镜像时被删除。已下好的分片不会重复拉取；只有旁车文件与 <code>.part</code> 对不上时才自动重来。</p>
+
+          <div class="callout callout-tip">
+            <svg class="icon" aria-hidden="true"><use href="#icon-lightbulb"></use></svg>
+            <p><span class="callout-title">为什么默认不是 64 线程？</span>镜像对高并发连接很敏感。启动器会把实际分片并发限制在 16 路，并在吞吐过低时退回单连接，通常比盲目拉满线程更稳。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="accounts">
+          <h2><span class="h2-index">06</span>账户体系</h2>
+          <p>启动器同时支持微软账户与离线账户。微软登录采用 OAuth 2.0 设备码流程，不收集密码。</p>
+
+          <h3>微软登录链路</h3>
+          <ol>
+            <li>向微软申请设备码，在浏览器中完成登录。</li>
+            <li>轮询令牌端点，拿到 Microsoft access token。</li>
+            <li>通过 Xbox Live 用户认证与 XSTS 授权。</li>
+            <li>调用 Minecraft Services 登录，获取 Java 会话。</li>
+            <li>读取 profile 与 entitlements，确认 Java / 基岩版授权。</li>
+          </ol>
+          <p>刷新令牌保存在应用配置目录的 <code>account.json</code>；启动时由后端直接读取，不经过前端传输。Unix 平台会把文件权限设置为 <code>0600</code>。登录窗口只允许打开微软 / Xbox 官方域名。</p>
+
+          <h3>离线账户</h3>
+          <p>离线账户使用昵称与确定性 UUID，支持随机、Steve、Alex、Mojang 正版皮肤与本地自定义皮肤。自定义皮肤会打成 <code>OfflineSkinPack</code> 并写入 <code>options.txt</code> 的 <code>resourcePacks</code>；Mojang 皮肤通过官方签名纹理注入，1.19.2 及更早版本离线进入也能显示。</p>
+
+          <div class="callout callout-warn">
+            <svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>
+            <p><span class="callout-title">不要分享账户文件</span><code>account.json</code> 包含刷新令牌。提交 Issue 或分享日志时，请不要粘贴账户文件或任何令牌内容。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="multiplayer">
+          <h2><span class="h2-index">07</span>联机</h2>
+          <p>联机以内置的 <a href="https://easytier.cn" target="_blank" rel="noopener">EasyTier</a> v2.6.4 为内核，用公网 IPv6 做点对点直连，不依赖中转服务器。</p>
+
+          <h3>三步开房</h3>
+          <ol>
+            <li><strong>装内核</strong>：双方进入「联机」页安装 EasyTier 内核。任务由后端持有，切页、重启启动器都可继续下载。</li>
+            <li><strong>创建房间</strong>：房主选择本机的公网 IPv6 作为入口；进入游戏后点「对局域网开放」，启动器会从本次 <code>logs/latest.log</code> 自动读取端口并生成分享码。</li>
+            <li><strong>加入房间</strong>：好友粘贴整段分享码加入，打开游戏「多人游戏 → 局域网」即可看到世界；也可以手动直连房间页给出的 <code>10.126.126.x:端口</code>。</li>
+          </ol>
+
+          <h3>分享码与局域网发现</h3>
+          <p>分享码格式为 <code>cobble-mp://join?name=…&amp;secret=…&amp;peer=…&amp;ip=…&amp;port=…</code>，把网络标识、密钥、房主入口地址、虚拟地址和世界端口打包成一段文本。房主监听 <code>tcp://[::]:11010</code> / <code>udp://[::]:11010</code>，访客把房主公网 IPv6 作为初始对等节点。</p>
+          <p>点「显示到局域网」后，后端会在 <code>127.0.0.1</code> 上开一个 TCP 代理，并持续向 <code>224.0.2.60:4445</code> 与 <code>127.0.0.1:4445</code> 发送 <code>[MOTD]…[/MOTD][AD]…[/AD]</code>，好友的世界会直接出现在「多人游戏 → 局域网」里。</p>
+
+          <div class="callout callout-warn">
+            <svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg>
+            <p><span class="callout-title">公网 IPv6 是硬性条件</span>当前设计不内置中转节点。双方都需要可用的公网 IPv6；房主还需要放行 TCP / UDP <code>11010</code> 与 Minecraft 世界端口，路由器 / 光猫一侧要自行做对应放行。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="bedrock">
+          <h2><span class="h2-index">08</span>基岩版</h2>
+          <p>基岩版模块面向 Windows 10 / 11，支持商店客户端、<code>.msixvc</code> GDK 加密包、UWP / AppX 与 BDS 独立核心。</p>
+
+          <h3>核心与依赖</h3>
+          <p>所有基岩版启动路径都会在启动前自检运行依赖；Xbox GDK 路径会通过 winget 自动补齐「Xbox 应用」与「游戏服务」。UWP / AppX 核心由启动器自行解包，并以开发模式注册，不经过 Microsoft Store。</p>
+          <p>集成 90+ 条官方 Xbox Live CDN 直链，覆盖正式版与预览版；BDS 版本源可在 EndstoneMC、MCServerJars 与 Azure CDN 镜像之间切换。</p>
+
+          <h3>附加包与存档</h3>
+          <p>原生支持 <code>.mcpack</code> / <code>.mcaddon</code> / <code>.mcworld</code>。安装时读取包内 <code>manifest.json</code>，按模块类型分区解压；<code>.mcaddon</code> 内嵌的 <code>.mcpack</code> 会递归安装，<code>.mcworld</code> 通过 <code>level.dat</code> 识别并导入 <code>minecraftWorlds</code>。安装结果会写入所有已存在的游戏数据目录。</p>
+          <p>附加包管理器会扫描所有已存在的 <code>com.mojang</code> 数据目录，按资源包、行为包、皮肤包、世界模板分组，支持启停、批量操作、删除与本地导入。停用会把包移动到同目录的 <code>cobble_disabled_packs</code>。</p>
+
+          <h3>加载器与 DLL 模组</h3>
+          <ul>
+            <li><strong>LeviLamina</strong>：接入官方 <code>levilamina-client-version-db</code>，匹配并部署对应版本。</li>
+            <li><strong>Amethyst</strong>：原生 C++ 客户端 Mod 注入框架。</li>
+            <li><strong>DllMods</strong>：支持原生 <code>.dll</code> 模组、LeviLamina 插件与行为包的一键启停（<code>.disabled</code> 切换）、删除与本地导入。</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="structure">
+          <h2><span class="h2-index">09</span>项目结构</h2>
+          <p>前端与后端按职责拆分，下载、账户、基岩版与联机各自有独立模块。</p>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">text</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>.
+├── src/                          # React 19 前端
+│   ├── App.tsx                   # 视图编排、下载队列、启动状态
+│   ├── components/               # 页面与功能区
+│   │   ├── HomeView.tsx          # 主页 / 更新新闻 / 快速启动
+│   │   ├── VersionSelectView.tsx # Java + 基岩统一版本库
+│   │   ├── DownloadCatalogView.tsx # 下载中心
+│   │   ├── DownloadsView.tsx     # 下载管理与实时进度
+│   │   ├── Multiplayer*.tsx      # EasyTier 联机与房间
+│   │   ├── SettingsView.tsx      # 全局设置
+│   │   ├── VersionSettingsView.tsx # 实例设置
+│   │   ├── Bedrock*.tsx          # 基岩版包 / 加载器管理
+│   │   └── ui/                   # shadcn/ui 基础组件
+│   └── lib/                      # 类型、IPC、设置、主题、PCL2 主页
+├── src-tauri/                    # Rust 后端
+│   ├── src/
+│   │   ├── lib.rs                # Tauri 命令注册与共享状态
+│   │   ├── minecraft.rs          # Java 版本、资产、启动
+│   │   ├── loaders.rs            # Forge / NeoForge / Fabric / Quilt
+│   │   ├── net.rs                # 分片下载、镜像容灾与续传
+│   │   ├── auth.rs               # 微软设备码登录与账户存储
+│   │   ├── java.rs               # Java 检测与 Temurin 部署
+│   │   ├── content.rs            # Modrinth 内容搜索与下载
+│   │   ├── bedrock.rs            # 基岩版核心、依赖、包与加载器
+│   │   ├── bedrock_store.rs      # CurseForge 基岩版目录
+│   │   ├── mcmod.rs              # MC 百科条目解析
+│   │   ├── multiplayer.rs        # EasyTier、虚拟网络与局域网广播
+│   │   └── search_i18n.rs        # 多语言搜索词表
+│   ├── examples/smoke.rs         # 无头下载 / 启动冒烟测试
+│   ├── capabilities/             # Tauri 权限配置
+│   └── tauri.conf.json
+├── docs/                         # 官网与截图资源
+├── public/                       # 图标、字体与静态资源
+├── package.json
+├── vite.config.ts
+└── README.md</code></pre>
+          </div>
+        </section>
+
+        <section class="doc-section" id="data">
+          <h2><span class="h2-index">10</span>数据目录</h2>
+          <p>默认游戏目录为 <code>~/.cobble</code>（Windows 下通常是 <code>C:\Users\&lt;用户名&gt;\.cobble</code>），可以在设置中修改。</p>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">text</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>~/.cobble/
+├── assets/                  # 游戏资源（音效、语言、贴图）
+├── libraries/               # Java 依赖库
+├── meta/                    # 版本清单缓存
+├── versions/                # 各版本核心与实例
+│   └── &lt;版本或实例&gt;/
+│       ├── mods/
+│       ├── resourcepacks/
+│       ├── saves/
+│       └── logs/
+├── saves/                   # 未启用版本隔离时的共享存档
+├── resourcepacks/           # 共享资源包
+├── shaderpacks/
+├── datapacks/
+├── modpacks/                # 从内容市场下载的整合包
+├── runtime/                 # 自动下载的 Temurin JRE
+│   └── temurin-&lt;major&gt;/
+├── easytier/                # EasyTier 内核、安装状态与断点
+└── bedrock/
+    ├── versions/            # UWP / AppX / BDS 核心
+    ├── games/com.mojang/    # 便携数据目录
+    └── cache/               # 基岩版下载缓存</code></pre>
+          </div>
+          <p>账户文件不在游戏目录里，而是位于应用配置目录（Windows 通常为 <code>%APPDATA%\com.opensource.minecraft.launcher\account.json</code>），因此切换游戏目录不会退出登录。</p>
+
+          <div class="callout callout-note">
+            <svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>
+            <p><span class="callout-title">备份建议</span>复制整个游戏目录即可备份存档、模组、资源包与游戏内配置；启动器设置与账户在应用自己的数据目录，建议单独备份 <code>account.json</code>。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="build">
+          <h2><span class="h2-index">11</span>构建与测试</h2>
+          <p>日常开发、构建与测试命令如下。提交 PR 前建议至少运行前端构建与 Rust 测试。</p>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code># 前端类型检查 + 生产构建
+npm run build
+
+# Rust 单测
+cargo test --manifest-path src-tauri/Cargo.toml
+
+# 可选的下载 / 启动冒烟测试（会真实下载并尝试启动游戏）
+cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></pre>
+          </div>
+          <p>安装包由 <code>npm run tauri build</code> 生成，产物位于 <code>src-tauri/target/release/bundle/</code>。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
+
+          <div class="doc-grid">
+            <div class="doc-mini-card"><strong>格式化</strong><span><code>cargo fmt --manifest-path src-tauri/Cargo.toml -- --check</code></span></div>
+            <div class="doc-mini-card"><strong>静态检查</strong><span><code>cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings</code></span></div>
+          </div>
+        </section>
+
+        <section class="doc-section" id="faq">
+          <h2><span class="h2-index">12</span>常见问题</h2>
+          <div class="faq-list">
+            <details class="faq">
+              <summary>需要正版账号吗？</summary>
+              <div class="faq-body"><p>不强制。离线账户可以启动单人与离线服务器；微软账户登录后可获得正版 Java 会话、皮肤与基岩版授权检测。启动器不会要求输入微软密码，登录在微软官方页面完成。</p></div>
+            </details>
+            <details class="faq">
+              <summary>没有安装 Java，或者 Java 版本不匹配怎么办？</summary>
+              <div class="faq-body"><p>启动器会按版本元数据匹配 Java 主版本；找不到时自动下载 Temurin JRE 到 <code>&lt;游戏目录&gt;/runtime/</code>。也可以在「设置 → 游戏与启动」或版本设置里手动指定 Java。</p></div>
+            </details>
+            <details class="faq">
+              <summary>基岩版一定要安装 Microsoft Store 吗？</summary>
+              <div class="faq-body"><p>不必须。启动器支持 UWP / AppX 以开发模式注册、<code>.msixvc</code> GDK 核心与 BDS 独立核心；商店客户端只是其中一种来源。GDK 路径会通过 winget 补齐 Xbox 应用与游戏服务。</p></div>
+            </details>
+            <details class="faq">
+              <summary>联机需要公网 IPv6 吗？</summary>
+              <div class="faq-body"><p>是。当前设计是公网 IPv6 点对点直连，不内置中转节点。双方都需要可用的公网 IPv6；房主还需要放行 TCP / UDP <code>11010</code> 与 Minecraft 世界端口。</p></div>
+            </details>
+            <details class="faq">
+              <summary>下载慢、镜像 404 或经常中断怎么办？</summary>
+              <div class="faq-body"><p>先在「设置 → 下载与网络」里测速并切换到更快的源，线程数建议 8–16。镜像对高并发限速时，启动器会自动退回单连接；大文件支持断点续传。遇到 404 会自动尝试备用镜像。</p></div>
+            </details>
+            <details class="faq">
+              <summary>启动失败怎么排查？</summary>
+              <div class="faq-body"><p>先看主页 / 版本设置里的实时日志，确认 Java 主版本、游戏目录权限、版本隔离与模组冲突；旧版本注意 LegacyFix 相关参数。仍然无法解决时，请附上日志、系统信息和复现步骤提 Issue，不要粘贴账户令牌。</p></div>
+            </details>
+          </div>
+        </section>
+
+        <div class="doc-grid mt-10">
+          <a class="doc-mini-card" href="download.html">
+            <strong>获取启动器 →</strong>
+            <span>查看下载页、系统要求与源码构建方式。</span>
+          </a>
+          <a class="doc-mini-card" href="credits.html">
+            <strong>开源声明 →</strong>
+            <span>查看启动器使用的开源项目、字体、图标与数据来源。</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+            <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+            <span class="brand-text">
+              <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+              <span class="brand-sub">MINECRAFT LAUNCHER</span>
+            </span>
+          </a>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+        </div>
+        <div class="footer-col">
+          <h3>产品</h3>
+          <div class="footer-links">
+            <a href="index.html#capabilities">功能亮点</a>
+            <a href="index.html#preview">界面预览</a>
+            <a href="download.html">下载</a>
+            <a href="docs.html#quickstart">快速开始</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>项目</h3>
+          <div class="footer-links">
+            <a href="about.html">关于</a>
+            <a href="credits.html">开源声明</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>文档</h3>
+          <div class="footer-links">
+            <a href="docs.html">技术文档</a>
+            <a href="docs.html#architecture">架构设计</a>
+            <a href="docs.html#downloads">下载引擎</a>
+            <a href="docs.html#faq">常见问题</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>© <span data-year>2026</span> Open-source-Minecraft-launcher Contributors · MIT License. Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关联。</p>
+        <div class="footer-legal">
+          <a href="credits.html">第三方声明</a>
+          <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

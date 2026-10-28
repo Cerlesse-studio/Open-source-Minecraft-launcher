@@ -1,8 +1,16 @@
-import type { BackgroundType, LauncherSettings } from "./types";
+import type { BackgroundType, HomePageMode, LauncherSettings } from "./types";
 
 const STORAGE_KEY = "cobble.settings.v1";
 
 const BACKGROUND_TYPES: BackgroundType[] = ["default", "custom"];
+
+const HOME_PAGE_MODES: HomePageMode[] = ["preset", "blank", "local", "online"];
+
+function isHomePageMode(value: unknown): value is HomePageMode {
+  return (
+    typeof value === "string" && (HOME_PAGE_MODES as readonly string[]).includes(value)
+  );
+}
 
 /**
  * Older builds shipped named accent presets (and five scenic wallpapers).
@@ -48,6 +56,7 @@ export const defaultSettings: LauncherSettings = {
   offlineSkinModel: "default",
   customSkinPath: "",
   mojangSkinName: "",
+  msClientId: "",
   bedrockApiSource: "endstone",
   versionIsolation: "all",
   windowTitle: "",
@@ -66,6 +75,10 @@ export const defaultSettings: LauncherSettings = {
   enableAnimation: true,
   showWorldGrid: true,
   customSlogan: "",
+  homePageMode: "preset",
+  homePageLocalPath: "",
+  homePageUrl: "",
+  homePageRefreshMinutes: 0,
   fontFamily: "default",
   fontWeight: "regular",
   letterSpacing: "normal",
@@ -113,6 +126,8 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.customSkinPath === "string" ? parsed.customSkinPath : "",
       mojangSkinName:
         typeof parsed.mojangSkinName === "string" ? parsed.mojangSkinName : "",
+      msClientId:
+        typeof parsed.msClientId === "string" ? parsed.msClientId.trim() : "",
       bedrockApiSource:
         parsed.bedrockApiSource === "mcserverjars" || parsed.bedrockApiSource === "azure_mirror"
           ? parsed.bedrockApiSource
@@ -170,6 +185,14 @@ export function loadSettings(): LauncherSettings {
       showWorldGrid: parsed.showWorldGrid !== false,
       customSlogan:
         typeof parsed.customSlogan === "string" ? parsed.customSlogan : "",
+      homePageMode: isHomePageMode(parsed.homePageMode) ? parsed.homePageMode : "preset",
+      homePageLocalPath:
+        typeof parsed.homePageLocalPath === "string" ? parsed.homePageLocalPath : "",
+      homePageUrl: typeof parsed.homePageUrl === "string" ? parsed.homePageUrl : "",
+      homePageRefreshMinutes:
+        typeof parsed.homePageRefreshMinutes === "number"
+          ? Math.min(180, Math.max(0, Math.round(parsed.homePageRefreshMinutes)))
+          : defaultSettings.homePageRefreshMinutes,
       fontFamily:
         parsed.fontFamily === "pixel" ||
         parsed.fontFamily === "system" ||

@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>开源声明 · Open-source-Minecraft-launcher</title>
+  <meta name="description" content="Open-source-Minecraft-launcher 使用的开源项目、字体、图标与数据来源，以及相关许可证与免责声明。" />
+  <meta name="theme-color" content="#060a07" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="开源声明 · Open-source-Minecraft-launcher" />
+  <meta property="og:description" content="启动器使用的开源项目、字体、图标与数据来源。" />
+  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="assets/site.css" />
+  <script src="assets/site.js" defer></script>
+</head>
+<body data-page="credits">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+        <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+        <span class="brand-text">
+          <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+          <span class="brand-sub">MINECRAFT LAUNCHER</span>
+        </span>
+      </a>
+
+      <nav class="site-nav" aria-label="主导航">
+        <a class="nav-link" href="index.html">首页</a>
+        <a class="nav-link" href="docs.html">技术文档</a>
+        <a class="nav-link" href="download.html">下载</a>
+        <a class="nav-link" href="about.html">关于</a>
+        <a class="nav-link" href="credits.html" aria-current="page">开源声明</a>
+      </nav>
+
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">
+          <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+          下载启动器
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-nav" id="mobile-nav" data-mobile-nav>
+    <div class="mobile-nav-inner">
+      <a class="nav-link" href="index.html">首页</a>
+      <a class="nav-link" href="docs.html">技术文档</a>
+      <a class="nav-link" href="download.html">下载</a>
+      <a class="nav-link" href="about.html">关于</a>
+      <a class="nav-link" href="credits.html" aria-current="page">开源声明</a>
+      <div class="mobile-nav-actions">
+        <a class="btn btn-secondary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+          <svg class="icon icon-github" aria-hidden="true"><use href="#icon-github"></use></svg>
+          GitHub 仓库
+        </a>
+        <a class="btn btn-primary btn-sm" href="download.html">下载启动器</a>
+      </div>
+    </div>
+  </div>
+
+  <main id="main">
+    <section class="page-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="面包屑">
+          <a href="index.html">首页</a>
+          <span>/</span>
+          <span>开源声明</span>
+        </nav>
+        <h1 class="page-title">开源项目与<br />第三方声明</h1>
+        <p class="page-lede">启动器不是凭空写出来的。它站在这些开源项目、数据服务与字体图标之上，也把这份依赖关系完整地写在这里。</p>
+        <div class="page-meta">
+          <span class="badge badge-primary">MIT License</span>
+          <span class="badge">Open Source</span>
+          <span class="badge">Third-party notices</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">CORE PROJECTS</span>
+            <h2 class="section-title">核心开源项目</h2>
+            <p class="section-desc">启动器直接依赖或明确参考的开源项目。完整依赖列表以 <code>package.json</code> 与 <code>Cargo.toml</code> 为准。</p>
+          </div>
+          <a class="link-arrow section-link" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">
+            查看仓库
+            <svg class="icon" aria-hidden="true"><use href="#icon-arrow-up-right"></use></svg>
+          </a>
+        </div>
+
+        <div class="credit-grid">
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/icons/tauri.svg" alt="" /></span>
+              <div><div class="credit-name">Tauri 2</div><div class="credit-role">桌面运行时与打包</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT / Apache-2.0</span><a class="credit-link" href="https://github.com/tauri-apps/tauri" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/icons/rust.svg" alt="" /></span>
+              <div><div class="credit-name">Rust</div><div class="credit-role">后端语言与运行时</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT / Apache-2.0</span><a class="credit-link" href="https://www.rust-lang.org" target="_blank" rel="noopener">官网 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/icons/react.svg" alt="" /></span>
+              <div><div class="credit-name">React</div><div class="credit-role">界面框架</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/facebook/react" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/icons/vite.svg" alt="" /></span>
+              <div><div class="credit-name">Vite</div><div class="credit-role">构建工具</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/vitejs/vite" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/icons/tailwindcss.svg" alt="" /></span>
+              <div><div class="credit-name">Tailwind CSS</div><div class="credit-role">样式引擎</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/tailwindlabs/tailwindcss" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">R</span></span>
+              <div><div class="credit-name">Radix UI</div><div class="credit-role">组件原语</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/radix-ui/primitives" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">L</span></span>
+              <div><div class="credit-name">Lucide</div><div class="credit-role">界面图标</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">ISC</span><a class="credit-link" href="https://github.com/lucide-icons/lucide" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">S</span></span>
+              <div><div class="credit-name">Sonner</div><div class="credit-role">通知提示</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/emilkowalski/sonner" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">G</span></span>
+              <div><div class="credit-name">Geist / Silkscreen</div><div class="credit-role">界面字体</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">SIL OFL 1.1</span><a class="credit-link" href="https://github.com/vercel/geist-font" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">E</span></span>
+              <div><div class="credit-name">EasyTier</div><div class="credit-role">联机内核</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">LGPL-3.0</span><a class="credit-link" href="https://github.com/EasyTier/EasyTier" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><img src="assets/minecraft/bedrock.png" alt="" /></span>
+              <div><div class="credit-name">BedrockBoot-DM</div><div class="credit-role">基岩版核心与加载规范参考</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">GPL-3.0</span><a class="credit-link" href="https://github.com/0x44614D696E67/BedrockBoot-DM" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">DATA &amp; MIRRORS</span>
+            <h2 class="section-title">数据与镜像来源</h2>
+            <p class="section-desc">版本清单、游戏资源、内容索引与账户服务来自以下平台。启动器不会伪造或重新分发游戏本体。</p>
+          </div>
+        </div>
+
+        <div class="source-grid">
+          <a class="source-card" href="https://www.minecraft.net" target="_blank" rel="noopener" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg>
+            <div><strong>Mojang</strong><span>版本元数据、资源文件与游戏 API</span></div>
+          </a>
+          <a class="source-card" href="https://www.xbox.com" target="_blank" rel="noopener" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-users"></use></svg>
+            <div><strong>Microsoft / Xbox Live</strong><span>微软账户登录、Xbox 与游戏服务</span></div>
+          </a>
+          <a class="source-card" href="https://github.com/bangbang93/BMCLAPI" target="_blank" rel="noopener" data-reveal>
+            <img class="source-logo" src="assets/icons/bmclapi-mark.png" alt="" />
+            <div><strong>BMCLAPI</strong><span>国内下载镜像与版本清单加速</span></div>
+          </a>
+          <a class="source-card" href="https://betacraft.uk" target="_blank" rel="noopener" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-database"></use></svg>
+            <div><strong>Betacraft</strong><span>旧版本索引、资源与 LegacyFix 生态</span></div>
+          </a>
+          <a class="source-card" href="https://modrinth.com" target="_blank" rel="noopener" data-reveal>
+            <img class="source-logo" src="assets/icons/modrinth.svg" alt="" />
+            <div><strong>Modrinth</strong><span>模组、整合包、光影与资源包索引</span></div>
+          </a>
+          <a class="source-card" href="https://www.curseforge.com/minecraft-bedrock" target="_blank" rel="noopener" data-reveal>
+            <img class="source-logo" src="assets/icons/curseforge.svg" alt="" />
+            <div><strong>CurseForge</strong><span>基岩版附加包与材质包目录</span></div>
+          </a>
+          <a class="source-card" href="https://www.mcmod.cn" target="_blank" rel="noopener" data-reveal>
+            <img class="source-logo" src="assets/icons/mcmod.png" alt="" />
+            <div><strong>MC 百科</strong><span>中文模组资料与条目跳转</span></div>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">FONTS &amp; ICONS</span>
+            <h2 class="section-title">字体与图标</h2>
+            <p class="section-desc">界面字体、图标与像素物品贴图的使用说明。</p>
+          </div>
+        </div>
+
+        <div class="source-grid">
+          <div class="source-card" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-file"></use></svg>
+            <div><strong>Geist / Silkscreen</strong><span>界面字体，SIL Open Font License 1.1；字体文件随包内置并保留 OFL 文本。</span></div>
+          </div>
+          <div class="source-card" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-file"></use></svg>
+            <div><strong>Lucide</strong><span>界面线性图标，ISC License；通过 <code>lucide-react</code> 使用。</span></div>
+          </div>
+          <div class="source-card" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-layers"></use></svg>
+            <div><strong>Minecraft 物品图标</strong><span>版权归 Mojang Studios 所有，仅用于界面装饰、功能说明与项目识别。</span></div>
+          </div>
+          <div class="source-card" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg>
+            <div><strong>第三方 Logo</strong><span>Tauri、Rust、React、Vite、Tailwind CSS、Modrinth、CurseForge、BMCLAPI、MC百科等 Logo 归各项目所有，仅用于署名。</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">LICENSES</span>
+            <h2 class="section-title">许可证说明</h2>
+          </div>
+        </div>
+
+        <div class="legal-card" data-reveal>
+          <h3>本项目</h3>
+          <p>Open-source-Minecraft-launcher 以 <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a> 开源。你可以查看、修改、分发与再发布代码，但需保留版权声明与许可证文本。</p>
+        </div>
+
+        <div class="legal-card" data-reveal>
+          <h3>第三方项目</h3>
+          <ul>
+            <li>各开源项目的许可证以对应仓库为准；上表中的许可证仅作摘要，不构成法律意见。</li>
+            <li>EasyTier 以独立进程方式运行，遵循 LGPL-3.0；对 EasyTier 的修改与分发请遵守其许可证要求。</li>
+            <li>BedrockBoot-DM 作为基岩版目录与加载规范的参考；如涉及代码复用，请遵循 GPL-3.0。</li>
+            <li>Minecraft 客户端、资源与物品图标版权归 Mojang Studios 所有；本项目不包含游戏本体。</li>
+          </ul>
+        </div>
+
+        <div class="legal-card" data-reveal>
+          <h3>免责声明</h3>
+          <p>Minecraft 是 Mojang Studios 的商标。本项目与 Mojang、Microsoft 及 Xbox 无任何关联。启动器仅提供版本管理、下载与启动能力；游戏本体、账户、模组与第三方内容的使用需遵守各自的权利要求与最终用户许可协议。</p>
+          <p>如果你认为本项目中的某个署名、图标或链接侵犯了你的权利，请通过 GitHub Issue 联系维护者，我们会尽快核实并处理。</p>
+        </div>
+
+        <div class="cta-band mt-24" data-reveal>
+          <div class="cta-inner">
+            <div>
+              <span class="eyebrow">FOUND SOMETHING?</span>
+              <h2 class="cta-title">发现遗漏或署名错误？</h2>
+              <p class="cta-desc">第三方声明需要持续维护。如果漏掉了某个项目，或链接 / 许可证信息有误，欢迎直接提 Issue 或提交 PR。</p>
+            </div>
+            <div class="cta-actions">
+              <a class="btn btn-primary" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">提交 Issue</a>
+              <a class="btn btn-secondary" href="about.html">关于项目</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="index.html" aria-label="Open-source-Minecraft-launcher 首页">
+            <img class="brand-mark" src="assets/logo-mark.png" width="38" height="38" alt="" />
+            <span class="brand-text">
+              <span class="brand-name"><span class="brand-long">Open-source-Minecraft-launcher</span><span class="brand-short">OSMC Launcher</span></span>
+              <span class="brand-sub">MINECRAFT LAUNCHER</span>
+            </span>
+          </a>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+        </div>
+        <div class="footer-col">
+          <h3>产品</h3>
+          <div class="footer-links">
+            <a href="index.html#capabilities">功能亮点</a>
+            <a href="index.html#preview">界面预览</a>
+            <a href="download.html">下载</a>
+            <a href="docs.html#quickstart">快速开始</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>项目</h3>
+          <div class="footer-links">
+            <a href="about.html">关于</a>
+            <a href="credits.html">开源声明</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
+          </div>
+        </div>
+        <div class="footer-col">
+          <h3>文档</h3>
+          <div class="footer-links">
+            <a href="docs.html">技术文档</a>
+            <a href="docs.html#architecture">架构设计</a>
+            <a href="docs.html#downloads">下载引擎</a>
+            <a href="docs.html#faq">常见问题</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>© <span data-year>2026</span> Open-source-Minecraft-launcher Contributors · MIT License. Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关联。</p>
+        <div class="footer-legal">
+          <a href="credits.html">第三方声明</a>
+          <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

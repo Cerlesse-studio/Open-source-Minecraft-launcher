@@ -6,9 +6,11 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  CloudDownload,
   Coffee,
   Cpu,
   ExternalLink,
+  FileCode2,
   FolderOpen,
   Gauge,
   Globe,
@@ -16,14 +18,17 @@ import {
   Info,
   Monitor,
   Moon,
+  Newspaper,
   Palette,
   RefreshCw,
   SlidersHorizontal,
   Sparkles,
+  SquareDashed,
   Sun,
   Type,
   Upload,
   UserRound,
+  type LucideIcon,
 } from "lucide-react";
 import { cn } from "cn";
 import { isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend";
@@ -32,6 +37,7 @@ import { DEFAULT_ACCENT } from "../lib/theme";
 import type {
   DownloadSourceId,
   DownloadSourceProbe,
+  HomePageMode,
   JavaInstall,
   LauncherSettings,
   LauncherVisibility,
@@ -69,8 +75,11 @@ interface CreditEntry {
   role: string;
   license?: string;
   url: string;
-  /** Brand mark shipped in `public/` so the list works offline. */
-  icon: string;
+  /**
+   * Brand mark shipped in `public/` so the list works offline. Entries without
+   * one (or with a mark that fails to load) fall back to a letter badge.
+   */
+  icon?: string;
   /** Minecraft textures are nearest-neighbour art and need `image-rendering`. */
   pixel?: boolean;
 }
@@ -86,18 +95,27 @@ const CORE_PROJECTS: CreditEntry[] = [
   { name: "React", role: "界面框架", license: "MIT", url: "https://github.com/facebook/react", icon: "/icons/credits/react.svg" },
   { name: "Vite", role: "构建工具", license: "MIT", url: "https://github.com/vitejs/vite", icon: "/icons/credits/vite.svg" },
   { name: "Tailwind CSS", role: "样式引擎", license: "MIT", url: "https://github.com/tailwindlabs/tailwindcss", icon: "/icons/credits/tailwindcss.svg" },
+  { name: "Radix UI", role: "界面组件原语", license: "MIT", url: "https://github.com/radix-ui/primitives" },
+  { name: "Lucide", role: "图标库", license: "ISC", url: "https://github.com/lucide-icons/lucide" },
+  { name: "Sonner", role: "通知提示", license: "MIT", url: "https://github.com/emilkowalski/sonner" },
+  { name: "Geist / Silkscreen", role: "界面字体", license: "SIL OFL 1.1", url: "https://github.com/vercel/geist-font" },
+  { name: "EasyTier", role: "联机内核（easytier-core）", license: "LGPL-3.0", url: "https://github.com/EasyTier/EasyTier" },
   { name: "BedrockBoot-DM", role: "基岩版核心与加载规范", url: "https://github.com/0x44614D696E67/BedrockBoot-DM", icon: "/icons/minecraft/bedrock.png", pixel: true },
 ];
 
 const SOURCE_PROJECTS: CreditEntry[] = [
   { name: "Mojang", role: "版本元数据与资源", url: "https://www.minecraft.net", icon: "/icons/minecraft/grass_block.png", pixel: true },
+  { name: "Microsoft / Xbox Live", role: "正版账户登录与游戏服务", url: "https://www.xbox.com" },
   { name: "BMCLAPI", role: "国内下载镜像", url: "https://github.com/bangbang93/BMCLAPI", icon: "/icons/credits/bmclapi.png" },
+  { name: "Betacraft", role: "旧版本资源与版本索引", url: "https://betacraft.uk" },
   { name: "Modrinth", role: "模组索引与 CDN", url: "https://modrinth.com", icon: "/icons/credits/modrinth.svg" },
   { name: "CurseForge", role: "模组索引", url: "https://www.curseforge.com", icon: "/icons/credits/curseforge.svg" },
   { name: "MC百科", role: "模组中文资料", url: "https://www.mcmod.cn", icon: "/icons/credits/mcmod.png" },
 ];
 
 function CreditRow({ entry }: { entry: CreditEntry }) {
+  const [iconFailed, setIconFailed] = useState(false);
+  const icon = entry.icon && !iconFailed ? entry.icon : null;
   return (
     <button
       type="button"
@@ -106,13 +124,23 @@ function CreditRow({ entry }: { entry: CreditEntry }) {
       className="group flex items-center gap-2.5 rounded-lg border border-border/50 bg-muted/15 px-2.5 py-2 text-left transition-colors hover:border-primary/40 hover:bg-muted/30 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:outline-none"
     >
       <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/50 bg-background/60 p-1">
-        <img
-          src={entry.icon}
-          alt=""
-          aria-hidden="true"
-          loading="lazy"
-          className={cn("size-full object-contain", entry.pixel && "pixelated")}
-        />
+        {icon ? (
+          <img
+            src={icon}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            onError={() => setIconFailed(true)}
+            className={cn("size-full object-contain", entry.pixel && "pixelated")}
+          />
+        ) : (
+          <span
+            aria-hidden="true"
+            className="select-none text-[11px] font-semibold text-muted-foreground/70 group-hover:text-primary"
+          >
+            {entry.name.trim().charAt(0).toUpperCase()}
+          </span>
+        )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[11.5px] font-medium text-foreground">{entry.name}</span>
@@ -125,6 +153,13 @@ function CreditRow({ entry }: { entry: CreditEntry }) {
     </button>
   );
 }
+
+const HOME_PAGE_OPTIONS: Array<{ id: HomePageMode; label: string; icon: LucideIcon }> = [
+  { id: "blank", label: "空白", icon: SquareDashed },
+  { id: "preset", label: "预设", icon: Newspaper },
+  { id: "local", label: "读取本地文件", icon: FileCode2 },
+  { id: "online", label: "联网更新", icon: CloudDownload },
+];
 
 const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
   official_ap: "官方 / 亚太 CDN",
@@ -447,6 +482,32 @@ export function SettingsView({
       }
     } catch (error) {
       onNotify("error", "无法选择壁纸文件", String(error));
+    }
+  };
+
+  const handlePickHomePage = async () => {
+    if (!isDesktop) {
+      onNotify("info", "浏览器预览模式", "读取本地主页文件需要桌面应用。");
+      return;
+    }
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        filters: [
+          {
+            name: "网页与 PCL 主页 (*.html, *.htm, *.xaml, *.xml)",
+            extensions: ["html", "htm", "xaml", "xml"],
+          },
+        ],
+        title: "选择自定义主页文件（HTML 或 PCL2 的 XAML）",
+      });
+      if (typeof picked === "string" && picked.trim()) {
+        onChange({ homePageMode: "local", homePageLocalPath: picked.trim() });
+        onNotify("success", "已设置本地主页", picked.trim());
+      }
+    } catch (error) {
+      onNotify("error", "无法选择主页文件", String(error));
     }
   };
 
@@ -1772,6 +1833,120 @@ export function SettingsView({
                   />
                 </div>
               </div>
+            </SettingsSection>
+
+            {/* 主页：PCL2 风格的可自定义主页区域 */}
+            <SettingsSection title="主页" icon={<Newspaper className="size-4" />}>
+              <Field label="主页内容">
+                <RadioGroup
+                  value={settings.homePageMode}
+                  onValueChange={(val) => onChange({ homePageMode: val as HomePageMode })}
+                  className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+                >
+                  {HOME_PAGE_OPTIONS.map((option) => (
+                    <Label
+                      key={option.id}
+                      htmlFor={`home-page-${option.id}`}
+                      className={cn(
+                        "flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border p-3 text-center transition-all",
+                        settings.homePageMode === option.id
+                          ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                          : "border-border/70 bg-background/40 text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+                      )}
+                    >
+                      <RadioGroupItem
+                        value={option.id}
+                        id={`home-page-${option.id}`}
+                        className="sr-only"
+                      />
+                      <option.icon className="size-4" />
+                      <span className="text-[11.5px] font-medium">{option.label}</span>
+                    </Label>
+                  ))}
+                </RadioGroup>
+              </Field>
+
+              <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                {settings.homePageMode === "preset"
+                  ? "使用内置的“我的世界更新新闻”作为主页内容。"
+                  : settings.homePageMode === "blank"
+                    ? "主页区域保持空白，只保留右侧启动面板。"
+                    : settings.homePageMode === "local"
+                      ? "读取本地 HTML 文件，或直接使用 PCL2 的 .xaml 自定义主页；XAML 里的相对图片会按文件所在目录读取。"
+                      : "从网络地址加载 HTML 或 PCL2 的 .xaml 主页，可设置自动刷新间隔保持内容最新。"}
+              </p>
+
+              <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                兼容 PCL2 自定义主页：支持 Grid / StackPanel / Border / TextBlock / Image
+                等布局与内容组件，以及 MyCard、MyButton、MyHint、MyTextBox 等 PCL
+                控件、{'{DynamicResource}'} 主题色与 EventType 动作（打开网页 / 复制文本 /
+                刷新主页 / 启动游戏）。无法还原的元素会在主页标题旁标记。
+              </p>
+
+              {settings.homePageMode === "local" ? (
+                <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">                    <Label className="text-[11px] text-muted-foreground">
+                      本地主页文件（HTML 或 PCL2 的 .xaml）
+                    </Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={settings.homePageLocalPath || ""}
+                      onChange={(e) => onChange({ homePageLocalPath: e.target.value })}
+                      placeholder="例如 D:\\PCL2\\Homepage.html"
+                      className="h-8 flex-1 font-mono text-[11px]"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-[11px]"
+                      onClick={() => void handlePickHomePage()}
+                    >
+                      <FolderOpen className="size-3.5" />
+                      浏览
+                    </Button>
+                    {settings.homePageLocalPath ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-[11px] text-muted-foreground hover:text-destructive"
+                        onClick={() => onChange({ homePageLocalPath: "" })}
+                      >
+                        清空
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {settings.homePageMode === "online" ? (
+                <div className="space-y-3">
+                  <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">
+                    <Label className="text-[11px] text-muted-foreground">主页地址</Label>
+                    <Input
+                      value={settings.homePageUrl || ""}
+                      onChange={(e) => onChange({ homePageUrl: e.target.value })}
+                      placeholder="https://example.com/homepage.html"
+                      className="h-8 font-mono text-[11px]"
+                    />
+                  </div>
+                  <Field label="自动刷新间隔">
+                    <SettingsSelect
+                      value={String(settings.homePageRefreshMinutes)}
+                      onChange={(val) => onChange({ homePageRefreshMinutes: Number(val) })}
+                      options={[
+                        {
+                          value: "0",
+                          label: "仅手动刷新",
+                          description: "打开主页或点击刷新时更新",
+                        },
+                        { value: "5", label: "每 5 分钟", description: "适合频繁更新的主页" },
+                        { value: "15", label: "每 15 分钟", description: "较为均衡" },
+                        { value: "30", label: "每 30 分钟", description: "节省流量" },
+                        { value: "60", label: "每 60 分钟", description: "适合更新较慢的页面" },
+                      ]}
+                    />
+                  </Field>
+                </div>
+              ) : null}
             </SettingsSection>
 
             {/* 界面排版与视觉定制 */}
