@@ -1,31 +1,18 @@
-import { useState } from "react";
-import { Copy, Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import type { MultiplayerConfig } from "../lib/types";
-
-type Notify = (tone: "success" | "error" | "info", title: string, detail?: string) => void;
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { isRoomPassword, ROOM_PASSWORD_MIN } from "../lib/multiplayer";
 
 // ---------------------------------------------------------------------------
-// 权限管理：网络密钥、访客带宽
+// 权限管理：房间密码、访客带宽
 // ---------------------------------------------------------------------------
 
 interface HostPermissionPanelProps {
   config: MultiplayerConfig;
   running: boolean;
   onChangeConfig: (patch: Partial<MultiplayerConfig>) => void;
-  /** 换一把新的网络密钥；正在跑的房间会重启，旧分享码随即失效。 */
-  onRotateSecret: () => void;
-  onNotify: Notify;
 }
 
 /** EasyTier 的限速单位是字节/秒；这里按常见的 Mbps 给几档。 */
@@ -40,10 +27,16 @@ export function HostPermissionPanel({
   config,
   running,
   onChangeConfig,
-  onRotateSecret,
-  onNotify,
 }: HostPermissionPanelProps) {
-  const [showSecret, setShowSecret] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [draft, setDraft] = useState(config.networkSecret);
+  useEffect(() => {
+    setDraft(config.networkSecret);
+  }, [config.networkSecret]);
+
+  const next = draft.trim();
+  const valid = isRoomPassword(draft);
+  const changed = valid && next !== config.networkSecret;
 
   return (
     <section className="rounded-xl border border-border/70 bg-card/55">
@@ -54,50 +47,43 @@ export function HostPermissionPanel({
 
       <div className="space-y-4 p-4">
         <div>
-          <p className="mb-1.5 text-[10.5px] text-muted-foreground">网络密钥</p>
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0 text-[10.5px] text-muted-foreground">密钥</span>
-              <code className="min-w-0 flex-1 truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1 font-mono text-[10.5px]">
-                {showSecret ? config.networkSecret : "•".repeat(12)}
-              </code>
+          <p className="mb-1.5 text-[10.5px] text-muted-foreground">房间密码</p>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2 transition-colors focus-within:border-ring">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={draft}
+                maxLength={64}
+                placeholder={`至少 ${ROOM_PASSWORD_MIN} 位`}
+                onChange={(event) => setDraft(event.target.value)}
+                className="h-full w-full min-w-0 bg-transparent font-mono text-[10.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground/40"
+              />
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="size-7 shrink-0 text-muted-foreground"
-                title={showSecret ? "隐藏密钥" : "显示密钥"}
-                onClick={() => setShowSecret((value) => !value)}
+                className="size-6 shrink-0 text-muted-foreground"
+                title={showPassword ? "隐藏密码" : "显示密码"}
+                onClick={() => setShowPassword((value) => !value)}
               >
-                {showSecret ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="size-7 shrink-0 text-muted-foreground"
-                title="复制密钥"
-                onClick={async () => {
-                  const ok = await copyText(config.networkSecret);
-                  onNotify(ok ? "success" : "error", ok ? "密钥已复制" : "复制失败");
-                }}
-              >
-                <Copy className="size-3" />
+                {showPassword ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
               </Button>
             </div>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[10px] text-muted-foreground/70">
-              {running ? "换密钥会重启房间，旧分享码作废。" : "换密钥后旧分享码作废。"}
-            </p>
             <Button
-              variant="outline"
-              size="sm"
-              className="h-7 shrink-0 gap-1.5 border-amber-500/40 px-2.5 text-[10.5px] text-amber-400 hover:bg-amber-500/10"
-              onClick={onRotateSecret}
+              size="xs"
+              className="h-7 shrink-0 px-2.5 text-[10.5px]"
+              disabled={!changed}
+              onClick={() => onChangeConfig({ networkSecret: next })}
             >
-              <KeyRound className="size-3" />
-              轮换密钥
+              应用
             </Button>
           </div>
+          <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground/70">
+            {valid
+              ? running
+                ? "改密码会重启房间，旧分享码作废。"
+                : "改密码后旧分享码作废。"
+              : `密码需要 ${ROOM_PASSWORD_MIN}–32 位，仅限字母、数字和英文符号。`}
+          </p>
         </div>
 
         <div>
@@ -123,7 +109,7 @@ export function HostPermissionPanel({
         </div>
 
         <p className="border-t border-border/50 pt-3 text-[10px] leading-4 text-muted-foreground/70">
-          真正的门禁是网络密钥，要立即清场就轮换密钥。
+          真正的门禁是房间密码，要立即清场就改密码。
         </p>
       </div>
     </section>

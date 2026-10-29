@@ -44,6 +44,9 @@ struct RuntimeInfo {
     pid: Option<u32>,
     /// 仅本机的 RPC 端口，`easytier-cli` 用它读取在线成员。
     rpc_port: Option<u16>,
+    /// 仅本机的 SOCKS5 端口。内核以无 TUN 方式运行时，本机没有虚拟网卡，
+    /// 访问房间里的虚拟地址只能走这个内核自带的代理入口。
+    socks_port: Option<u16>,
 }
 
 struct LanBridge {
@@ -214,6 +217,10 @@ pub struct RoomResources {
     shaders: Vec<RoomResourceItem>,
     resource_packs: Vec<RoomResourceItem>,
     updated_at: u64,
+    /// 房主的局域网端口。只输 IPv6 加入的访客靠它认出要连哪个端口；
+    /// 旧版本不认这个字段，反序列化时按 `None` 处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_port: Option<u16>,
 }
 
 #[derive(Serialize, Clone)]
@@ -250,11 +257,110 @@ fn cli_binary(root: &Path) -> PathBuf {
     easytier_dir(root).join(name)
 }
 
+/// 内核运行必需的随包文件（不带扩展名的按 `name` / `name.exe` 两种写法都认）。
+///
+/// Windows 版 `easytier-core.exe` 在加载阶段就依赖同目录的 `Packet.dll`
+/// （Npcap）；只解出两个 exe 时内核会在启动后几百毫秒内退出，房间刚建好就
+/// 显示「网络已断开」，所以“只看到 exe”不能算安装完成。
+///
+/// `wintun.dll` 也在同一份发行包里，解压时会被保留；但它在创建 TUN 网卡时
+/// 才加载，且 PATH 里的同名 DLL（比如 Cloudflare WARP 自带的 Cloudflare
+/// 签名版）也能被找到，所以不把它当作“已就绪”的硬条件，只在启动失败时提示。
+#[cfg(windows)]
+const REQUIRED_KERNEL_STEMS: &[&str] = &["easytier-core", "easytier-cli", "Packet.dll"];
+#[cfg(not(windows))]
+const REQUIRED_KERNEL_STEMS: &[&str] = &["easytier-core", "easytier-cli"];
+
+fn kernel_file_present(dir: &Path, stem: &str) -> bool {
+    dir.join(stem).is_file() || dir.join(format!("{stem}.exe")).is_file()
+}
+
+fn missing_kernel_files(dir: &Path) -> Vec<&'static str> {
+    REQUIRED_KERNEL_STEMS
+        .iter()
+        .copied()
+        .filter(|stem| !kernel_file_present(dir, stem))
+        .collect()
+}
+
+/// 安装目录是否完整。只看 exe 会把缺 DLL 的半成品当成“已就绪”。
+fn kernel_dir_ok(dir: &Path) -> bool {
+    missing_kernel_files(dir).is_empty()
+}
+
+fn kernel_installed(root: &Path) -> bool {
+    kernel_dir_ok(&easytier_dir(root))
+}
+
 fn installed_version(root: &Path) -> Option<String> {
     std::fs::read_to_string(easytier_dir(root).join("version.txt"))
         .ok()
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
+}
+
+/// 随安装包内置的 EasyTier 目录（见 `tauri.conf.json` 的 `bundle.resources`）。
+///
+/// 开发模式和安装后的目录布局不一样：开发时资源在
+/// `src-tauri/resources/easytier`，打包后在安装目录的 `resources/easytier`。
+/// 两个位置都找一遍，`tauri dev` 和安装版就都不需要联网下载内核。
+fn bundled_kernel_dir(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("resources").join("easytier"));
+        candidates.push(dir.join("easytier"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("resources").join("easytier"));
+        }
+    }
+    #[cfg(debug_assertions)]
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("easytier"),
+    );
+    candidates.into_iter().find(|dir| kernel_dir_ok(dir))
+}
+
+/// 内核随安装包分发：第一次用到时直接拷到游戏目录，不再走下载流程。
+/// 已经有完整内核时什么也不做，返回 `Ok(false)`。
+fn install_kernel_from_bundle(app: &AppHandle, root: &Path) -> Result<bool, String> {
+    if kernel_installed(root) {
+        return Ok(false);
+    }
+    let Some(source) = bundled_kernel_dir(app) else {
+        return Ok(false);
+    };
+    copy_kernel_dir(&source, &easytier_dir(root))?;
+    Ok(true)
+}
+
+/// 把一份完整的内核目录拷到游戏目录。
+fn copy_kernel_dir(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target)
+        .map_err(|error| format!("无法创建内核目录 {}：{error}", target.display()))?;
+    let entries = std::fs::read_dir(source)
+        .map_err(|error| format!("无法读取内置内核 {}：{error}", source.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // 上一版只解出 exe 的半成品会被当成“已安装”，所以逐文件覆盖。
+        if !path.is_file() {
+            continue;
+        }
+        let dest = target.join(entry.file_name());
+        std::fs::copy(&path, &dest)
+            .map_err(|error| format!("释放内置内核失败（{}）：{error}", dest.display()))?;
+    }
+    let _ = std::fs::write(target.join("version.txt"), EASYTIER_VERSION);
+    if !kernel_dir_ok(target) {
+        return Err(format!(
+            "内置 EasyTier 不完整，缺少 {}",
+            missing_kernel_files(target).join("、")
+        ));
+    }
+    Ok(())
 }
 
 fn release_asset_name() -> Result<String, String> {
@@ -276,7 +382,7 @@ fn release_asset_name() -> Result<String, String> {
 
 fn status_of(root: &Path, state: &MultiplayerState) -> MultiplayerStatus {
     let core = core_binary(root);
-    let installed = core.is_file();
+    let installed = kernel_installed(root);
     let runtime = state
         .runtime
         .lock()
@@ -354,10 +460,17 @@ fn extract_binaries(zip_path: &Path, dir: &Path) -> Result<u32, String> {
         }
         extracted += 1;
     }
-    if extracted == 0
-        || !(dir.join("easytier-core").is_file() || dir.join("easytier-core.exe").is_file())
-    {
+    // 压缩包被截断时 zip 仍能打开，后面的条目会读失败并被跳过；只检查
+    // 内核 exe 会把这种半成品当成功，运行起来却因缺 DLL 立刻退出。
+    if extracted == 0 {
         return Err("EasyTier 压缩包里没有找到内核文件".to_string());
+    }
+    if !kernel_dir_ok(dir) {
+        let missing = missing_kernel_files(dir);
+        return Err(format!(
+            "EasyTier 压缩包不完整，缺少 {}（请重新下载内核）",
+            missing.join("、")
+        ));
     }
     Ok(extracted)
 }
@@ -591,7 +704,7 @@ pub async fn install_easytier(
         .await
         .map_err(|error| format!("无法创建 EasyTier 目录: {error}"))?;
 
-    if core_binary(&root_path).is_file()
+    if kernel_installed(&root_path)
         && installed_version(&root_path).as_deref() == Some(EASYTIER_VERSION)
     {
         return Ok(status_of(&root_path, &state));
@@ -763,6 +876,15 @@ pub fn get_multiplayer_status(
     state: tauri::State<'_, MultiplayerState>,
 ) -> MultiplayerStatus {
     let root_path = PathBuf::from(&root);
+    match install_kernel_from_bundle(&app, &root_path) {
+        Ok(true) => emit_log(
+            &app,
+            "cobble",
+            format!("已释放内置 EasyTier {EASYTIER_VERSION}"),
+        ),
+        Ok(false) => {}
+        Err(error) => emit_log(&app, "cobble", error),
+    }
     emit_status(&app, &state, &root_path);
     status_of(&root_path, &state)
 }
@@ -906,6 +1028,7 @@ fn core_args(
     listeners: &str,
     peers: &[String],
     rpc_port: u16,
+    socks_port: u16,
 ) -> Vec<String> {
     let mut args = vec![
         "--network-name".to_string(),
@@ -914,6 +1037,15 @@ fn core_args(
         config.network_secret.trim().to_string(),
         "--ipv4".to_string(),
         config.overlay_ipv4.trim().to_string(),
+        // 无 TUN 模式：不创建虚拟网卡，因此不需要管理员权限。
+        // 房主的虚拟地址由内核的用户态协议栈直接转到本机服务；
+        // 访客要访问房间里的地址时，统一从 `--socks5` 这个本机入口走。
+        "--no-tun".to_string(),
+        "true".to_string(),
+        "--use-smoltcp".to_string(),
+        "true".to_string(),
+        "--socks5".to_string(),
+        socks_port.to_string(),
         "--listeners".to_string(),
         listeners.to_string(),
         // 只监听本机回环：房间成员列表靠它读取，同时不把管理接口
@@ -936,6 +1068,14 @@ fn core_args(
     args
 }
 
+/// 只有真的拿到退出状态才算内核结束。
+///
+/// `try_wait` 偶发报错时如果当成退出，就会把房主正在服务的内核杀掉，
+/// 于是服务器上的房主自己也看到「网络已断开」，所有访客一起掉线。
+fn kernel_finished(result: std::io::Result<Option<std::process::ExitStatus>>) -> bool {
+    matches!(result, Ok(Some(_)))
+}
+
 #[tauri::command]
 pub async fn start_multiplayer(
     app: AppHandle,
@@ -944,9 +1084,27 @@ pub async fn start_multiplayer(
     state: tauri::State<'_, MultiplayerState>,
 ) -> Result<MultiplayerStatus, String> {
     let root_path = PathBuf::from(&root);
+    match install_kernel_from_bundle(&app, &root_path) {
+        Ok(true) => emit_log(
+            &app,
+            "cobble",
+            format!("已释放内置 EasyTier {EASYTIER_VERSION}"),
+        ),
+        Ok(false) => {}
+        Err(error) => emit_log(&app, "cobble", error),
+    }
     let core = core_binary(&root_path);
-    if !core.is_file() {
-        return Err("还没有安装 EasyTier 内核，请先下载".to_string());
+    let kernel_dir = easytier_dir(&root_path);
+    if !kernel_dir_ok(&kernel_dir) {
+        let missing = missing_kernel_files(&kernel_dir);
+        return Err(if core.is_file() {
+            format!(
+                "EasyTier 内核文件不完整（缺少 {}），请在联机页重新下载内核",
+                missing.join("、")
+            )
+        } else {
+            "还没有安装 EasyTier 内核，请先下载".to_string()
+        });
     }
 
     let name = config.network_name.trim();
@@ -963,6 +1121,11 @@ pub async fn start_multiplayer(
         .map_err(|_| format!("虚拟 IPv4 地址无效: {overlay}"))?;
     let listen_port = config.listen_port.unwrap_or(DEFAULT_LISTEN_PORT).max(1);
     let rpc_port = free_local_port();
+    // 内核自带的 SOCKS5 入口。两个端口都取自系统临时分配，撞车时再换一个。
+    let mut socks_port = free_local_port();
+    while socks_port == rpc_port || socks_port == listen_port {
+        socks_port = free_local_port();
+    }
 
     // 房主不填任何对等节点，只负责监听并等待访客直连；
     // 访客则只把房主的 IPv6 入口放进 peers。
@@ -988,7 +1151,7 @@ pub async fn start_multiplayer(
     let mut command = Command::new(&core);
     command
         .current_dir(easytier_dir(&root_path))
-        .args(core_args(&config, &listeners, &peers, rpc_port))
+        .args(core_args(&config, &listeners, &peers, rpc_port, socks_port))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1024,17 +1187,66 @@ pub async fn start_multiplayer(
         overlay_ipv4: Some(overlay.to_string()),
         pid,
         rpc_port: Some(rpc_port),
+        socks_port: Some(socks_port),
     };
     *state
         .child
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(child);
 
+    // 缺运行库、端口被占用、拿不到 TUN 权限时，内核会在几百毫秒内退出。
+    // 先把这一点确认掉：否则界面会先进房间，再被「网络已断开」顶回来。
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let early_exit = {
+        let mut guard = state
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match guard.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => Some(status.to_string()),
+                _ => None,
+            },
+            None => None,
+        }
+    };
+    if let Some(code) = early_exit {
+        {
+            let mut guard = state
+                .child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut child) = guard.take() {
+                let _ = child.start_kill();
+            }
+        }
+        {
+            let _gate = state
+                .resources_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *state
+                .runtime
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = RuntimeInfo::default();
+            stop_resources(&state);
+        }
+        stop_bridges(&state);
+        emit_status(&app, &state, &root_path);
+        return Err(format!(
+            "EasyTier 内核启动后立即退出（{code}）。常见原因：内核文件不完整（缺少 Packet.dll）、监听端口 {listen_port} 被其他程序占用。"
+        ));
+    }
+
     let status = status_of(&root_path, &state);
     let _ = app.emit("multiplayer:status", status.clone());
 
     // 轮询子进程状态：内核退出（缺少管理员权限、端口被占用等）时及时
     // 把界面切回未启动，并把真实原因留在日志里。
+    //
+    // 只有 `Ok(Some(_))` 才算真的退出：`try_wait` 偶发报错（句柄被安全软件
+    // 短暂占用、系统繁忙）时如果当成退出，就会把房主正在服务的内核杀掉，
+    // 于是房主自己看到「网络已断开」，访客全部掉线。
     let monitor_app = app.clone();
     let monitor_root = root_path.clone();
     let monitor = tokio::spawn(async move {
@@ -1047,7 +1259,8 @@ pub async fn start_multiplayer(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match guard.as_mut() {
-                    Some(child) => matches!(child.try_wait(), Ok(Some(_)) | Err(_)),
+                    // 还在跑，或者这次读不出来：都继续等下一轮。
+                    Some(child) => kernel_finished(child.try_wait()),
                     None => true,
                 }
             };
@@ -1277,6 +1490,7 @@ fn scan_room_resources(
         shaders: scan_room_shaders(&game_dir),
         resource_packs: scan_room_resource_packs(root, version_id, isolation),
         updated_at: now_millis(),
+        host_port: None,
     }
 }
 
@@ -1373,6 +1587,7 @@ pub async fn start_room_resources(
     secret: String,
     token: Option<String>,
     port: Option<u16>,
+    host_port: Option<u16>,
     state: tauri::State<'_, MultiplayerState>,
 ) -> Result<RoomResourcesInfo, String> {
     let root_path = PathBuf::from(&root);
@@ -1394,11 +1609,13 @@ pub async fn start_room_resources(
     let scan_root = root_path.clone();
     let scan_version = version_id.clone();
     let scan_isolation = isolation.clone();
-    let resources = tokio::task::spawn_blocking(move || {
+    let mut resources = tokio::task::spawn_blocking(move || {
         scan_room_resources(&scan_root, &scan_version, scan_isolation.as_deref())
     })
     .await
     .map_err(|error| format!("读取房间资源失败: {error}"))?;
+    // 只输 IPv6 的访客不知道局域网端口，靠清单里的这一项认出来。
+    resources.host_port = host_port.filter(|port| *port > 0);
     let manifest_text = serde_json::to_string(&resources)
         .map_err(|error| format!("生成房间资源清单失败: {error}"))?;
 
@@ -1490,12 +1707,24 @@ pub async fn start_room_resources(
 }
 
 /// 访客用虚拟地址访问房主的资源清单；请求由 Rust 发出，避免 webview 的
-/// 混合内容/CORS 限制。`no_proxy` 保证走 EasyTier 虚拟网卡而不是系统代理。
+/// 混合内容/CORS 限制，也顺便绕开了系统代理。
 #[tauri::command]
 pub async fn fetch_room_resources(
     host: String,
     port: u16,
     token: String,
+    state: tauri::State<'_, MultiplayerState>,
+) -> Result<RoomResources, String> {
+    let socks = runtime_socks_port(&state)
+        .ok_or_else(|| "联机网络还没启动，先加入房间再读取资源列表".to_string())?;
+    fetch_room_resources_inner(host, port, token, socks).await
+}
+
+async fn fetch_room_resources_inner(
+    host: String,
+    port: u16,
+    token: String,
+    socks: u16,
 ) -> Result<RoomResources, String> {
     let host = host.trim().trim_matches(|character| character == '[' || character == ']');
     if host.is_empty()
@@ -1515,30 +1744,41 @@ pub async fn fetch_room_resources(
     if !valid_resource_token(token) {
         return Err("分享码里的房间资源密钥无效".to_string());
     }
-    let url = if host.contains(':') {
-        format!("http://[{host}]:{port}/room.json?key={token}")
+    let mut stream = dial_room(socks, &host, port).await?;
+    let host_header = if host.contains(':') {
+        format!("[{host}]:{port}")
     } else {
-        format!("http://{host}:{port}/room.json?key={token}")
+        format!("{host}:{port}")
     };
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|error| format!("无法创建资源列表连接: {error}"))?;
-    let response = client
-        .get(&url)
-        .send()
+    let request = format!(
+        "GET /room.json?key={token} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
         .await
-        .map_err(|error| format!("连不上房主的房间资源列表：{error}"))?;
-    if !response.status().is_success() {
-        return Err(match response.status().as_u16() {
-            403 => "分享码里的房间资源密钥已失效，让房主重新发码".to_string(),
-            code => format!("房主拒绝了房间资源列表（HTTP {code}）"),
-        });
+        .map_err(|error| format!("请求房间资源列表失败：{error}"))?;
+
+    let mut raw = Vec::new();
+    match tokio::time::timeout(Duration::from_secs(8), stream.read_to_end(&mut raw)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => return Err(format!("读取房间资源列表失败：{error}")),
+        Err(_) => return Err("读取房间资源列表超时".to_string()),
     }
-    response
-        .json::<RoomResources>()
-        .await
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "房主的房间资源列表响应不完整".to_string())?;
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    match status {
+        "200" => {}
+        "403" => return Err("分享码里的房间资源密钥已失效，让房主重新发码".to_string()),
+        other => return Err(format!("房主拒绝了房间资源列表（HTTP {other}）")),
+    }
+    serde_json::from_str::<RoomResources>(body)
         .map_err(|error| format!("房间资源列表格式不对: {error}"))
 }
 
@@ -1554,6 +1794,137 @@ fn free_local_port() -> u16 {
         .and_then(|listener| listener.local_addr())
         .map(|address| address.port())
         .unwrap_or(15888)
+}
+
+/// 当前内核给的 SOCKS5 入口；没在运行时返回 `None`。
+fn runtime_socks_port(state: &MultiplayerState) -> Option<u16> {
+    state
+        .runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .socks_port
+}
+
+/// 本机地址不需要经过虚拟网络，直接连更可靠。
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.starts_with("127.") || host == "::1"
+}
+
+/// 通过内核的 SOCKS5 端口连接虚拟网里的地址（CONNECT 命令，免认证）。
+///
+/// 无 TUN 模式下 `10.126.126.x` 在本机系统里根本没有路由，只有内核知道
+/// 怎么把包送到对端，所以访客侧的所有连接都得从这里走。
+async fn socks5_connect(proxy_port: u16, host: &str, port: u16) -> Result<TcpStream, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .map_err(|error| format!("连不上本机联机代理（127.0.0.1:{proxy_port}）：{error}"))?;
+    let _ = stream.set_nodelay(true);
+
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .map_err(|error| format!("联机代理握手失败：{error}"))?;
+    let mut greeting = [0u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|error| format!("联机代理没有应答：{error}"))?;
+    if greeting[0] != 0x05 || greeting[1] != 0x00 {
+        return Err("联机代理不支持免认证 SOCKS5".to_string());
+    }
+
+    let mut request = vec![0x05u8, 0x01, 0x00];
+    match host.parse::<std::net::Ipv4Addr>() {
+        Ok(address) => {
+            request.push(0x01);
+            request.extend_from_slice(&address.octets());
+        }
+        Err(_) => {
+            let bytes = host.as_bytes();
+            if bytes.is_empty() || bytes.len() > 255 {
+                return Err(format!("代理目标地址无效: {host}"));
+            }
+            request.push(0x03);
+            request.push(bytes.len() as u8);
+            request.extend_from_slice(bytes);
+        }
+    }
+    request.extend_from_slice(&port.to_be_bytes());
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|error| format!("提交代理目标失败：{error}"))?;
+
+    let mut reply = [0u8; 4];
+    stream
+        .read_exact(&mut reply)
+        .await
+        .map_err(|error| format!("读取代理应答失败：{error}"))?;
+    if reply[0] != 0x05 {
+        return Err("联机代理应答格式不对".to_string());
+    }
+    if reply[1] != 0x00 {
+        return Err(format!(
+            "联机代理拒绝连接到 {host}:{port}（SOCKS5 错误码 {}）",
+            reply[1]
+        ));
+    }
+    // 应答尾巴带一个绑定地址，按地址类型吃掉，不然会污染后续数据。
+    match reply[3] {
+        0x01 => {
+            let mut address = [0u8; 4];
+            stream
+                .read_exact(&mut address)
+                .await
+                .map_err(|error| format!("读取代理绑定地址失败：{error}"))?;
+        }
+        0x04 => {
+            let mut address = [0u8; 16];
+            stream
+                .read_exact(&mut address)
+                .await
+                .map_err(|error| format!("读取代理绑定地址失败：{error}"))?;
+        }
+        0x03 => {
+            let mut length = [0u8; 1];
+            stream
+                .read_exact(&mut length)
+                .await
+                .map_err(|error| format!("读取代理绑定地址失败：{error}"))?;
+            let mut address = vec![0u8; length[0] as usize];
+            stream
+                .read_exact(&mut address)
+                .await
+                .map_err(|error| format!("读取代理绑定地址失败：{error}"))?;
+        }
+        other => return Err(format!("联机代理返回了未知地址类型 {other}")),
+    }
+    let mut bound_port = [0u8; 2];
+    stream
+        .read_exact(&mut bound_port)
+        .await
+        .map_err(|error| format!("读取代理绑定端口失败：{error}"))?;
+    Ok(stream)
+}
+
+/// 连到房间里的某个地址：本机地址直接连，其余走内核的 SOCKS5 入口。
+///
+/// 代理失败时再试一次本机直连：房主把本机局域网地址（例如自己的
+/// `192.168.x.x`）加进列表时，虚拟网络里本来就没有这个地址，直连才是对的。
+async fn dial_room(socks_port: u16, host: &str, port: u16) -> Result<TcpStream, String> {
+    if is_loopback_host(host) {
+        return TcpStream::connect((host, port))
+            .await
+            .map_err(|error| format!("无法连接 {host}:{port}（{error}）"));
+    }
+    let via_proxy = socks5_connect(socks_port, host, port).await;
+    match via_proxy {
+        Ok(stream) => Ok(stream),
+        Err(proxy_error) => match TcpStream::connect((host, port)).await {
+            Ok(stream) => Ok(stream),
+            Err(_) => Err(proxy_error),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1831,26 +2202,6 @@ async fn run_powershell_encoded(script: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn is_elevated_windows() -> bool {
-    let script = "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)";
-    match tokio::time::timeout(Duration::from_secs(10), run_powershell_encoded(script)).await {
-        Ok(Ok(text)) => text.trim().eq_ignore_ascii_case("true"),
-        _ => false,
-    }
-}
-
-/// 通过 UAC 启动一段隐藏的 PowerShell，并等它结束。取消授权时
-/// `Start-Process` 会报错，调用方会再用状态查询确认规则是否真的写进去。
-#[cfg(windows)]
-async fn run_elevated_powershell(script: &str) -> Result<String, String> {
-    let encoded = encode_powershell(script);
-    let outer = format!(
-        "$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}') -Verb RunAs -WindowStyle Hidden -Wait -PassThru; if ($null -eq $p) {{ exit 1 }}; exit $p.ExitCode"
-    );
-    run_powershell_encoded(&outer).await
-}
-
-#[cfg(windows)]
 fn firewall_variables(
     core: &Path,
     launcher: &Path,
@@ -1894,28 +2245,7 @@ foreach ($name in @('Cobble EasyTier TCP','Cobble EasyTier UDP')) {
   if ($null -eq $rule) { $ok = $false; break }
   if ([string]$rule.Enabled -ne 'True' -or [string]$rule.Direction -ne 'Inbound' -or [string]$rule.Action -ne 'Allow') { $ok = $false; break }
   $port = $rule | Get-NetFirewallPortFilter
-  $app = $rule | Get-NetFirewallApplicationFilter
-  if ([string]$port.LocalPort -ne $listen -or [string]$app.Program -ne $core) { $ok = $false; break }
-}
-if ($ok -and $hostPort -gt 0 -and $overlay) {
-  foreach ($proto in @('TCP','UDP')) {
-    $rule = Get-NetFirewallRule -DisplayName "Cobble Minecraft Overlay $proto" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $rule) { $ok = $false; break }
-    $port = $rule | Get-NetFirewallPortFilter
-    $addr = $rule | Get-NetFirewallAddressFilter
-    $addrText = [string]$addr.LocalAddress
-    if ([string]$rule.Enabled -ne 'True' -or [string]$rule.Direction -ne 'Inbound' -or [string]$rule.Action -ne 'Allow' -or [string]$port.LocalPort -ne "$hostPort" -or ($addrText -ne $overlay -and $addrText -ne "$overlay/32")) { $ok = $false; break }
-  }
-}
-if ($ok -and $overlay -and $launcher) {
-  $rule = Get-NetFirewallRule -DisplayName 'Cobble Launcher Overlay' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($null -eq $rule) { $ok = $false }
-  else {
-    $app = $rule | Get-NetFirewallApplicationFilter
-    $addr = $rule | Get-NetFirewallAddressFilter
-    $addrText = [string]$addr.LocalAddress
-    if ([string]$rule.Enabled -ne 'True' -or [string]$rule.Direction -ne 'Inbound' -or [string]$rule.Action -ne 'Allow' -or [string]$app.Program -ne $launcher -or ($addrText -ne $overlay -and $addrText -ne "$overlay/32")) { $ok = $false }
-  }
+  if ([string]$port.LocalPort -ne $listen) { $ok = $false; break }
 }
 if ($ok) { 'ready' } else { 'missing' }
 "#,
@@ -1928,18 +2258,13 @@ fn firewall_setup_script(core: &Path, launcher: &Path, listen_port: u16, host_po
     let mut script = firewall_variables(core, launcher, listen_port, host_port, overlay);
     script.push_str("$ErrorActionPreference = 'Stop'\n");
     script.push_str(
-        r#"foreach ($name in @('Cobble EasyTier TCP','Cobble EasyTier UDP','Cobble Minecraft Overlay TCP','Cobble Minecraft Overlay UDP','Cobble Launcher Overlay')) {
+        // 无 TUN 模式只需要放行内核自己的监听端口：虚拟网卡上的
+        // Minecraft 端口、启动器进程都不再对外开入站。
+        r#"foreach ($name in @('Cobble EasyTier TCP','Cobble EasyTier UDP')) {
   Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 }
-New-NetFirewallRule -DisplayName 'Cobble EasyTier TCP' -Direction Inbound -Action Allow -Program $core -Protocol TCP -LocalPort $listen -Profile Any -Enabled True | Out-Null
-New-NetFirewallRule -DisplayName 'Cobble EasyTier UDP' -Direction Inbound -Action Allow -Program $core -Protocol UDP -LocalPort $listen -Profile Any -Enabled True | Out-Null
-if ($hostPort -gt 0 -and $overlay) {
-  foreach ($proto in @('TCP','UDP')) {
-    New-NetFirewallRule -DisplayName "Cobble Minecraft Overlay $proto" -Direction Inbound -Action Allow -Protocol $proto -LocalAddress $overlay -LocalPort $hostPort -Profile Any -Enabled True | Out-Null
-  }
-}
-if ($overlay -and $launcher) {
-  New-NetFirewallRule -DisplayName 'Cobble Launcher Overlay' -Direction Inbound -Action Allow -Program $launcher -Protocol TCP -LocalAddress $overlay -Profile Any -Enabled True | Out-Null
+foreach ($proto in @('TCP','UDP')) {
+  New-NetFirewallRule -DisplayName "Cobble EasyTier $proto" -Direction Inbound -Action Allow -Protocol $proto -LocalPort $listen -Profile Any -Enabled True | Out-Null
 }
 'ok'
 "#,
@@ -2053,15 +2378,11 @@ pub async fn setup_multiplayer_firewall(
         let listen_port = listen_port.clamp(1, 65_535) as u16;
         let host_port = host_port.min(65_535) as u16;
         let script = firewall_setup_script(&core, &launcher, listen_port, host_port, overlay);
-        if is_elevated_windows().await {
-            run_powershell_encoded(&script)
-                .await
-                .map_err(|error| format!("Windows 防火墙放行失败：{error}"))?;
-        } else {
-            run_elevated_powershell(&script)
-                .await
-                .map_err(|error| format!("Windows 防火墙放行失败（需要管理员授权）：{error}"))?;
-        }
+        // 不再弹管理员授权：安装包会在安装时把端口规则写好。启动器
+        // 恰好以管理员身份运行时，这里会真的补写缺失的规则。
+        run_powershell_encoded(&script).await.map_err(|error| {
+            format!("写防火墙规则需要管理员权限（安装版会在安装时自动放行）：{error}")
+        })?;
 
         // UAC 被取消时外部 PowerShell 可能仍然以 0 退出，所以再用只读
         // 查询确认规则真的写进去了。
@@ -2088,7 +2409,7 @@ pub async fn setup_multiplayer_firewall(
                 } else if text.eq_ignore_ascii_case("unknown") {
                     Err("无法读取 Windows 防火墙配置，请手动放行 TCP/UDP 端口".to_string())
                 } else {
-                    Err("规则没有生效；如果刚刚取消了管理员授权，请重试".to_string())
+                    Err("规则没有生效：当前权限写不进防火墙，请用安装版重新安装一次".to_string())
                 }
             }
             Ok(Err(error)) => Err(format!("无法确认防火墙规则：{error}")),
@@ -2331,17 +2652,29 @@ fn normalize_host(host: &str) -> String {
         .to_string()
 }
 
-async fn ping_server(host: &str, port: u16) -> Result<MinecraftHostStatus, String> {
+async fn ping_server(
+    host: &str,
+    port: u16,
+    socks_port: Option<u16>,
+) -> Result<MinecraftHostStatus, String> {
     let started = Instant::now();
     let target = normalize_host(host);
     if target.is_empty() {
         return Err("地址不能为空".to_string());
     }
 
-    let connect = TcpStream::connect((target.as_str(), port));
-    let mut stream = match tokio::time::timeout(Duration::from_secs(4), connect).await {
+    // 房间里的虚拟地址没有虚拟网卡可走，要借内核的 SOCKS5 入口。
+    let connect = async {
+        match socks_port {
+            Some(proxy) => dial_room(proxy, &target, port).await,
+            None => TcpStream::connect((target.as_str(), port))
+                .await
+                .map_err(|error| format!("无法连接 {target}:{port}（{error}）")),
+        }
+    };
+    let mut stream = match tokio::time::timeout(Duration::from_secs(6), connect).await {
         Ok(Ok(stream)) => stream,
-        Ok(Err(error)) => return Err(format!("无法连接 {target}:{port}（{error}）")),
+        Ok(Err(error)) => return Err(error),
         Err(_) => return Err(format!("连接 {target}:{port} 超时")),
     };
     let _ = stream.set_nodelay(true);
@@ -2563,19 +2896,25 @@ pub async fn read_minecraft_lan_port(
 }
 
 #[tauri::command]
-pub async fn probe_minecraft_host(host: String, port: u16) -> MinecraftHostStatus {
-    match ping_server(&host, port).await {
-        Ok(status) => status,
-        Err(error) => MinecraftHostStatus {
-            ok: false,
-            motd: String::new(),
-            version: String::new(),
-            online: 0,
-            max: 0,
-            latency_ms: 0,
-            error: Some(error),
+pub async fn probe_minecraft_host(
+    host: String,
+    port: u16,
+    state: tauri::State<'_, MultiplayerState>,
+) -> Result<MinecraftHostStatus, String> {
+    Ok(
+        match ping_server(&host, port, runtime_socks_port(&state)).await {
+            Ok(status) => status,
+            Err(error) => MinecraftHostStatus {
+                ok: false,
+                motd: String::new(),
+                version: String::new(),
+                online: 0,
+                max: 0,
+                latency_ms: 0,
+                error: Some(error),
+            },
         },
-    }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2612,6 +2951,8 @@ pub async fn start_lan_bridge(
     if target_host.is_empty() {
         return Err("地址不能为空".to_string());
     }
+    let socks = runtime_socks_port(&state)
+        .ok_or_else(|| "联机网络还没启动，先启动网络再显示好友的世界".to_string())?;
 
     if let Some(existing) = state
         .bridges
@@ -2646,9 +2987,9 @@ pub async fn start_lan_bridge(
             let host = proxy_host.clone();
             let app = proxy_app.clone();
             tokio::spawn(async move {
-                let connect = TcpStream::connect((host.as_str(), port));
+                let connect = dial_room(socks, &host, port);
                 let Ok(Ok(mut outbound)) =
-                    tokio::time::timeout(Duration::from_secs(6), connect).await
+                    tokio::time::timeout(Duration::from_secs(8), connect).await
                 else {
                     emit_log(&app, "proxy", format!("连接 {host}:{port} 失败"));
                     return;
@@ -2741,6 +3082,15 @@ pub fn stop_lan_bridge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_wait_errors_do_not_stop_the_kernel() {
+        assert!(!kernel_finished(Ok(None)), "内核还在跑");
+        assert!(
+            !kernel_finished(Err(std::io::Error::other("busy"))),
+            "偶发读失败不能当成退出"
+        );
+    }
 
     #[test]
     fn varints_round_trip() {
@@ -2906,6 +3256,30 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 只解出两个 exe、缺 Packet.dll 的安装必须算「未就绪」，
+    /// 否则开房时内核会在加载阶段退出，房间刚建就显示网络已断开。
+    #[test]
+    fn incomplete_kernel_install_is_not_ready() {
+        let dir = std::env::temp_dir().join(format!(
+            "cobble-kernel-check-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(!kernel_dir_ok(&dir));
+        assert_eq!(missing_kernel_files(&dir).len(), REQUIRED_KERNEL_STEMS.len());
+
+        for stem in REQUIRED_KERNEL_STEMS {
+            std::fs::write(dir.join(stem), b"stub").unwrap();
+        }
+        assert!(kernel_dir_ok(&dir));
+        assert!(missing_kernel_files(&dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn lan_payload_cannot_break_the_protocol() {
         assert_eq!(
@@ -2933,7 +3307,7 @@ mod tests {
             let _ = stream.write_all(&packet).await;
         });
 
-        let status = ping_server("127.0.0.1", port).await.unwrap();
+        let status = ping_server("127.0.0.1", port, None).await.unwrap();
         assert_eq!(status.motd, "Test World!");
         assert_eq!(status.version, "1.21.8");
         assert_eq!((status.online, status.max), (2, 8));
@@ -2951,7 +3325,7 @@ mod tests {
             listen_port: Some(11010),
             recv_bps_limit: Some(1_250_000),
         };
-        let host_args = core_args(&host, "tcp://[::]:11010", &[], 15888);
+        let host_args = core_args(&host, "tcp://[::]:11010", &[], 15888, 15889);
         let rpc = host_args
             .iter()
             .position(|arg| arg == "--rpc-portal")
@@ -2974,6 +3348,7 @@ mod tests {
             "tcp://[::]:11010",
             &["tcp://[240e:3b5::20]:11010".to_string()],
             15888,
+            15889,
         );
         assert!(
             !guest_args
@@ -2982,6 +3357,85 @@ mod tests {
             "不限时不该带这个开关"
         );
         assert!(guest_args.iter().any(|arg| arg == "--peers"));
+
+        // 无 TUN 才能免管理员：三个开关必须在房主/访客两边都带上。
+        for args in [&host_args, &guest_args] {
+            assert!(args.iter().any(|arg| arg == "--no-tun"), "不能创建虚拟网卡");
+            assert!(args.iter().any(|arg| arg == "--use-smoltcp"));
+            let socks = args
+                .iter()
+                .position(|arg| arg == "--socks5")
+                .expect("要有本机 SOCKS5 入口");
+            assert_eq!(args.get(socks + 1).map(String::as_str), Some("15889"));
+        }
+    }
+
+    /// 安装包自带的内核能直接展开到游戏目录，不靠网络下载。
+    #[test]
+    fn bundled_kernel_is_copied_into_the_game_dir() {
+        let root =
+            std::env::temp_dir().join(format!("cobble-bundle-kernel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let source = root.join("bundle");
+        std::fs::create_dir_all(&source).unwrap();
+        for stem in REQUIRED_KERNEL_STEMS {
+            let name = if cfg!(windows) && !stem.contains('.') {
+                format!("{stem}.exe")
+            } else {
+                stem.to_string()
+            };
+            std::fs::write(source.join(name), b"stub").unwrap();
+        }
+
+        copy_kernel_dir(&source, &easytier_dir(&root)).unwrap();
+        assert!(kernel_installed(&root));
+        assert_eq!(installed_version(&root).as_deref(), Some(EASYTIER_VERSION));
+
+        // 不完整的“内核包”不能当成安装成功。
+        let broken = root.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("easytier-core.exe"), b"stub").unwrap();
+        assert!(copy_kernel_dir(&broken, &root.join("broken-out")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 无 TUN 模式下访客只能靠内核的 SOCKS5 入口访问房间，
+    /// 这里用一个假代理确认握手和目标地址都拼对了。
+    #[tokio::test]
+    async fn socks5_tunnel_reports_the_requested_target() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(String::new()));
+        let recorder = seen.clone();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            stream.read_exact(&mut greeting).await.unwrap();
+            stream.write_all(&[0x05, 0x00]).await.unwrap();
+            let mut head = [0u8; 4];
+            stream.read_exact(&mut head).await.unwrap();
+            let mut address = [0u8; 4];
+            stream.read_exact(&mut address).await.unwrap();
+            let mut port_bytes = [0u8; 2];
+            stream.read_exact(&mut port_bytes).await.unwrap();
+            *recorder.lock().unwrap() = format!(
+                "{}.{}.{}.{}:{}",
+                address[0],
+                address[1],
+                address[2],
+                address[3],
+                u16::from_be_bytes(port_bytes)
+            );
+            stream
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
+        });
+
+        let mut tunnel = socks5_connect(port, "10.126.126.7", 25565).await.unwrap();
+        tunnel.write_all(b"ping").await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), "10.126.126.7:25565");
     }
 
     /// 启动器被关掉时还在跑的任务，下次打开应该显示成“已中断、可继续”，
@@ -3037,7 +3491,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 官方包保留一层目录：内核、CLI、wintun.dll 必须解出来，说明文档丢掉。
+    /// 官方包保留一层目录：内核、CLI、wintun.dll、Packet.dll 必须解出来，
+    /// 说明文档丢掉。
     #[test]
     fn extracts_core_and_network_drivers_from_release_zip() {
         use std::io::Write;
@@ -3061,6 +3516,7 @@ mod tests {
                     b"CLI".as_slice(),
                 ),
                 ("easytier-windows-x86_64/wintun.dll", b"WINTUN".as_slice()),
+                ("easytier-windows-x86_64/Packet.dll", b"NPCAP".as_slice()),
                 (
                     "easytier-windows-x86_64/WinDivert64.sys",
                     b"DRIVER".as_slice(),
@@ -3076,9 +3532,10 @@ mod tests {
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
         let count = extract_binaries(&zip_path, &out).unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
         assert!(out.join("easytier-core.exe").is_file());
         assert!(out.join("wintun.dll").is_file());
+        assert!(out.join("Packet.dll").is_file());
         assert!(out.join("WinDivert64.sys").is_file());
         assert!(!out.join("README.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -3221,6 +3678,7 @@ mod tests {
     async fn fetches_room_resources_through_the_token_endpoint() {
         let resources = RoomResources {
             version_id: "1.21.1".to_string(),
+            host_port: Some(25565),
             mods: vec![RoomResourceItem {
                 name: "Sodium".to_string(),
                 file_name: "Sodium.jar".to_string(),
@@ -3241,22 +3699,47 @@ mod tests {
             manifest,
         ));
 
-        let fetched = fetch_room_resources("127.0.0.1".to_string(), port, token)
+        // 本机回环不走代理，所以这里传 0 也能直接连到假房主。
+        let fetched = fetch_room_resources_inner("127.0.0.1".to_string(), port, token, 0)
             .await
             .unwrap();
         assert_eq!(fetched.version_id, "1.21.1");
         assert_eq!(fetched.mods.len(), 1);
         assert_eq!(fetched.mods[0].name, "Sodium");
+        // 只输 IPv6 的访客就是从这一项认出房主的局域网端口的。
+        assert_eq!(fetched.host_port, Some(25565));
 
-        let denied = fetch_room_resources(
+        let denied = fetch_room_resources_inner(
             "127.0.0.1".to_string(),
             port,
             "wrongtoken123".to_string(),
+            0,
         )
         .await;
         assert!(denied.is_err());
 
         task.abort();
+    }
+
+    /// 旧房主（或旧版启动器）的清单里没有 `hostPort`，解析不能因此失败。
+    #[test]
+    fn room_manifest_without_host_port_still_parses() {
+        let json = r#"{
+            "versionId": "1.21.1",
+            "mods": [],
+            "shaders": [],
+            "resourcePacks": [],
+            "updatedAt": 7
+        }"#;
+        let parsed: RoomResources = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.version_id, "1.21.1");
+        assert_eq!(parsed.host_port, None);
+
+        // 有端口时序列化成 camelCase，访客兜底读的就是这个键。
+        let mut with_port = parsed;
+        with_port.host_port = Some(25566);
+        let text = serde_json::to_string(&with_port).unwrap();
+        assert!(text.contains("\"hostPort\":25566"), "{text}");
     }
 
     /// 多实例输出是 `[{ instance_id, result: { ... } }]`，不能因此漏掉成员。

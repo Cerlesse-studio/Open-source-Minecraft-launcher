@@ -59,7 +59,6 @@ interface MultiplayerRoomProps {
   onChangePort: (port: number) => void;
   onResume: () => void;
   onApplyConfig: (patch: Partial<MultiplayerConfig>) => void;
-  onRotateSecret: () => void;
   onAddHost: (address: string) => boolean;
   onRemoveHost: (entry: MultiplayerHost) => void;
   onToggleBridge: (entry: MultiplayerHost) => void;
@@ -266,7 +265,6 @@ export function MultiplayerRoom({
   onChangePort,
   onResume,
   onApplyConfig,
-  onRotateSecret,
   onAddHost,
   onRemoveHost,
   onToggleBridge,
@@ -279,12 +277,17 @@ export function MultiplayerRoom({
   const hostOverlay = isGuest
     ? config.hostIpv4 || config.overlayIpv4
     : config.overlayIpv4;
-  const connectAddress = `${hostOverlay}:${config.hostPort}`;
   const peer = config.peers[0] ?? "";
   const mainHost =
     hosts.find((entry) => entry.host === hostOverlay && entry.port === config.hostPort) ??
     hosts[0] ??
     null;
+  const bridgeAddress = mainHost?.bridgePort ? `127.0.0.1:${mainHost.bridgePort}` : "";
+  // 内核以无 TUN 方式运行：房主的虚拟地址在本机没有路由，游戏直接连它也
+  // 连不上。访客要进游戏，得先由启动器在本机开好代理端口。
+  const connectAddress = isGuest
+    ? bridgeAddress || "先在下方启用局域网显示"
+    : `${hostOverlay}:${config.hostPort}`;
 
   const [portDraft, setPortDraft] = useState(String(config.hostPort));
   const [overlayDraft, setOverlayDraft] = useState(config.overlayIpv4);
@@ -320,7 +323,7 @@ export function MultiplayerRoom({
           <div className="min-w-0 flex-1">
             <p className="text-[12px] font-medium">网络已断开</p>
             <p className="text-[10.5px] text-muted-foreground">
-              房间记录还在，用原来的密钥接回去。
+              房间记录还在，用原来的密码接回去。
             </p>
           </div>
           <Button
@@ -368,12 +371,14 @@ export function MultiplayerRoom({
               <code className="min-w-0 break-all font-mono text-[21px] leading-7 tracking-[-0.02em] text-foreground">
                 {connectAddress}
               </code>
-              <CopyButton value={connectAddress} label="复制地址" onNotify={onNotify} />
+              {!isGuest || bridgeAddress ? (
+                <CopyButton value={connectAddress} label="复制地址" onNotify={onNotify} />
+              ) : null}
             </div>
             <p className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
               {isGuest
-                ? "游戏 → 多人游戏 → 直接连接，粘贴这个地址。"
-                : "好友先用分享码连上虚拟网络，再在游戏里连接这个地址。"}
+                ? "游戏 → 多人游戏 → 直接连接，粘贴本机代理地址；也可以用下方的局域网显示。"
+                : "好友导入分享码后，用启动器替他们开好的本机地址进入这个世界。"}
             </p>
 
             {!isGuest ? (
@@ -413,7 +418,6 @@ export function MultiplayerRoom({
                   hostPort={config.hostPort}
                   overlayIpv4={config.overlayIpv4}
                   publicAddress={publicAddress}
-                  onNotify={onNotify}
                 />
               </div>
             ) : null}
@@ -749,8 +753,6 @@ export function MultiplayerRoom({
             config={config}
             running={running}
             onChangeConfig={onApplyConfig}
-            onRotateSecret={onRotateSecret}
-            onNotify={onNotify}
           />
         </div>
       )}

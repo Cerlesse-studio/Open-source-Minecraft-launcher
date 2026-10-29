@@ -1218,6 +1218,7 @@ export async function startRoomResources(
   secret: string,
   token: string,
   port: number,
+  hostPort: number,
 ): Promise<RoomResourcesInfo> {
   if (!isDesktop) {
     await demoWait(320);
@@ -1235,6 +1236,7 @@ export async function startRoomResources(
     secret,
     token,
     port,
+    hostPort,
   });
 }
 

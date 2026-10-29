@@ -100,8 +100,10 @@
   - **分片并发与断点续传**：大文件自动分片并发下载，关闭应用或切换镜像均保留下载进度。
   - **多源容灾与测速**：内置官方 CDN、BMCLAPI 等多节点镜像，支持一键测速切换与失败自动换源。
 - **点对点联机**
-  - **三步开房**：集成 EasyTier 内核，基于公网 IPv6 点对点直连；房主对局域网开放后自动生成 `cobble-mp://` 分享码，好友粘贴即可在「多人游戏 → 局域网」中看到世界。
-  - **房间面板**：实时查看在线成员、延迟、房主模组/资源清单，支持一键配置 Windows 防火墙规则与轮换房间密钥。
+  - **三步开房**：EasyTier 内核随安装包内置，基于公网 IPv6 点对点直连；房主对局域网开放后自动生成 `cobble-mp://` 分享码，好友粘贴即可在「多人游戏 → 局域网」中看到世界。
+  - **两种加入方式**：粘贴分享码，或者只填房主的公网 IPv6 与房间密码。房间网络名固定、身份由密码决定（密码不同会被内核直接拒绝），房间清单的端口和令牌也由同一密码推出，所以访客不用额外信息就能自动发现房主的虚拟地址和局域网端口。
+  - **免管理员运行**：内核以无 TUN 模式启动（`--no-tun` + 用户态协议栈），不创建虚拟网卡、不需要每次开房都弹 UAC；房主的虚拟地址由内核直接转发到本机服务，访客则通过内核自带的本机 SOCKS5 入口访问。入站端口由安装包在安装时一次性放行。
+  - **房间面板**：实时查看在线成员、延迟、房主模组/资源清单，支持轮换房间密钥。
 - **深度个性化**
   - 支持深浅主题、任意强调色、自定义壁纸（模糊度与全局面板透明度调节）、多款字体切换，以及兼容 PCL2 `.xaml` / HTML 的自定义主页。
 
@@ -113,6 +115,8 @@
 
 前往 [GitHub Releases](https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/releases) 下载对应平台的安装包。
 > **平台支持**：推荐 **Windows 10 / 11 x64**（完整支持 Java 版 + 基岩版 + 联机）；macOS / Linux 可构建运行 Java 版核心功能。
+>
+> **系统兼容性**：界面层依赖 Microsoft Edge WebView2，它只提供 Windows 10 及以上版本；微软从 Edge 109 起停止为 Windows 7 / 8 / 8.1 更新 WebView2，Tauri 2.12 也移除了 Windows 7 支持，因此 **Windows XP / Vista / 7 / 8 / 8.1 无法运行**。安装包内置 WebView2 引导程序，Win10 / 11 缺少该组件时会自动安装；系统版本过低或缺少运行时，启动器会弹出中文说明而不是静默退出（可用 `OSML_SKIP_COMPAT_CHECK=1` 跳过检查）。
 
 ### 2. 从源码构建
 
@@ -124,12 +128,23 @@ git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
 npm install
 
+# 联机内核内置在 src-tauri/resources/easytier/（easytier-core、easytier-cli 与随包 DLL）。
+# 该目录随安装包分发，缺失时启动器会退回联机页的“下载内核”流程。
+
 # 启动开发模式
 npm run tauri dev
 
-# 构建生产安装包（产物位于 src-tauri/target/release/bundle/）
+# 构建生产安装包（默认产物位于 src-tauri/target/release/bundle/）
 npm run tauri build
 ```
+
+> **构建输出位置**：Windows 构建不需要 MSVC C 编译器（TLS 走系统 Schannel，没有 `ring` 这类 C 依赖）。如果所在环境对项目目录内的可执行文件有写入限制（典型症状是 `ring` 构建报 `cl : Command line error D8050`，或启动时 WebView2 报 `HRESULT(0x800700AA) 请求的资源在使用中`），把 cargo 的 `target` 目录指到项目外即可：
+>
+> ```bash
+> # 临时生效
+> CARGO_TARGET_DIR="$TEMP/osml-target" npm run tauri dev
+> # 或写进 .cargo/config.toml（仓库根，已被 .gitignore 忽略），一劳永逸
+> ```
 
 <details>
 <summary><b>开发检查与测试命令</b></summary>
@@ -184,6 +199,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
 <summary><b>游戏存档和配置文件保存在哪里？如何备份？</b></summary>
 
 默认游戏目录为 `~/.cobble`（可在设置中修改），包含所有版本、存档、模组与自动下载的 JRE。直接复制该目录即可完成完整备份；微软账户登录凭证独立保存在系统应用数据目录的 `account.json` 中。
+</details>
+
+<details>
+<summary><b>能在 Windows XP / 7 / 8.1 上运行吗？</b></summary>
+
+不能。界面层使用 Microsoft Edge WebView2，而它能运行的系统最低是 Windows 10；微软从 Edge 109 起停止为 Windows 7 / 8 / 8.1 发布 WebView2，Tauri 2.12 也正式移除了 Windows 7 支持，Windows XP 更是早已没有可用的 WebView2 与 Rust 运行环境。
+
+在这类系统上双击启动器，会弹出「无法在这个 Windows 版本上运行」并列出检测到的系统版本；Windows 10 / 11 缺少 WebView2 时会提示，并可直接打开微软官方下载页。特殊环境想跳过检查可设置环境变量 `OSML_SKIP_COMPAT_CHECK=1`。
+
+另外，如果解压版在旧机器上提示缺少 `VCRUNTIME140.dll`，安装 [Microsoft Visual C++ 2015-2022 运行库](https://aka.ms/vs/17/release/vc_redist.x64.exe) 即可；安装包里已经内置 WebView2 引导程序，无需另外准备。
 </details>
 
 <details>

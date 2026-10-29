@@ -8,6 +8,7 @@ pub mod mcmod;
 pub mod minecraft;
 pub mod multiplayer;
 mod net;
+pub mod platform;
 pub mod search_i18n;
 
 use minecraft::{
@@ -413,7 +414,7 @@ fn get_system_info(app: AppHandle, state: State<'_, GameState>) -> Result<System
         .unwrap_or(false);
     Ok(SystemInfo {
         default_root: root.to_string_lossy().to_string(),
-        os: std::env::consts::OS.to_string(),
+        os: platform::os_label(),
         arch: std::env::consts::ARCH.to_string(),
         java_installs,
         game_running,
@@ -1566,6 +1567,12 @@ fn close_login_window(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 老系统（XP / Vista / 7 / 8 / 8.1）缺少 WebView2 运行时，窗口创建不出来；
+    // 先给出明确提示，而不是让用户看到「双击了没反应」。
+    if !platform::run_checks() {
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

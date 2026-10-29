@@ -2102,9 +2102,9 @@ export function SettingsView({
                 </div>
 
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
-                  <span className="text-[11.5px] text-muted-foreground">系统架构</span>
+                  <span className="text-[11.5px] text-muted-foreground">系统与架构</span>
                   <span className="font-mono text-[11.5px] text-foreground">
-                    {systemInfo ? `${systemInfo.os} (${systemInfo.arch})` : "正在读取…"}
+                    {systemInfo ? `${systemInfo.os} · ${systemInfo.arch}` : "正在读取…"}
                   </span>
                 </div>
 

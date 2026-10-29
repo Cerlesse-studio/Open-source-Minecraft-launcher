@@ -21,17 +21,67 @@ function randomFrom(alphabet: string, length: number): string {
   return out;
 }
 
-export function createNetworkName(): string {
-  return `cobble-${randomFrom("abcdefghijkmnpqrstuvwxyz23456789", 6)}`;
+/**
+ * 房间的网络名固定不变：EasyTier 的网络身份由「网络名 + 密码」共同决定，
+ * 实测密码不同的两个节点会被直接拒绝（network identity not match）。
+ * 所以密码就是房间本身——访客只填房主 IPv6 和密码就能进同一间房，
+ * 不必再额外对网络名。
+ */
+export const ROOM_NETWORK_NAME = "cobble";
+
+/** 房间密码长度区间：太短挡不住扫网段的人，太长不方便口述。 */
+export const ROOM_PASSWORD_MIN = 6;
+export const ROOM_PASSWORD_MAX = 32;
+
+/** 随机生成一个方便口述的房间密码（跳过容易看错的 0/o/1/l）。 */
+export function createRoomPassword(): string {
+  return randomFrom("abcdefghijkmnpqrstuvwxyz23456789", 8);
 }
 
-export function createNetworkSecret(): string {
-  return randomFrom("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789", 32);
+/** 房间密码：可见 ASCII、不含空格，长度 6–32。 */
+export function isRoomPassword(value: string): boolean {
+  const password = value.trim();
+  return (
+    password.length >= ROOM_PASSWORD_MIN &&
+    password.length <= ROOM_PASSWORD_MAX &&
+    /^[\x21-\x7e]+$/.test(password)
+  );
 }
 
-/** 房间资源清单只读接口的访问令牌，和网络密钥分开。 */
-export function createResourceToken(): string {
-  return randomFrom("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789", 32);
+const RESOURCE_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/** 32 位 FNV-1a；只用来把密码摊成稳定的令牌/端口，不做密码学用途。 */
+function fnv1a(text: string, seed: number): number {
+  let hash = seed >>> 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index) & 0xff;
+    hash = Math.imul(hash, 0x0100_0193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * 房间资源清单的令牌。房主按密码算出来，只输 IPv6 的访客用同一个密码
+ * 算出一模一样的值就能读到清单；密码本身就是这间房的信任边界。
+ */
+export function roomResourceToken(password: string): string {
+  const secret = password.trim();
+  let out = "";
+  let state = fnv1a(`cobble-room|${secret}`, 0x811c_9dc5);
+  while (out.length < 32) {
+    state = fnv1a(`${secret}|${out.length}`, state);
+    let value = state;
+    for (let index = 0; index < 4 && out.length < 32; index += 1) {
+      out += RESOURCE_ALPHABET[value % RESOURCE_ALPHABET.length];
+      value = Math.floor(value / RESOURCE_ALPHABET.length);
+    }
+  }
+  return out;
+}
+
+/** 房间资源服务的端口，20 000–39 999：避开常用端口，也不落在系统临时端口段。 */
+export function roomResourcePort(password: string): number {
+  return 20_000 + (fnv1a(`cobble-port|${password.trim()}`, 0x27d4_eb2f) % 20_000);
 }
 
 /** 虚拟网段与 MCTier 相同（10.126.126.0/24），便于两端互相理解分享码。 */
@@ -47,8 +97,9 @@ export function isOverlayIpv4(value: string): boolean {
 
 export function defaultMultiplayerConfig(): MultiplayerConfig {
   return {
-    networkName: createNetworkName(),
-    networkSecret: createNetworkSecret(),
+    networkName: ROOM_NETWORK_NAME,
+    // 房间密码由房主在创建房间时设置；这里不预生成，避免用户跳过输入。
+    networkSecret: "",
     overlayIpv4: createOverlayIpv4(),
     peers: [],
     listenPort: DEFAULT_LISTEN_PORT,
@@ -83,13 +134,13 @@ export function normalizeMultiplayerConfig(raw: unknown): MultiplayerConfig {
   const base = defaultMultiplayerConfig();
   if (!raw || typeof raw !== "object") return base;
   const value = raw as Partial<MultiplayerConfig>;
-  const text = (input: unknown, fallback: string) =>
-    typeof input === "string" && input.trim() ? input.trim() : fallback;
   return {
-    // 网络名只是 EasyTier 的内部标识，界面不再让用户填写；
-    // 旧配置里的值继续保留，避免已有房间和分享码失效。
-    networkName: text(value.networkName, base.networkName).slice(0, 64),
-    networkSecret: text(value.networkSecret, base.networkSecret).slice(0, 64),
+    // 网络名固定：房间身份只由密码决定，旧配置里的随机名一并归位，
+    // 否则老配置开出来的房间，只输 IPv6 的访客对不上。
+    networkName: ROOM_NETWORK_NAME,
+    // 旧配置里的密码继续保留，已有房间和分享码不会因此失效。
+    networkSecret:
+      typeof value.networkSecret === "string" ? value.networkSecret.trim().slice(0, 64) : "",
     overlayIpv4:
       typeof value.overlayIpv4 === "string" && isOverlayIpv4(value.overlayIpv4)
         ? value.overlayIpv4.trim()
@@ -184,8 +235,8 @@ const ROOM_KEY = "cobble.multiplayer.room.v1";
 
 /**
  * 上一间开着的房间。内核只活在启动器进程里（关掉启动器、切出去让游戏
- * 接管窗口都可能把它结束掉），但房间本身——密钥、房主入口——都在
- * 配置里；记住角色和密钥，重进联机页就能把同一间房接回来。
+ * 接管窗口都可能把它结束掉），但房间本身——密码、房主入口——都在
+ * 配置里；记住角色和密码，重进联机页就能把同一间房接回来。
  */
 export interface ActiveRoom {
   role: "host" | "guest";
@@ -322,6 +373,60 @@ export function parseHostAddress(
     if (host && Number.isInteger(port) && port > 0 && port < 65536) return { host, port };
   }
   return { host: trimmed, port: fallbackPort };
+}
+
+function isIpv6Literal(value: string): boolean {
+  const text = value.trim();
+  if (!text.includes(":")) return false;
+  try {
+    // 方括号里只接受合法的 IPv6；非法分组会直接抛错。
+    new URL(`http://[${text}]/`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface Ipv6Entry {
+  /** 房主公网 IPv6，不带方括号。 */
+  address: string;
+  /** 房主的 EasyTier 监听端口。 */
+  port: number;
+  /** 可直接写进配置的对等入口，例如 `tcp://[240e:…]:11010`。 */
+  peer: string;
+}
+
+/**
+ * 只输 IPv6 加入房间。接受 `240e:…`、`[240e:…]`、`[240e:…]:11010`
+ * 以及 `tcp://[240e:…]:11010`。
+ *
+ * 裸地址不按最后一个 `:` 拆端口——`240e::1:11010` 本身就是合法地址；
+ * 要指定端口请用方括号写法。
+ */
+export function parseIpv6Entry(
+  input: string,
+  fallbackPort = DEFAULT_LISTEN_PORT,
+): Ipv6Entry | null {
+  const trimmed = input.trim().replace(/^(?:tcp|udp):\/\//i, "");
+  if (!trimmed) return null;
+  let address = trimmed;
+  let port = fallbackPort;
+  if (trimmed.startsWith("[")) {
+    const end = trimmed.indexOf("]");
+    if (end < 0) return null;
+    address = trimmed.slice(1, end);
+    const rest = trimmed.slice(end + 1).trim();
+    if (rest.startsWith(":")) {
+      const parsed = Number(rest.slice(1));
+      if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) return null;
+      port = parsed;
+    } else if (rest) {
+      return null;
+    }
+  }
+  const clean = address.trim();
+  if (!isIpv6Literal(clean)) return null;
+  return { address: clean, port, peer: peerFromAddress(clean, port) };
 }
 
 /** 从 `tcp://[IPv6]:11010`、`[IPv6]:11010` 或裸 IPv6 里取出主机。 */

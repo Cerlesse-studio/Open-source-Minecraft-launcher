@@ -660,6 +660,7 @@ export interface MultiplayerPeer {
 /** The saved shape of the local EasyTier node. */
 export interface MultiplayerConfig {
   networkName: string;
+  /** 房间密码，也就是 EasyTier 的 `--network-secret`；由房主创建房间时设置。 */
   networkSecret: string;
   /** This machine's overlay IPv4 inside the virtual network. */
   overlayIpv4: string;
@@ -695,6 +696,8 @@ export interface RoomResources {
   shaders: RoomResourceItem[];
   resourcePacks: RoomResourceItem[];
   updatedAt: number;
+  /** 房主的局域网端口；只输 IPv6 加入的访客靠它认出要连哪个端口。 */
+  hostPort?: number | null;
 }
 
 export interface RoomResourcesInfo {

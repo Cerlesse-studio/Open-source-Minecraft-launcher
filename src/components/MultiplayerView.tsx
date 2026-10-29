@@ -6,6 +6,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  KeyRound,
   LoaderCircle,
   Network,
   Play,
@@ -19,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import {
   fetchRoomResources,
   getLocalIpv6Addresses,
+  getMultiplayerFirewallStatus,
   getMultiplayerInstallState,
   getMultiplayerPeers,
   getMultiplayerStatus,
@@ -27,6 +29,7 @@ import {
   probeMinecraftHost,
   probeMultiplayerEndpoint,
   readMinecraftLanPort,
+  setupMultiplayerFirewall,
   startLanBridge,
   startMultiplayer,
   startRoomResources,
@@ -36,17 +39,23 @@ import {
 } from "../lib/backend";
 import {
   buildShareCode,
-  createNetworkSecret,
   createOverlayIpv4,
-  createResourceToken,
+  createRoomPassword,
+  DEFAULT_HOST_PORT,
   ipv6FromPeer,
+  isRoomPassword,
+  ROOM_NETWORK_NAME,
+  ROOM_PASSWORD_MIN,
   loadActiveRoom,
   loadMultiplayerConfig,
   loadMultiplayerHosts,
   loadPublicAddress,
   parseHostAddress,
+  parseIpv6Entry,
   parseShareCode,
   peerFromAddress,
+  roomResourcePort,
+  roomResourceToken,
   saveActiveRoom,
   saveMultiplayerConfig,
   saveMultiplayerHosts,
@@ -60,6 +69,7 @@ import type {
   MultiplayerConfig,
   MultiplayerHost,
   MultiplayerInstallState,
+  MultiplayerPeer,
   MultiplayerStatus,
   RoomResources,
   VersionIsolation,
@@ -176,8 +186,13 @@ export function MultiplayerView({
   const [requestingInstall, setRequestingInstall] = useState(false);
   const [installProgress, setInstallProgress] = useState<MultiplayerInstallState | null>(null);
   const [busy, setBusy] = useState<"start" | "stop" | "join" | null>(null);
-  const [showSecret, setShowSecret] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [joinCode, setJoinCode] = useState("");
+  /** 加入房间的两种入口：房主给的分享码，或只填 IPv6 + 密码。 */
+  const [joinMode, setJoinMode] = useState<"code" | "direct">("code");
+  const [directAddress, setDirectAddress] = useState("");
+  const [directPassword, setDirectPassword] = useState("");
+  const [discovering, setDiscovering] = useState(false);
   const [pinging, setPinging] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(loadActiveRoom);
   const [autoLanPort, setAutoLanPort] = useState<number | null>(null);
@@ -193,6 +208,8 @@ export function MultiplayerView({
   const joiningRef = useRef(false);
   /** 房主关房时，可能同时触发自动恢复和房间监测，只处理一次。 */
   const leavingClosedRef = useRef(false);
+  /** 重进联机页时只主动接回一次房间，避免失败后反复重启内核。 */
+  const autoResumeRef = useRef(false);
 
   hostsRef.current = hosts;
   statusRef.current = status;
@@ -218,7 +235,20 @@ export function MultiplayerView({
     let alive = true;
     getMultiplayerStatus(gameRoot)
       .then((value) => {
-        if (alive) setStatus(value);
+        if (!alive) return;
+        setStatus(value);
+        if (!value.running || loadActiveRoom()) return;
+        // 内核还在跑就是房间还在：本地记录丢了（清过缓存、上次被误判
+        // 断开）也要补回来，否则重进联机页会把它当成「没有房间」。
+        const current = configRef.current;
+        const room: ActiveRoom = {
+          role: current.peers.length > 0 ? "guest" : "host",
+          networkName: value.networkName || current.networkName,
+          startedAt: Date.now(),
+        };
+        saveActiveRoom(room);
+        setActiveRoom(room);
+        setPage((previous) => (previous === "home" ? "room" : previous));
       })
       .catch((error) => console.warn("无法读取联机状态", error));
     // 内核下载由后端托管：重进页面时先读回真实进度，避免又提示“重新下载”。
@@ -445,6 +475,48 @@ export function MultiplayerView({
   );
 
   /**
+   * 只输 IPv6 加入时，房主的虚拟地址和局域网端口都不在手上：先等房主出现
+   * 在成员列表里，再用密码推出的端口和令牌去读它的房间清单——第一份
+   * 能读通的清单就是房主，端口也从清单里带回来。
+   */
+  const discoverHost = useCallback(
+    async (
+      target: MultiplayerConfig,
+      timeoutMs = 25_000,
+    ): Promise<{ hostIpv4: string; hostPort: number; version: string } | null> => {
+      const deadline = Date.now() + timeoutMs;
+      do {
+        let peers: MultiplayerPeer[] = [];
+        try {
+          peers = await getMultiplayerPeers(gameRoot);
+        } catch {
+          // 内核刚启动时 RPC 可能还没就绪，继续等下一轮。
+        }
+        for (const peer of peers) {
+          if (peer.isSelf || !peer.ipv4 || peer.ipv4 === target.overlayIpv4) continue;
+          try {
+            const resources = await fetchRoomResources(
+              peer.ipv4,
+              target.resourcePort,
+              target.resourceToken,
+            );
+            return {
+              hostIpv4: peer.ipv4,
+              hostPort: resources.hostPort ?? DEFAULT_HOST_PORT,
+              version: resources.versionId,
+            };
+          } catch {
+            // 这台上没有房间清单，或者清单还没启动：换下一台/下一轮。
+          }
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      } while (Date.now() < deadline);
+      return null;
+    },
+    [gameRoot],
+  );
+
+  /**
    * 直接探测房主的监听端口；拿不到结果（旧版桌面端没有这个命令）
    * 时返回 null，让调用方退回成员列表判断，避免误杀正常房间。
    */
@@ -499,25 +571,22 @@ export function MultiplayerView({
     }
     let cancelled = false;
     void (async () => {
-      // 端口探测比成员列表快得多：房主一关房，监听端口就没了。
-      const endpoint = await probeHostEndpoint();
-      if (cancelled) return;
-      if (endpoint === false) {
-        await leaveClosedRoom("房主已经关闭房间，联机网络已断开。");
-        return;
-      }
-      const online = await waitForHost(current.hostIpv4, 8_000);
+      // 成员列表和端口探测同时做：房主节点出现就进房，端口没了就退出。
+      // 单独依赖端口探测时，IPv6 的一次丢包就会把还能用的房间判成已关闭。
+      const [online, endpoint] = await Promise.all([
+        waitForHost(current.hostIpv4, 8_000),
+        probeHostEndpoint(),
+      ]);
       if (cancelled) return;
       if (online) {
         setPage("room");
         return;
       }
-      if (statusRef.current?.running) {
-        await leaveClosedRoom(
-          endpoint === true
-            ? "房主的房间暂时连不上，请重新加入。"
-            : "房主已经离开，之前的房间不能继续进入。",
-        );
+      // 房主一时联系不上不等于房间没了：这里以前会直接停掉内核并清掉
+      // 房间记录，看起来就像「重进联机页房间自动退出」。现在最多提醒，
+      // 房间和内核都留着，用「重新连接」再试一次。
+      if (endpoint === false) {
+        onNotify("info", "暂时联系不上房主", "房间还在，可以点「重新连接」再试一次。");
       }
     })();
     return () => {
@@ -526,54 +595,66 @@ export function MultiplayerView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.running, page, probeHostEndpoint, waitForHost, leaveClosedRoom]);
 
-  // 已经在房间里的访客：房主端口连续两次探测失败就退出房间；
-  // 旧版桌面端没有端口探测时，退回成员列表连续两次看不到房主。
+  // 已经在房间里的访客：房主节点还在虚拟网络里就算在线。
+  //
+  // 不能只靠探测房主端口：房主是服务器时，公网 IPv6 上的一次偶发丢包、
+  // 房主防火墙只放行部分来源，都会让探测失败，旧逻辑两次失败就把访客
+  // 踢出房间，看起来像「房主断开连接」。现在改成：
+  //   1. 成员列表里能看到房主 → 直接算在线，也不再反复连他的监听端口；
+  //   2. 看不到房主时才探测端口，而且必须「端口明确拒绝连接」才算一次；
+  //   3. 进页面先给十秒稳定期，连续四次（约 40 秒）确认已关闭才退出。
   useEffect(() => {
     if (page !== "room" || !status?.running) return;
     const current = configRef.current;
     if (current.peers.length === 0) return;
     let cancelled = false;
-    let endpointMisses = 0;
-    let peerMisses = 0;
+    let misses = 0;
     let checking = false;
     const check = async () => {
       if (cancelled || checking) return;
       checking = true;
       try {
-        const endpoint = await probeHostEndpoint();
-        if (cancelled) return;
-        if (endpoint === false) {
-          endpointMisses += 1;
-          if (endpointMisses >= 2) {
-            cancelled = true;
-            await leaveClosedRoom("房主已经关闭房间，联机网络已断开。");
-            return;
-          }
-        } else {
-          endpointMisses = 0;
-        }
-
-        // 旧版桌面端拿不到端口探测结果时，才退回成员列表；
-        // 正常版本不再依赖 EasyTier 对离线节点的缓慢清理。
-        if (endpoint !== null) return;
+        let hostVisible = false;
+        let peersReadable = true;
         try {
           const peers = await getMultiplayerPeers(gameRoot);
           if (cancelled) return;
-          const online = peers.some((peer) => !peer.isSelf && peer.ipv4 === current.hostIpv4);
-          peerMisses = online ? 0 : peerMisses + 1;
-          if (peerMisses >= 2) {
-            cancelled = true;
-            await leaveClosedRoom();
-          }
+          hostVisible = peers.some(
+            (peer) => !peer.isSelf && peer.ipv4 === current.hostIpv4,
+          );
         } catch {
-          // CLI 偶尔读失败不代表房主离开，等下一轮。
+          // CLI 读一次失败不代表房主离开，交给端口探测判断。
+          peersReadable = false;
+        }
+        if (cancelled) return;
+        if (hostVisible) {
+          misses = 0;
+          return;
+        }
+
+        const endpoint = await probeHostEndpoint();
+        if (cancelled) return;
+        if (endpoint === true) {
+          // 节点暂时不在列表里，但房主端口还在响应，别误判。
+          misses = 0;
+          return;
+        }
+        // 只有「房主端口明确拒绝连接」才算房间真的关了。探测没结果
+        // （丢包、旧内核、CLI 一时读不出来）一律不计，否则重进页面
+        // 时的网络波动就会把还开着的房间解散。
+        if (!peersReadable || endpoint !== false) return;
+        misses += 1;
+        if (misses >= 4) {
+          cancelled = true;
+          await leaveClosedRoom("房主已经关闭房间，联机网络已断开。");
         }
       } finally {
         checking = false;
       }
     };
-    const first = window.setTimeout(() => void check(), 2_000);
-    const timer = window.setInterval(() => void check(), 6_000);
+    // 刚进页面时内核/成员列表可能还在就绪中，先给一段稳定期再判断。
+    const first = window.setTimeout(() => void check(), 10_000);
+    const timer = window.setInterval(() => void check(), 8_000);
     return () => {
       cancelled = true;
       window.clearTimeout(first);
@@ -637,8 +718,9 @@ export function MultiplayerView({
             current.hostVersion,
             versionIsolation,
             current.networkSecret,
-            current.resourceToken,
-            current.resourcePort,
+            roomResourceToken(current.networkSecret),
+            roomResourcePort(current.networkSecret),
+            current.hostPort,
           );
           if (cancelled) return;
           setRoomResources(info.resources);
@@ -669,6 +751,7 @@ export function MultiplayerView({
     versionIsolation,
     config.hostVersion,
     config.hostIpv4,
+    config.hostPort,
     config.networkSecret,
     config.peers.length,
   ]);
@@ -686,8 +769,46 @@ export function MultiplayerView({
     );
   }, []);
 
+  /**
+   * 开房前自动补齐本机防火墙。漏掉这一步时，房主自己看不出异常，而访客会
+   * 永远卡在「正在连接」；放行失败只提示，不影响开房（路由器那一层仍需手动）。
+   */
+  const autoAllowFirewall = useCallback(
+    async (target: MultiplayerConfig) => {
+      if (!statusRef.current?.installed) return;
+      try {
+        // 已经放行就别再跑一遍：安装版在安装时就写好了规则。
+        const current = await getMultiplayerFirewallStatus(
+          gameRoot,
+          target.listenPort,
+          target.hostPort,
+          target.overlayIpv4,
+        );
+        if (current.ready) return;
+        const wall = await setupMultiplayerFirewall(
+          gameRoot,
+          target.listenPort,
+          target.hostPort,
+          target.overlayIpv4,
+        );
+        if (!wall.ready && wall.supported) {
+          onNotify(
+            "info",
+            "Windows 防火墙未放行",
+            wall.detail || "访客可能连不进来；用安装版重新安装一次会自动放行。",
+          );
+        }
+      } catch (error) {
+        onNotify("info", "Windows 防火墙未自动放行", String(error));
+      }
+    },
+    [gameRoot, onNotify],
+  );
+
   const startWith = useCallback(
-    async (next: MultiplayerConfig, mode: "start" | "join" = "start") => {
+    async (initial: MultiplayerConfig, mode: "start" | "join" = "start") => {
+      // 只输 IPv6 时，房主的虚拟地址和端口要等网络接上才知道，后面会改写它。
+      let next = initial;
       if (!statusRef.current?.installed) {
         onNotify("info", "请先下载 EasyTier 内核");
         return false;
@@ -723,11 +844,13 @@ export function MultiplayerView({
             return false;
           }
         }
+        // 与启动内核并行：检查防火墙要走一次 PowerShell，不必让开房等它。
+        const firewall = isGuest ? null : autoAllowFirewall(next);
         const started = await startMultiplayer(gameRoot, next);
         setStatus(started);
+        if (firewall) void firewall;
         if (isGuest) {
-          const hostOnline = await waitForHost(next.hostIpv4);
-          if (!hostOnline) {
+          const rollback = async (title: string, detail: string) => {
             try {
               setStatus(await stopMultiplayer(gameRoot));
             } catch {
@@ -737,12 +860,50 @@ export function MultiplayerView({
                   : current,
               );
             }
-            onNotify(
-              "error",
-              "无法加入房间",
-              "房主可能已经关闭房间，或者房主的防火墙没有放行。",
-            );
+            onNotify("error", title, detail);
             return false;
+          };
+
+          if (next.hostIpv4) {
+            const hostOnline = await waitForHost(next.hostIpv4);
+            if (!hostOnline) {
+              return await rollback(
+                "无法加入房间",
+                "房主可能已经关闭房间，或者房主的防火墙没有放行。",
+              );
+            }
+          } else {
+            // 只输 IPv6：等房主出现在成员列表里，再读它的房间清单。
+            setDiscovering(true);
+            const found = await discoverHost(next);
+            setDiscovering(false);
+            if (!found) {
+              return await rollback(
+                "找不到房主",
+                "确认房主已开房、密码一致，并且房主的 IPv6 和防火墙允许入站。",
+              );
+            }
+            next = {
+              ...next,
+              hostIpv4: found.hostIpv4,
+              hostPort: found.hostPort,
+              hostVersion: found.version || next.hostVersion,
+            };
+            setConfig(next);
+            const entry: MultiplayerHost = {
+              id: `${found.hostIpv4}-${found.hostPort}`,
+              label: "房主",
+              host: found.hostIpv4,
+              port: found.hostPort,
+              status: null,
+              bridgePort: null,
+            };
+            setHosts((currentHosts) =>
+              currentHosts.some((item) => item.id === entry.id)
+                ? currentHosts
+                : [...currentHosts, entry],
+            );
+            void pingHost(entry);
           }
         }
         // 房主先拿到资源端口再进房间，这样刚显示的分享码就已经带上
@@ -755,8 +916,9 @@ export function MultiplayerView({
               next.hostVersion,
               versionIsolation,
               next.networkSecret,
-              next.resourceToken,
-              next.resourcePort,
+              roomResourceToken(next.networkSecret),
+              roomResourcePort(next.networkSecret),
+              next.hostPort,
             );
             finalConfig = {
               ...next,
@@ -785,6 +947,7 @@ export function MultiplayerView({
       edition,
       gameRoot,
       installedVersions,
+      autoAllowFirewall,
       onNotify,
       probeHostEndpoint,
       rememberRoom,
@@ -792,6 +955,21 @@ export function MultiplayerView({
       waitForHost,
     ],
   );
+
+  // 重进联机页时把上次的房间接回来：内核没在跑（启动器重启过、上次被
+  // 误判断开）就按保存的配置自动重新开房/重连，而不是停在一个空房间页。
+  useEffect(() => {
+    if (autoResumeRef.current) return;
+    if (!status || status.running || !status.installed) return;
+    if (page !== "room" || !activeRoom || busy) return;
+    const current = configRef.current;
+    const guest = current.peers.length > 0;
+    if (guest ? !current.hostIpv4 : !current.hostVersion) return;
+    if (!guest && !installedVersions.some((entry) => entry.id === current.hostVersion)) return;
+    autoResumeRef.current = true;
+    onNotify("info", "正在接回房间", "用上次的设置重新连接联机网络。");
+    void startWith(current);
+  }, [activeRoom, busy, installedVersions, onNotify, page, startWith, status]);
 
   /** 口令、带宽、虚拟地址只在启动内核时生效：正在跑就重开一次网络。 */
   const applyRoomConfig = useCallback(
@@ -806,6 +984,8 @@ export function MultiplayerView({
         const started = await startMultiplayer(gameRoot, next);
         setStatus(started);
         rememberRoom(next);
+        // 端口/虚拟地址可能变了，规则要按新值重写。
+        if (!guest) void autoAllowFirewall(next);
         if (!guest) setResourceTick((value) => value + 1);
         onNotify(
           "success",
@@ -818,13 +998,8 @@ export function MultiplayerView({
         setBusy(null);
       }
     },
-    [gameRoot, onNotify, rememberRoom],
+    [autoAllowFirewall, gameRoot, onNotify, rememberRoom],
   );
-
-  const handleRotateSecret = useCallback(() => {
-    void applyRoomConfig({ networkSecret: createNetworkSecret() });
-    onNotify("info", "已生成新密钥", "旧分享码作废，把新的发给允许的访客。");
-  }, [applyRoomConfig, onNotify]);
 
   const handleCreate = () => {
     if (!roomVersion) {
@@ -835,14 +1010,25 @@ export function MultiplayerView({
       onNotify("error", "这个版本还没有安装", "换一个已安装的版本再开房。");
       return;
     }
+    const password = configRef.current.networkSecret.trim();
+    if (!isRoomPassword(password)) {
+      onNotify(
+        "error",
+        "先设置房间密码",
+        `密码需要 ${ROOM_PASSWORD_MIN}–32 位，仅限字母、数字和英文符号。`,
+      );
+      return;
+    }
     // 房主的“世界”就是自己的虚拟地址，不再保留上一段访客关系。
     const next = {
       ...configRef.current,
+      networkSecret: password,
       peers: [],
       hostIpv4: "",
       hostVersion: roomVersion,
-      resourcePort: 0,
-      resourceToken: createResourceToken(),
+      // 资源端口和令牌都由密码推出，只输 IPv6 的访客同样能算出来。
+      resourcePort: roomResourcePort(password),
+      resourceToken: roomResourceToken(password),
     };
     setConfig(next);
     void startWith(next);
@@ -902,14 +1088,56 @@ export function MultiplayerView({
     }
   };
 
+  /**
+   * 不粘分享码，只填房主公网 IPv6 和房间密码：网络名固定、资源端口由
+   * 密码推出，剩下要的房主虚拟地址和局域网端口在连上后自动发现。
+   */
+  const handleJoinDirect = async () => {
+    const entry = parseIpv6Entry(directAddress);
+    if (!entry) {
+      onNotify("error", "IPv6 地址不对", "示例：240e:3a1:…:… 或 [240e:3a1:…:…]:11010");
+      return;
+    }
+    const password = directPassword.trim();
+    if (!isRoomPassword(password)) {
+      onNotify("error", "房间密码不对", `密码需要 ${ROOM_PASSWORD_MIN}–32 位，和房主设置的一致。`);
+      return;
+    }
+    setBusy("join");
+    const previousConfig = configRef.current;
+    const next: MultiplayerConfig = {
+      ...previousConfig,
+      networkName: ROOM_NETWORK_NAME,
+      networkSecret: password,
+      // 房主的虚拟地址还不知道：换一个自己的，少一个两边撞成同一地址的机会。
+      overlayIpv4: createOverlayIpv4(),
+      peers: [entry.peer],
+      hostIpv4: "",
+      hostVersion: "",
+      hostPort: DEFAULT_HOST_PORT,
+      resourcePort: roomResourcePort(password),
+      resourceToken: roomResourceToken(password),
+    };
+    setConfig(next);
+    try {
+      if (!(await startWith(next, "join"))) {
+        setConfig(previousConfig);
+        return;
+      }
+      setDirectPassword("");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleLeave = async () => {
     setBusy("stop");
-    const wasRunning = Boolean(statusRef.current?.running);
     try {
       const next = await stopMultiplayer(gameRoot);
       setStatus(next);
-      // 只有主动离开还在跑的房间才算解散；内核退出、启动器重开时留着记录。
-      if (wasRunning) rememberRoom(null);
+      // 主动离开就是解散：记录和内核一起清掉。留着记录只会在下次进页
+      // 时又把同一间房“接回来”，跟用户刚做的选择相反。
+      rememberRoom(null);
       setHosts((current) =>
         current.map((entry) => (entry.bridgePort ? { ...entry, bridgePort: null } : entry)),
       );
@@ -993,9 +1221,13 @@ export function MultiplayerView({
   const joinPreview = useMemo(() => parseShareCode(joinCode), [joinCode]);
   const running = Boolean(status?.running);
   const installed = Boolean(status?.installed);
+  // 版本标记还在、文件却不全：上一次安装被截断（典型是只解出两个 exe）。
+  const kernelIncomplete = !installed && Boolean(status?.version);
   const installing = requestingInstall || Boolean(installProgress?.active);
-  const installFailed = !installing && installProgress?.stage === "error";
-  const installPaused = !installing && installProgress?.stage === "paused";
+  // 内核已随安装包内置：历史下载记录（失败的、暂停的）不该再盖一层
+  // “需要下载”的提示，只在真的没装上时才显示。
+  const installFailed = !installing && !installed && installProgress?.stage === "error";
+  const installPaused = !installing && !installed && installProgress?.stage === "paused";
   const installPartial = Math.max(
     installProgress?.partialBytes ?? 0,
     installProgress?.doneBytes ?? 0,
@@ -1008,6 +1240,7 @@ export function MultiplayerView({
       : null;
   const hosted = installedVersions.find((entry) => entry.id === roomVersion);
   const portValid = config.hostPort > 0 && config.hostPort < 65536;
+  const passwordValid = isRoomPassword(config.networkSecret);
 
   const titles: Record<MultiplayerPage, string> = {
     home: "联机",
@@ -1074,7 +1307,7 @@ export function MultiplayerView({
             : page === "create"
               ? "选好房间版本和局域网端口，把世界分享给好友。"
               : page === "join"
-                ? "粘贴房主发来的分享码，自动接上同一个虚拟网络。"
+                ? "粘贴分享码，或只填房主的 IPv6 地址和房间密码。"
                 : undefined
         }
         actions={headerActions}
@@ -1100,7 +1333,9 @@ export function MultiplayerView({
                   ? "上次下载未完成"
                   : installFailed
                     ? "EasyTier 内核下载失败"
-                    : "需要 EasyTier 内核"}
+                    : kernelIncomplete
+                      ? "EasyTier 内核文件不完整"
+                      : "需要 EasyTier 内核"}
             </p>
             <p className="min-w-0 truncate text-[10.5px] text-muted-foreground">
               {installing
@@ -1111,7 +1346,9 @@ export function MultiplayerView({
                     : "上次任务未完成，重新点一下即可下载"
                   : installFailed
                     ? (installProgress?.error ?? "可重试，或在下载管理器查看")
-                    : "官方发行版，约 32 MB，多线程下载。"}
+                    : kernelIncomplete
+                      ? "内置内核释放不完整（缺少 Packet.dll），重新下载即可修复。"
+                      : "内核随安装包内置，正常不会走到这一步。"}
             </p>
           </div>
           {!installing ? (
@@ -1125,7 +1362,13 @@ export function MultiplayerView({
               ) : (
                 <Download className="size-3" />
               )}
-              {installResumable ? "继续下载" : installFailed ? "重试" : "下载"}
+              {installResumable
+                ? "继续下载"
+                : installFailed
+                  ? "重试"
+                  : kernelIncomplete
+                    ? "重新下载"
+                    : "下载"}
             </Button>
           ) : null}
         </section>
@@ -1145,7 +1388,7 @@ export function MultiplayerView({
                 <p className="min-w-0 truncate text-[10.5px] text-muted-foreground">
                   {activeRoom.role === "guest"
                     ? "访客 · 房主还在的话，点一下就能接回去。"
-                    : "房主 · 用同样的密钥重开，分享码不变。"}
+                    : "房主 · 用同样的密码重开，分享码不变。"}
                 </p>
               </div>
               <Button
@@ -1165,7 +1408,7 @@ export function MultiplayerView({
                 variant="ghost"
                 size="sm"
                 className="h-7 shrink-0 text-[10.5px] text-muted-foreground"
-                onClick={() => rememberRoom(null)}
+                onClick={() => void handleLeave()}
               >
                 解散
               </Button>
@@ -1176,14 +1419,15 @@ export function MultiplayerView({
             <RoleCard
               icon={Network}
               title="创建房间"
-              detail="选好房间版本，把局域网世界分享给访客。"
-              steps={["选版本", "对局域网开放", "发分享码"]}
+              detail="选好房间版本并设置密码，把局域网世界分享给访客。"
+              steps={["选版本", "设密码", "发分享码"]}
               onClick={() => {
                 setConfig((current) =>
                   current.peers.length > 0 || current.hostIpv4
                     ? {
                         ...current,
-                        networkSecret: createNetworkSecret(),
+                        // 之前是访客：对方的房间密码要清掉，让房主重新输入自己的。
+                        networkSecret: "",
                         overlayIpv4: createOverlayIpv4(),
                         peers: [],
                         hostIpv4: "",
@@ -1196,8 +1440,8 @@ export function MultiplayerView({
             <RoleCard
               icon={Users}
               title="加入房间"
-              detail="粘贴房主的分享码，直接拿到他的世界地址。"
-              steps={["粘贴分享码", "直接连接"]}
+              detail="粘贴分享码，或者只填房主的 IPv6 地址和房间密码。"
+              steps={["分享码", "IPv6 + 密码", "直接连接"]}
               onClick={() => setPage("join")}
             />
           </div>
@@ -1387,45 +1631,14 @@ export function MultiplayerView({
                 hostPort={config.hostPort}
                 overlayIpv4={config.overlayIpv4}
                 publicAddress={publicAddress}
-                onNotify={onNotify}
-                canFix={installed}
               />
             </div>
 
             <details className="mt-2.5 border-t border-border/50 pt-2.5">
               <summary className="cursor-pointer list-none text-[10px] text-muted-foreground transition-colors hover:text-foreground">
-                密钥与虚拟地址
+                虚拟地址
               </summary>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <div>
-                  <FieldLabel>网络密钥</FieldLabel>
-                  <div className="flex gap-1.5">
-                    <Input
-                      type={showSecret ? "text" : "password"}
-                      value={config.networkSecret}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          networkSecret: event.target.value,
-                        }))
-                      }
-                      className="h-7 font-mono text-[10.5px]"
-                    />
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      className="size-7 shrink-0"
-                      title={showSecret ? "隐藏密钥" : "显示密钥"}
-                      onClick={() => setShowSecret((value) => !value)}
-                    >
-                      {showSecret ? (
-                        <EyeOff className="size-3" />
-                      ) : (
-                        <Eye className="size-3" />
-                      )}
-                    </Button>
-                  </div>
-                </div>
+              <div className="mt-2">
                 <div>
                   <FieldLabel>我的虚拟地址</FieldLabel>
                   <div className="flex gap-1.5">
@@ -1459,9 +1672,61 @@ export function MultiplayerView({
             </details>
           </section>
 
+          <section className="rounded-xl border border-border/70 bg-card/55 p-4">
+            <StepHeader step="3" title="设置房间密码" detail="随分享码一起发给访客" />
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-input bg-background/30 px-2.5 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+                <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={config.networkSecret}
+                  maxLength={64}
+                  placeholder={`至少 ${ROOM_PASSWORD_MIN} 位，例如 summer2026`}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      networkSecret: event.target.value,
+                    }))
+                  }
+                  className="h-full w-full min-w-0 bg-transparent font-mono text-[12px] outline-none placeholder:font-sans placeholder:text-muted-foreground/40"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-7 shrink-0 text-muted-foreground"
+                  title={showPassword ? "隐藏密码" : "显示密码"}
+                  onClick={() => setShowPassword((value) => !value)}
+                >
+                  {showPassword ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                </Button>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 shrink-0 gap-1.5 text-[11px]"
+                onClick={() =>
+                  setConfig((current) => ({ ...current, networkSecret: createRoomPassword() }))
+                }
+              >
+                <RefreshCw className="size-3" />
+                随机生成
+              </Button>
+            </div>
+            <p
+              className={cn(
+                "mt-2 text-[10.5px] leading-4",
+                passwordValid ? "text-muted-foreground" : "text-gold",
+              )}
+            >
+              {passwordValid
+                ? "分享码里会带上这个密码，只有拿到分享码的人才能进来。"
+                : `密码需要 ${ROOM_PASSWORD_MIN}–32 位，仅限字母、数字和英文符号。`}
+            </p>
+          </section>
+
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/55 px-4 py-3">
             <p className="text-[10.5px] text-muted-foreground">
-              启动 EasyTier 需要管理员权限；好友只通过你的公网 IPv6 直连。
+              EasyTier 以普通权限运行；好友只通过你的公网 IPv6 直连。
             </p>
             <Button
               size="sm"
@@ -1471,6 +1736,7 @@ export function MultiplayerView({
                 !roomVersion ||
                 !hosted ||
                 !portValid ||
+                !passwordValid ||
                 !publicAddress.trim() ||
                 busy === "start"
               }
@@ -1488,6 +1754,99 @@ export function MultiplayerView({
       ) : null}
 
       {page === "join" ? (
+        <div className="mx-auto w-full max-w-2xl space-y-3">
+          <div className="inline-flex rounded-lg border border-border/70 bg-muted/15 p-0.5">
+            {([
+              ["code", "分享码"],
+              ["direct", "IPv6 直连"],
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={joinMode === mode}
+                onClick={() => setJoinMode(mode)}
+                className={cn(
+                  "h-7 rounded-md px-3 text-[11px] transition-colors",
+                  joinMode === mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {joinMode === "direct" ? (
+            <section className="rounded-xl border border-border/70 bg-card/55 p-4">
+              <FieldLabel>房主 IPv6 地址</FieldLabel>
+              <Input
+                value={directAddress}
+                onChange={(event) => setDirectAddress(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void handleJoinDirect();
+                }}
+                placeholder="240e:…:… 或 [240e:…:…]:11010"
+                className="h-9 font-mono text-[12px]"
+              />
+
+              <div className="mt-3">
+                <FieldLabel>房间密码</FieldLabel>
+                <div className="flex h-9 items-center gap-2 rounded-lg border border-input bg-background/30 px-2.5 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+                  <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={directPassword}
+                    maxLength={64}
+                    placeholder="房主设置的房间密码"
+                    onChange={(event) => setDirectPassword(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void handleJoinDirect();
+                    }}
+                    className="h-full w-full min-w-0 bg-transparent font-mono text-[12px] outline-none placeholder:font-sans placeholder:text-muted-foreground/40"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="size-7 shrink-0 text-muted-foreground"
+                    title={showPassword ? "隐藏密码" : "显示密码"}
+                    onClick={() => setShowPassword((value) => !value)}
+                  >
+                    {showPassword ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground/70">
+                  {discovering && busy === "join"
+                    ? "已连上虚拟网络，正在寻找房主…"
+                    : "房主的虚拟地址和端口会自动发现，不用分享码。"}
+                </p>
+                <Button
+                  className="h-8 gap-1.5"
+                  disabled={
+                    !installed ||
+                    busy === "join" ||
+                    !isRoomPassword(directPassword) ||
+                    !parseIpv6Entry(directAddress)
+                  }
+                  onClick={() => void handleJoinDirect()}
+                >
+                  {busy === "join" ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : (
+                    <ArrowRight className="size-3.5" />
+                  )}
+                  {busy === "join" ? "正在连接房主…" : "加入房间"}
+                </Button>
+              </div>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+
+      {page === "join" && joinMode === "code" ? (
         <div className="mx-auto w-full max-w-2xl space-y-3">
           <section className="rounded-xl border border-border/70 bg-card/55 p-4">
             <FieldLabel>分享码</FieldLabel>
@@ -1566,7 +1925,6 @@ export function MultiplayerView({
           onChangePort={handleChangePort}
           onResume={() => void startWith(configRef.current)}
           onApplyConfig={(patch) => void applyRoomConfig(patch)}
-          onRotateSecret={handleRotateSecret}
           onAddHost={handleAddHost}
           onRemoveHost={(entry) => void handleRemoveHost(entry)}
           onToggleBridge={(entry) => void handleToggleBridge(entry)}
