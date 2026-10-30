@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "@/lib/desktop";
 import {
   AlertCircle,
   Boxes,
@@ -90,7 +90,7 @@ interface CreditEntry {
  * bill of materials.
  */
 const CORE_PROJECTS: CreditEntry[] = [
-  { name: "Tauri 2", role: "桌面运行时", license: "MIT / Apache-2.0", url: "https://github.com/tauri-apps/tauri", icon: "/icons/credits/tauri.svg" },
+  { name: "Electron", role: "桌面运行时", license: "MIT", url: "https://github.com/electron/electron" },
   { name: "Rust", role: "后端语言", license: "MIT / Apache-2.0", url: "https://www.rust-lang.org", icon: "/icons/credits/rust.svg" },
   { name: "React", role: "界面框架", license: "MIT", url: "https://github.com/facebook/react", icon: "/icons/credits/react.svg" },
   { name: "Vite", role: "构建工具", license: "MIT", url: "https://github.com/vitejs/vite", icon: "/icons/credits/vite.svg" },
@@ -2111,7 +2111,7 @@ export function SettingsView({
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
                   <span className="text-[11.5px] text-muted-foreground">运行模式</span>
                   <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-                    {isDesktop ? "Tauri 2.0 原生" : "Web 预览"}
+                    {isDesktop ? "Electron 桌面版" : "Web 预览"}
                   </Badge>
                 </div>
               </div>

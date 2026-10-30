@@ -85,7 +85,7 @@
           <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
           <span class="badge">Windows 10 / 11</span>
           <span class="badge">MIT License</span>
-          <span class="badge">Tauri 2</span>
+          <span class="badge">Electron</span>
         </div>
       </div>
     </section>
@@ -148,7 +148,7 @@
           </div>
           <ul class="platform-list">
             <li>Java 版核心可尝试构建运行</li>
-            <li>需要 WebKitGTK 等 Tauri 系统依赖</li>
+            <li>需要 Electron 支持的 Linux 桌面环境</li>
             <li>基岩版相关功能不可用</li>
           </ul>
           <div class="platform-actions">
@@ -187,19 +187,19 @@
         <section class="source-panel" id="build" data-reveal>
           <span class="eyebrow">BUILD FROM SOURCE</span>
           <h2>从源码构建</h2>
-          <p>需要 Node.js、Rust 与 Tauri 2 的系统依赖。首次构建会编译全部 Rust 依赖，耗时较长。</p>
+          <p>需要 Node.js、Rust 与 Electron 支持的系统环境。首次构建会编译全部 Rust 依赖，耗时较长。</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
             <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
 npm install
-npm run tauri build</code></pre>
+npm run electron:build</code></pre>
           </div>
           <div class="download-actions">
             <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">完整构建文档</a>
             <a class="link-arrow" href="docs.html#requirements">查看系统要求 <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg></a>
           </div>
-          <p class="download-note">构建产物：<code>src-tauri/target/release/bundle/</code>。Windows 通常生成 MSI / NSIS，macOS 生成 DMG，Linux 生成 deb / AppImage。</p>
+          <p class="download-note">构建产物：<code>release/</code>。Windows 生成 NSIS 安装包，macOS 生成 DMG，Linux 生成 AppImage。</p>
         </section>
       </div>
 
@@ -215,12 +215,12 @@ npm run tauri build</code></pre>
           <div class="requirement-card" data-reveal>
             <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-monitor"></use></svg>
             <strong>Windows 10 / 11 x64</strong>
-            <span>完整功能平台。预编译版本需要 WebView2；Windows 10 / 11 通常已内置。</span>
+            <span>完整功能平台。Electron 内置 Chromium，不需要 WebView2。</span>
           </div>
           <div class="requirement-card" data-reveal>
             <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-code"></use></svg>
             <strong>Node.js + Rust</strong>
-            <span>源码构建需要 Node.js 20.19+ / 22.12+ 与 Rust stable 1.85+，并安装 Tauri 2 系统依赖。</span>
+            <span>源码构建需要 Node.js 20.19+ / 22.12+ 与 Rust stable 1.85+，以及平台编译工具链。</span>
           </div>
           <div class="requirement-card" data-reveal>
             <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-wifi"></use></svg>
@@ -278,7 +278,7 @@ npm run tauri build</code></pre>
           </details>
           <details class="faq">
             <summary>构建时提示找不到 Rust 或 Cargo？</summary>
-            <div class="faq-body"><p>先安装 Rust stable，并确认 <code>cargo --version</code> 可用。Tauri 还需要对应平台的系统依赖，详见 <a href="docs.html#requirements">环境要求</a>。</p></div>
+            <div class="faq-body"><p>先安装 Rust stable，并确认 <code>cargo --version</code> 可用。还需要对应平台的 Rust 编译工具链，详见 <a href="docs.html#requirements">环境要求</a>。</p></div>
           </details>
         </div>
       </section>
@@ -310,7 +310,7 @@ npm run tauri build</code></pre>
               <span class="brand-sub">MINECRAFT LAUNCHER</span>
             </span>
           </a>
-          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Electron / Rust / React 19。</p>
         </div>
         <div class="footer-col">
           <h3>产品</h3>
