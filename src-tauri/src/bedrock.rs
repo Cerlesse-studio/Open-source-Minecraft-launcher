@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::Emitter;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1776,7 +1776,7 @@ pub fn clean_exe_run_as_admin(exe: &Path) {
 pub fn clean_exe_run_as_admin(_exe: &Path) {}
 
 #[cfg(target_os = "windows")]
-pub fn ensure_game_input_installed(work_dir: &Path, app: Option<&tauri::AppHandle>) {
+pub fn ensure_game_input_installed(work_dir: &Path, app: Option<&crate::bridge::AppHandle>) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -1792,7 +1792,7 @@ pub fn ensure_game_input_installed(work_dir: &Path, app: Option<&tauri::AppHandl
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn ensure_game_input_installed(_work_dir: &Path, _app: Option<&tauri::AppHandle>) {}
+pub fn ensure_game_input_installed(_work_dir: &Path, _app: Option<&crate::bridge::AppHandle>) {}
 
 fn compare_windows_versions(v1: &str, v2: &str) -> std::cmp::Ordering {
     let parse_nums = |s: &str| -> Vec<u64> {
@@ -2074,7 +2074,7 @@ pub fn check_bedrockboot_dependencies(force: bool) -> BedrockFullDependencyRepor
 }
 
 pub fn auto_fix_bedrockboot_dependencies(
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
 ) -> BedrockFullDependencyReport {
     #[cfg(target_os = "windows")]
     {
@@ -2256,7 +2256,7 @@ fn winget_available() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-pub fn ensure_gaming_services_running(app: Option<&tauri::AppHandle>) {
+pub fn ensure_gaming_services_running(app: Option<&crate::bridge::AppHandle>) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -2293,7 +2293,7 @@ pub fn ensure_gaming_services_running(app: Option<&tauri::AppHandle>) {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn ensure_gaming_services_running(_app: Option<&tauri::AppHandle>) {}
+pub fn ensure_gaming_services_running(_app: Option<&crate::bridge::AppHandle>) {}
 
 pub fn get_bedrock_runtime_status(force: bool) -> BedrockRuntimeStatus {
     if !force {
@@ -2323,7 +2323,7 @@ pub fn get_bedrock_runtime_status(force: bool) -> BedrockRuntimeStatus {
     status
 }
 
-fn emit_bedrock_log(app: Option<&tauri::AppHandle>, message: impl Into<String>) {
+fn emit_bedrock_log(app: Option<&crate::bridge::AppHandle>, message: impl Into<String>) {
     if let Some(app) = app {
         let _ = app.emit(
             "game:log",
@@ -2353,7 +2353,7 @@ fn open_store_page(_product_id: &str) -> Result<(), String> {
 fn winget_install_store_product(
     product_id: &str,
     label: &str,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
 ) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
@@ -2834,7 +2834,7 @@ fn install_and_launch_appx(pkg: &Path, label: &str, game_root: &Path) -> Result<
 
 /// Installs the missing Xbox runtime pieces (Xbox app + Gaming Services) so an
 /// encrypted .msixvc package can be played through the Store-delivered client.
-pub fn provision_bedrock_runtime(app: Option<&tauri::AppHandle>) -> BedrockRuntimeStatus {
+pub fn provision_bedrock_runtime(app: Option<&crate::bridge::AppHandle>) -> BedrockRuntimeStatus {
     #[cfg(target_os = "windows")]
     {
         ensure_gaming_services_running(app);
@@ -2917,7 +2917,7 @@ pub fn provision_bedrock_runtime(app: Option<&tauri::AppHandle>) -> BedrockRunti
 
 #[cfg(target_os = "windows")]
 fn spawn_gdk_auto_provision(
-    app: Option<tauri::AppHandle>,
+    app: Option<crate::bridge::AppHandle>,
     open_minecraft_store: bool,
     launch_after_install: bool,
 ) {
@@ -2982,7 +2982,7 @@ fn spawn_gdk_auto_provision(
 /// Xbox runtime when needed, then launches the Store client automatically.
 #[cfg(target_os = "windows")]
 fn auto_handle_msixvc_package(
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
     _game_root: &Path,
     version_id: &str,
 ) -> Result<String, String> {
@@ -3016,7 +3016,7 @@ fn auto_handle_msixvc_package(
 
 #[cfg(not(target_os = "windows"))]
 fn auto_handle_msixvc_package(
-    _app: Option<&tauri::AppHandle>,
+    _app: Option<&crate::bridge::AppHandle>,
     _game_root: &Path,
     _version_id: &str,
 ) -> Result<String, String> {
@@ -3172,7 +3172,7 @@ async fn fetch_bds_registry_versions() -> Vec<BedrockVersionItem> {
 /// Automatically finds or downloads a matching direct-running BDS core for users
 /// who prefer running Bedrock standalone without Microsoft Store or Xbox DRM.
 pub async fn find_or_install_bds_fallback(
-    app: &tauri::AppHandle,
+    app: &crate::bridge::AppHandle,
     game_root: &Path,
     version_id: &str,
 ) -> Result<String, String> {
@@ -3245,7 +3245,7 @@ pub async fn find_or_install_bds_fallback(
 /// launcher downloads itself (see `register_loose_appx`), which is also what
 /// keeps the launcher portable to Linux/macOS later on.
 #[cfg(target_os = "windows")]
-fn bootstrap_uwp_client(app: Option<&tauri::AppHandle>) -> String {
+fn bootstrap_uwp_client(app: Option<&crate::bridge::AppHandle>) -> String {
     emit_bedrock_log(
         app,
         "未检测到可用的基岩版核心；启动器不会通过 Microsoft Store 安装游戏。",
@@ -3275,7 +3275,7 @@ fn plan_uwp_launch(status: &BedrockRuntimeStatus) -> UwpLaunchPlan {
 /// Every launch that boots the Store client goes through here, so the Xbox
 /// runtime dependencies are installed automatically on the first launch.
 #[cfg(target_os = "windows")]
-fn ensure_and_launch_uwp(app: Option<&tauri::AppHandle>) -> Result<String, String> {
+fn ensure_and_launch_uwp(app: Option<&crate::bridge::AppHandle>) -> Result<String, String> {
     // A core deployed locally by this launcher starts straight away; the Store
     // licence and the Xbox runtime pre-flight are irrelevant for it.
     if let Some(pfn) = locally_deployed_minecraft_pfn() {
@@ -3363,7 +3363,7 @@ fn newest_client_core_dir(game_root: &Path) -> Option<PathBuf> {
 /// Store client, so the Xbox runtime is provisioned for them.
 #[cfg(target_os = "windows")]
 fn launch_installed_client_core(
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
     game_root: &Path,
     version_id: &str,
 ) -> Option<Result<String, String>> {
@@ -3423,7 +3423,7 @@ fn launch_installed_client_core(
 /// Offline accounts launch Bedrock on a standalone core. When none is present the
 /// BDS core is downloaded in the background and reported through the launch log.
 fn start_bds_core_deployment(
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
     game_root: &Path,
     version_id: &str,
 ) -> String {
@@ -3435,7 +3435,7 @@ fn start_bds_core_deployment(
     let app_handle = app.cloned();
     let root = game_root.to_path_buf();
     let requested = version_id.to_string();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let Some(handle) = app_handle else {
             return;
         };
@@ -3456,7 +3456,7 @@ fn start_bds_core_deployment(
 /// GDK client core, and only fall back to deploying a new BDS core when neither
 /// exists. This keeps UWP/GDK cores the user downloaded playable.
 fn launch_offline_bedrock_core(
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
     game_root: &Path,
     version_id: &str,
 ) -> Result<String, String> {
@@ -3481,7 +3481,7 @@ fn launch_offline_bedrock_core(
 pub fn launch_bedrock_edition(
     game_root: &Path,
     version_id: Option<&str>,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::bridge::AppHandle>,
     offline_account: bool,
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
@@ -3799,7 +3799,7 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
 }
 
 pub async fn install_bedrock_version(
-    app: &tauri::AppHandle,
+    app: &crate::bridge::AppHandle,
     game_root: &Path,
     version_id: &str,
     download_url: &str,
@@ -4020,9 +4020,9 @@ pub async fn install_bedrock_version(
                 }
                 let actual = format!("{:x}", hasher.finalize());
                 if actual.eq_ignore_ascii_case(expected) {
-                    println!("[BedrockBoot] MD5 完整性校验成功: {actual}");
+                    eprintln!("[BedrockBoot] MD5 完整性校验成功: {actual}");
                 } else {
-                    println!("[BedrockBoot] MD5 校验不匹配: 期望 {expected}, 实际 {actual}");
+                    eprintln!("[BedrockBoot] MD5 校验不匹配: 期望 {expected}, 实际 {actual}");
                 }
             }
         }
@@ -7006,7 +7006,7 @@ mod tests {
                 .as_millis()
         ));
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let error = tauri::async_runtime::block_on(delete_bedrock_version(&temp_dir, "uwp"))
+        let error = tokio::runtime::Runtime::new().unwrap().block_on(delete_bedrock_version(&temp_dir, "uwp"))
             .expect_err("the Store client cannot be deleted from the launcher");
         assert!(error.contains("Microsoft Store"), "{error}");
         let _ = std::fs::remove_dir_all(&temp_dir);

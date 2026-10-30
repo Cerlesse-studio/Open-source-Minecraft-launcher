@@ -1,5 +1,5 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, isDesktop, listen } from "./desktop";
+export { isDesktop } from "./desktop";
 import {
   demoDetectJava,
   demoDownloadContentFile,
@@ -85,7 +85,6 @@ import type {
   VersionManifest,
 } from "./types";
 
-export const isDesktop = isTauri();
 
 export interface LauncherEventMap {
   "install:progress": InstallProgress;
@@ -319,7 +318,7 @@ export const openFolder = openFolderPath;
 /**
  * Open an http(s) link in the default browser.
  *
- * The desktop build hands the URL to the OS through the Tauri command so the
+ * The desktop build hands the URL to the OS through the desktop command so the
  * link leaves the webview; the browser preview (demo mode) just opens a tab.
  */
 export async function openExternalUrl(url: string): Promise<void> {

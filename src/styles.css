@@ -320,3 +320,5 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+[data-desktop-drag-region] { -webkit-app-region: drag; }

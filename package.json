@@ -8,14 +8,15 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "core:dev": "cargo build --manifest-path src-tauri/Cargo.toml",
+    "core:build": "cargo build --release --manifest-path src-tauri/Cargo.toml",
+    "start": "npm run core:dev && node electron/dev.cjs",
+    "electron:dev": "npm run start",
+    "electron:build": "npm run core:build && npm run build && electron-builder"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2.8.3",
-    "@tauri-apps/plugin-opener": "^2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cn": "^0.5.0",
@@ -29,13 +30,86 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2",
     "@types/node": "^26.6.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "cross-env": "^7.0.3",
+    "vite-plugin-electron": "^1.1.2",
+    "vite-plugin-electron-renderer": "^1.0.0"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.opensource.minecraft.launcher",
+    "productName": "Open-source-Minecraft-launcher",
+    "directories": {
+      "output": "release",
+      "buildResources": "src-tauri/icons"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/main.cjs",
+      "electron/preload.cjs",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "electronLanguages": [
+      "en-US",
+      "zh-CN",
+      "zh-TW"
+    ],
+    "extraResources": [
+      {
+        "from": "src-tauri/resources/easytier",
+        "to": "easytier"
+      }
+    ],
+    "win": {
+      "icon": "src-tauri/icons/icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "extraResources": [
+        {
+          "from": "src-tauri/target/release/open-source-minecraft-launcher.exe",
+          "to": "core/open-source-minecraft-launcher.exe"
+        }
+      ]
+    },
+    "mac": {
+      "icon": "src-tauri/icons/icon.icns",
+      "target": [
+        "dmg"
+      ],
+      "extraResources": [
+        {
+          "from": "src-tauri/target/release/open-source-minecraft-launcher",
+          "to": "core/open-source-minecraft-launcher"
+        }
+      ]
+    },
+    "linux": {
+      "icon": "src-tauri/icons/icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "extraResources": [
+        {
+          "from": "src-tauri/target/release/open-source-minecraft-launcher",
+          "to": "core/open-source-minecraft-launcher"
+        }
+      ]
+    },
+    "nsis": {
+      "include": "electron/installer.nsh",
+      "oneClick": false,
+      "allowElevation": true,
+      "perMachine": true
+    }
   }
 }
