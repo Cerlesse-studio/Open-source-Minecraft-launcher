@@ -418,10 +418,20 @@ export async function launchBedrock(
   versionId?: string,
   root?: string,
   offlineAccount?: boolean,
+  playerName?: string,
 ): Promise<string> {
-  const offline = offlineAccount ?? bedrockOfflineAccount ?? true;
+  const offline =
+    offlineAccount ??
+    (bedrockOfflineAccount !== null
+      ? bedrockOfflineAccount
+      : localStorage.getItem("osml.offlineMode") === "1");
   if (!isDesktop) return demoLaunchBedrock();
-  return invoke<string>("launch_bedrock", { versionId, root, offlineAccount: offline });
+  return invoke<string>("launch_bedrock", {
+    versionId,
+    root,
+    offlineAccount: offline,
+    playerName,
+  });
 }
 
 // ---------------------------------------------------------------------------

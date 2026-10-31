@@ -148,7 +148,7 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             )
             .await?,
         ),
-        "stop_game" => to_value(crate::stop_game(app.state::<GameState>())?),
+        "stop_game" => to_value(crate::stop_game(app.clone(), app.state::<GameState>())?),
         "get_bedrock_status" => to_value(crate::get_bedrock_status(
             app.clone(),
             argument(&args, "root")?,
@@ -185,9 +185,11 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
         ),
         "launch_bedrock" => to_value(crate::launch_bedrock(
             app.clone(),
+            app.state::<GameState>(),
             argument(&args, "versionId")?,
             argument(&args, "root")?,
             argument(&args, "offlineAccount")?,
+            argument(&args, "playerName")?,
         )?),
         "get_bedrock_runtime_status" => {
             to_value(crate::get_bedrock_runtime_status(argument(&args, "force")?))

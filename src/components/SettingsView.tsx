@@ -35,6 +35,7 @@ import { isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend
 import { joinPath, shortPath } from "../lib/format";
 import { DEFAULT_ACCENT } from "../lib/theme";
 import type {
+  MsAccount,
   DownloadSourceId,
   DownloadSourceProbe,
   HomePageMode,
@@ -211,6 +212,7 @@ interface SettingsViewProps {
   onRefreshJava: () => Promise<void>;
   onOpenFolder: (path: string) => void;
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
+  account?: MsAccount | null;
 }
 
 type SettingsTab = "account" | "launch" | "download" | "personalization" | "about";
@@ -329,6 +331,7 @@ export function SettingsView({
   onRefreshJava,
   onOpenFolder,
   onNotify,
+  account,
 }: SettingsViewProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
   const [scanning, setScanning] = useState(false);
@@ -614,38 +617,77 @@ export function SettingsView({
               <div className="flex items-center gap-3.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
                 <div className="size-10 overflow-hidden rounded-md border border-border/60 bg-background flex items-center justify-center shrink-0">
                   <Avatar
-                    name={settings.playerName || "Steve"}
-                    skinType={settings.offlineSkinType}
+                    name={account?.signedIn ? account.name : settings.playerName || "Steve"}
+                    skinType={
+                      settings.offlineSkinType === "custom" && settings.customSkinPath
+                        ? "custom"
+                        : account?.signedIn
+                          ? settings.offlineSkinType === "steve" || settings.offlineSkinType === "alex"
+                            ? settings.offlineSkinType
+                            : "mojang"
+                          : settings.offlineSkinType
+                    }
                     customSkinPath={settings.customSkinPath}
-                    mojangSkinName={settings.mojangSkinName}
+                    mojangSkinName={
+                      account?.signedIn
+                        ? settings.offlineSkinType === "mojang" && settings.mojangSkinName?.trim()
+                          ? settings.mojangSkinName.trim()
+                          : account.name
+                        : settings.mojangSkinName
+                    }
+                    skinUrl={account?.skinUrl}
                     size={40}
                   />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <p className="truncate text-[13px] font-medium">
-                      {settings.playerName || "未命名"}
+                    <p className="truncate text-[13px] font-medium text-foreground">
+                      {account?.signedIn ? account.name : settings.playerName || "未命名"}
                     </p>
                     <Badge
                       variant="outline"
-                      className="h-4 border-border/80 px-1.5 text-[9px] font-normal text-muted-foreground"
+                      className={cn(
+                        "h-4 border-border/80 px-1.5 text-[9px] font-normal",
+                        account?.signedIn
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "text-muted-foreground",
+                      )}
                     >
-                      离线账户
+                      {account?.signedIn ? "正版账户" : "离线账户"}
                     </Badge>
                   </div>
                   <p className="text-[10.5px] text-muted-foreground truncate pt-0.5">
-                    离线皮肤状态：
-                    <span className="text-foreground/90 font-medium">
-                      {settings.offlineSkinType === "random"
-                        ? "随机 (默认)"
-                        : settings.offlineSkinType === "steve"
-                          ? "Steve 粗手臂"
-                          : settings.offlineSkinType === "alex"
-                            ? "Alex 细手臂"
-                            : settings.offlineSkinType === "mojang"
-                              ? `正版皮肤 (${settings.mojangSkinName?.trim() || settings.playerName})`
-                              : "自定义本地皮肤"}
-                    </span>
+                    {account?.signedIn ? (
+                      <>
+                        当前正版模式 · 皮肤：
+                        <span className="text-foreground/90 font-medium">
+                          {settings.offlineSkinType === "custom" && settings.customSkinPath
+                            ? "自定义本地皮肤"
+                            : settings.offlineSkinType === "steve"
+                              ? "强制 Steve 粗手臂"
+                              : settings.offlineSkinType === "alex"
+                                ? "强制 Alex 细手臂"
+                                : settings.offlineSkinType === "mojang" && settings.mojangSkinName?.trim()
+                                  ? `指定正版皮肤 (${settings.mojangSkinName.trim()})`
+                                  : `官方正版皮肤 (${account.name})`}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        离线皮肤状态：
+                        <span className="text-foreground/90 font-medium">
+                          {settings.offlineSkinType === "random"
+                            ? "随机 (默认)"
+                            : settings.offlineSkinType === "steve"
+                              ? "Steve 粗手臂"
+                              : settings.offlineSkinType === "alex"
+                                ? "Alex 细手臂"
+                                : settings.offlineSkinType === "mojang"
+                                  ? `正版皮肤 (${settings.mojangSkinName?.trim() || settings.playerName})`
+                                  : "自定义本地皮肤"}
+                        </span>
+                      </>
+                    )}
                   </p>
                 </div>
               </div>

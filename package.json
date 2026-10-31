@@ -55,6 +55,8 @@
       "dist/**/*",
       "electron/main.cjs",
       "electron/preload.cjs",
+      "src-tauri/icons/icon.ico",
+      "src-tauri/icons/icon.png",
       "package.json",
       "!node_modules/**/*"
     ],

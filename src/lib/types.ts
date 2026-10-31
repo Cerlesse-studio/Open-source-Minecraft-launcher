@@ -355,6 +355,8 @@ export interface LaunchRequest {
   language?: string | null;
   /** Microsoft account session; omitted for offline accounts. */
   auth?: LaunchAuth | null;
+  /** Launch with the offline account even when a Microsoft account is stored. */
+  offline?: boolean;
 }
 
 /** Credentials the game receives when the player signed in with a real account. */

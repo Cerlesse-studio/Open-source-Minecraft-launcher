@@ -11,6 +11,9 @@ let loginWindow;
 let core;
 let nextId = 0;
 const pending = new Map();
+// Without an explicit icon Electron shows its own logo on the window and the
+// taskbar (always in development, where electron.exe is the running binary).
+const appIcon = path.join(__dirname, '..', 'src-tauri', 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 const events = new Set(['install:progress', 'game:log', 'game:status', 'game:exit', 'multiplayer:status', 'multiplayer:log', 'multiplayer:install']);
 
 function startCore() {
@@ -63,13 +66,16 @@ function microsoftUrl(raw) {
 async function openLogin(url) {
   if (!microsoftUrl(url)) throw new Error('登录窗口只接受微软官方登录页面地址。');
   if (!loginWindow || loginWindow.isDestroyed()) {
-    loginWindow = new BrowserWindow({ width: 520, height: 720, title: 'Microsoft 账户登录', parent: mainWindow, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, partition: 'microsoft-login' } });
+    loginWindow = new BrowserWindow({ width: 520, height: 720, title: 'Microsoft 账户登录', icon: appIcon, parent: mainWindow, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, partition: 'microsoft-login' } });
     loginWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   }
   await loginWindow.loadURL(url);
   loginWindow.show();
   loginWindow.focus();
 }
+
+// Groups the taskbar button under the launcher identity instead of Electron's.
+if (process.platform === 'win32') app.setAppUserModelId('com.opensource.minecraft.launcher');
 
 app.whenReady().then(async () => {
   protocol.handle('launcher', request => {
@@ -81,7 +87,7 @@ app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(file === root ? path.join(root, 'index.html') : file).toString());
   });
   startCore();
-  mainWindow = new BrowserWindow({ title: 'Open-source-Minecraft-launcher', width: 1220, height: 800, minWidth: 1020, minHeight: 680, frame: false, backgroundColor: '#080b09', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  mainWindow = new BrowserWindow({ title: 'Open-source-Minecraft-launcher', width: 1220, height: 800, minWidth: 1020, minHeight: 680, frame: false, icon: appIcon, backgroundColor: '#080b09', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const allowed = app.isPackaged ? url.startsWith('launcher://app/') : url.startsWith('http://127.0.0.1:1420/');

@@ -145,6 +145,7 @@ export function Sidebar({
   customSkinPath,
   mojangSkinName,
   signedInName,
+  skinUrl,
 }: {
   view: ViewId;
   onNavigate: (view: ViewId) => void;
@@ -163,6 +164,7 @@ export function Sidebar({
   mojangSkinName?: string;
   /** Gamertag of the signed-in Microsoft account, shared by both editions. */
   signedInName?: string | null;
+  skinUrl?: string | null;
 }) {
   const javaLabel = javaMajor
     ? `Java ${javaMajor}`
@@ -175,6 +177,22 @@ export function Sidebar({
       ? "正在扫描本机与运行时"
       : "首次启动会自动安装";
   const toggleLabel = collapsed ? "展开菜单" : "收起菜单";
+
+  const isCustomSkin = skinType === "custom" && Boolean(customSkinPath);
+  const effectiveName = signedInName || playerName;
+  const effectiveSkinType: OfflineSkinType = isCustomSkin
+    ? "custom"
+    : signedInName
+      ? skinType === "steve" || skinType === "alex"
+        ? skinType
+        : "mojang"
+      : skinType ?? "random";
+
+  const effectiveMojangName = signedInName
+    ? skinType === "mojang" && mojangSkinName?.trim()
+      ? mojangSkinName.trim()
+      : signedInName
+    : mojangSkinName?.trim() || playerName;
 
   return (
     <aside
@@ -206,11 +224,12 @@ export function Sidebar({
           )}
         >
           <Avatar
-            name={playerName}
+            name={effectiveName}
             size={collapsed ? 40 : 38}
-            skinType={skinType}
+            skinType={effectiveSkinType}
             customSkinPath={customSkinPath}
-            mojangSkinName={mojangSkinName}
+            mojangSkinName={effectiveMojangName}
+            skinUrl={skinUrl}
           />
         </div>
         {!collapsed ? (

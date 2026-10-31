@@ -17,6 +17,16 @@ export type VersionLaunchSettings = Pick<
   jvmArgs?: string;
   /** Locale the game should start in; empty keeps the in-game choice. */
   language?: string;
+  /** 自定义版本图标 ("auto" 或预设图标名，如 "crafting_table" / 自定义路径) */
+  icon?: string;
+  /** 自定义版本分类 ("auto" 或具体分类名) */
+  category?: string;
+  /** 自定义版本显示名 (修改版本名) */
+  customName?: string;
+  /** 自定义版本描述 (修改版本描述) */
+  description?: string;
+  /** 是否收藏 (加入收藏夹) */
+  favorite?: boolean;
 };
 
 const STORAGE_KEY = "cobble.version-launch.v1";
@@ -41,6 +51,11 @@ export function resolveVersionLaunchSettings(
     javaPath: override?.javaPath ?? "",
     jvmArgs: override?.jvmArgs ?? "",
     language: override?.language ?? "",
+    icon: override?.icon ?? "auto",
+    category: override?.category ?? "auto",
+    customName: override?.customName ?? "",
+    description: override?.description ?? "",
+    favorite: Boolean(override?.favorite),
   };
 }
 
@@ -88,6 +103,11 @@ function sanitize(value: Partial<VersionLaunchSettings>): VersionLaunchSettings 
       typeof value.language === "string"
         ? value.language.trim().replace("-", "_").toLowerCase()
         : "",
+    icon: typeof value.icon === "string" ? value.icon : "auto",
+    category: typeof value.category === "string" ? value.category : "auto",
+    customName: typeof value.customName === "string" ? value.customName : "",
+    description: typeof value.description === "string" ? value.description : "",
+    favorite: Boolean(value.favorite),
   };
 }
 

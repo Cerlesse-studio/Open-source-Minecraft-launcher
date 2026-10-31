@@ -89,7 +89,30 @@ pub fn os_label() -> String {
         if let Some((major, minor, build)) = windows_version() {
             return version_label(major, minor, build);
         }
+        return "Windows".to_string();
     }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("sw_vers").arg("-productVersion").output() {
+            let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !ver.is_empty() {
+                return format!("macOS {ver}");
+            }
+        }
+        return "macOS".to_string();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+                    return val.trim_matches('"').trim().to_string();
+                }
+            }
+        }
+        return "Linux".to_string();
+    }
+    #[allow(unreachable_code)]
     std::env::consts::OS.to_string()
 }
 

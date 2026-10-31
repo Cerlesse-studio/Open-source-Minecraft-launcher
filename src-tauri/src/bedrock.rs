@@ -239,6 +239,26 @@ pub fn get_uwp_mojang_dir() -> Option<PathBuf> {
             }
         }
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = PathBuf::from(home);
+            for sub in [
+                ".local/share/mcpelauncher/games/com.mojang",
+                ".var/app/io.mrarm.mcpelauncher/data/mcpelauncher/games/com.mojang",
+                "Library/Application Support/mcpelauncher/games/com.mojang",
+                "Library/Application Support/MinecraftBedrock/games/com.mojang",
+                ".minecraft-bedrock/games/com.mojang",
+            ] {
+                let candidate = home_path.join(sub);
+                if candidate.is_dir() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -285,31 +305,57 @@ fn store_client_installed() -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn store_client_installed() -> bool {
-    false
+    #[cfg(target_os = "macos")]
+    {
+        if Path::new("/Applications/MCPELauncher.app").is_dir() {
+            return true;
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            if PathBuf::from(home).join("Applications/MCPELauncher.app").is_dir() {
+                return true;
+            }
+        }
+    }
+
+    for bin in ["/usr/bin/mcpelauncher-client", "/usr/local/bin/mcpelauncher-client", "/opt/homebrew/bin/mcpelauncher-client"] {
+        if Path::new(bin).is_file() {
+            return true;
+        }
+    }
+
+    if let Ok(output) = Command::new("which").arg("mcpelauncher-client").output() {
+        if output.status.success() && !output.stdout.is_empty() {
+            return true;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            if PathBuf::from(home).join(".var/app/io.mrarm.mcpelauncher").is_dir() {
+                return true;
+            }
+        }
+    }
+
+    get_uwp_mojang_dir().is_some()
 }
 
 pub fn is_uwp_installed() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(guard) = UWP_CACHE.lock() {
-            if let Some((timestamp, cached_val)) = *guard {
-                if timestamp.elapsed() < std::time::Duration::from_secs(30) {
-                    return cached_val;
-                }
+    if let Ok(guard) = UWP_CACHE.lock() {
+        if let Some((timestamp, cached_val)) = *guard {
+            if timestamp.elapsed() < std::time::Duration::from_secs(30) {
+                return cached_val;
             }
         }
-
-        let installed = store_client_installed();
-
-        if let Ok(mut guard) = UWP_CACHE.lock() {
-            *guard = Some((Instant::now(), installed));
-        }
-        installed
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
+
+    let installed = store_client_installed();
+
+    if let Ok(mut guard) = UWP_CACHE.lock() {
+        *guard = Some((Instant::now(), installed));
     }
+    installed
 }
 
 #[derive(Debug, Clone, Default)]
@@ -406,6 +452,9 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
     let root_client = dir.join("Minecraft.Windows.exe");
     let root_mc_exe = dir.join("Minecraft.exe");
     let root_server = dir.join("bedrock_server.exe");
+    let root_linux_server = dir.join("bedrock_server");
+    let root_mcpelauncher = dir.join("mcpelauncher-client");
+    let root_mac_app = dir.join("MCPELauncher.app").join("Contents").join("MacOS").join("mcpelauncher-client");
     let root_manifest = dir.join("AppxManifest.xml");
     let root_bundle_manifest = dir.join("AppxBundleManifest.xml");
 
@@ -429,6 +478,18 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
         insp.main_executable = Some(root_server);
         insp.is_server = true;
         insp.is_valid = true;
+    } else if root_linux_server.is_file() {
+        insp.main_executable = Some(root_linux_server);
+        insp.is_server = true;
+        insp.is_valid = true;
+    } else if root_mcpelauncher.is_file() {
+        insp.main_executable = Some(root_mcpelauncher);
+        insp.is_server = false;
+        insp.is_valid = true;
+    } else if root_mac_app.is_file() {
+        insp.main_executable = Some(root_mac_app);
+        insp.is_server = false;
+        insp.is_valid = true;
     }
 
     // 3. Scan subdirectories (depth 1 to 2) if not found in root
@@ -445,6 +506,8 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
                     let sub_client = sub_path.join("Minecraft.Windows.exe");
                     let sub_mc_exe = sub_path.join("Minecraft.exe");
                     let sub_server = sub_path.join("bedrock_server.exe");
+                    let sub_linux_server = sub_path.join("bedrock_server");
+                    let sub_mcpelauncher = sub_path.join("mcpelauncher-client");
                     let sub_manifest = sub_path.join("AppxManifest.xml");
 
                     if insp.manifest_path.is_none() && sub_manifest.is_file() {
@@ -463,6 +526,14 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
                         } else if sub_server.is_file() {
                             insp.main_executable = Some(sub_server);
                             insp.is_server = true;
+                            insp.is_valid = true;
+                        } else if sub_linux_server.is_file() {
+                            insp.main_executable = Some(sub_linux_server);
+                            insp.is_server = true;
+                            insp.is_valid = true;
+                        } else if sub_mcpelauncher.is_file() {
+                            insp.main_executable = Some(sub_mcpelauncher);
+                            insp.is_server = false;
                             insp.is_valid = true;
                         }
                     }
@@ -1629,8 +1700,27 @@ fn spawn_bedrock_exe(exe: &Path, working_dir: &Path, is_console: bool) -> Result
 
     #[cfg(not(target_os = "windows"))]
     {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(exe) {
+                let mut perms = meta.permissions();
+                let mode = perms.mode();
+                if mode & 0o111 == 0 {
+                    perms.set_mode(mode | 0o755);
+                    let _ = std::fs::set_permissions(exe, perms);
+                }
+            }
+        }
+
         let mut cmd = Command::new(exe);
         cmd.current_dir(working_dir);
+
+        #[cfg(target_os = "linux")]
+        {
+            cmd.env("LD_LIBRARY_PATH", working_dir);
+        }
+
         cmd.spawn()
             .map_err(|e| format!("启动基岩版核心进程失败 ({}): {e}", exe.display()))?;
         Ok(())
@@ -2260,35 +2350,48 @@ pub fn ensure_gaming_services_running(app: Option<&crate::bridge::AppHandle>) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    // 1. Start GamingServices and GamingServicesNet Windows services if stopped
-    let script = "Get-Service GamingServices, GamingServicesNet -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Running' } | Start-Service -ErrorAction SilentlyContinue";
+    // 1. Start Xbox Live auth, networking, save, and GamingServices if stopped
+    let script = r#"
+        $services = @('XblAuthManager', 'XblGameSave', 'XboxNetApiSvc', 'GamingServices', 'GamingServicesNet', 'wlidsvc')
+        foreach ($s in $services) {
+            $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
+            if ($svc) {
+                if ($svc.StartType -eq 'Disabled') {
+                    Set-Service -Name $s -StartupType Manual -ErrorAction SilentlyContinue
+                }
+                if ($svc.Status -ne 'Running') {
+                    Start-Service -Name $s -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    "#;
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     cmd.creation_flags(CREATE_NO_WINDOW);
     let _ = cmd.output();
 
-    // 2. Configure network loopback exemption for both standard and preview Bedrock UWP
-    let _ = Command::new("CheckNetIsolation")
-        .args([
-            "LoopbackExempt",
-            "-a",
-            "-n=Microsoft.MinecraftUWP_8wekyb3d8bbwe",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+    // 2. Configure network loopback exemption for standard, beta, xbox identity provider, and deployed packages
+    let mut packages = vec![
+        "Microsoft.MinecraftUWP_8wekyb3d8bbwe".to_string(),
+        "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe".to_string(),
+        "Microsoft.XboxIdentityProvider_8wekyb3d8bbwe".to_string(),
+    ];
+    if let Some(pfn) = locally_deployed_minecraft_pfn() {
+        if !packages.contains(&pfn) {
+            packages.push(pfn);
+        }
+    }
 
-    let _ = Command::new("CheckNetIsolation")
-        .args([
-            "LoopbackExempt",
-            "-a",
-            "-n=Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+    for pkg in packages {
+        let _ = Command::new("CheckNetIsolation")
+            .args(["LoopbackExempt", "-a", &format!("-n={pkg}")])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
 
     emit_bedrock_log(
         app,
-        "已自动检查并激活游戏服务 (Gaming Services) 与网络环回豁免。",
+        "已自动检查并激活 Xbox 登录服务 (XblAuthManager)、游戏服务与网络环回豁免。",
     );
 }
 
@@ -2306,15 +2409,30 @@ pub fn get_bedrock_runtime_status(force: bool) -> BedrockRuntimeStatus {
         }
     }
 
-    let xbox_app_installed = appx_package_installed(XBOX_APP_PACKAGE);
-    let gaming_services_installed = appx_package_installed(GAMING_SERVICES_PACKAGE);
-    let minecraft_uwp_installed = is_uwp_installed();
-    let status = BedrockRuntimeStatus {
-        xbox_app_installed,
-        gaming_services_installed,
-        minecraft_uwp_installed,
-        winget_available: winget_available(),
-        ready: xbox_app_installed && gaming_services_installed && minecraft_uwp_installed,
+    #[cfg(target_os = "windows")]
+    let status = {
+        let xbox_app_installed = appx_package_installed(XBOX_APP_PACKAGE);
+        let gaming_services_installed = appx_package_installed(GAMING_SERVICES_PACKAGE);
+        let minecraft_uwp_installed = is_uwp_installed();
+        BedrockRuntimeStatus {
+            xbox_app_installed,
+            gaming_services_installed,
+            minecraft_uwp_installed,
+            winget_available: winget_available(),
+            ready: xbox_app_installed && gaming_services_installed && minecraft_uwp_installed,
+        }
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let status = {
+        let minecraft_uwp_installed = is_uwp_installed();
+        BedrockRuntimeStatus {
+            xbox_app_installed: true,
+            gaming_services_installed: true,
+            minecraft_uwp_installed,
+            winget_available: false,
+            ready: true,
+        }
     };
 
     if let Ok(mut guard) = RUNTIME_CACHE.lock() {
@@ -2791,6 +2909,9 @@ fn launch_appx_core(
     label: &str,
     game_root: &Path,
 ) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
     if let Some(exe) = exe {
         clean_exe_run_as_admin(exe);
     }
@@ -2801,6 +2922,10 @@ fn launch_appx_core(
     // them in now — the sync at the start of the launch runs too early for the
     // very first launch and the game would see an empty pack list.
     let seeded = seed_package_data_dir(&pfn, game_root);
+    let _ = Command::new("CheckNetIsolation")
+        .args(["LoopbackExempt", "-a", &format!("-n={}", pfn.trim())])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
     let app_id = appx_application_id(manifest).unwrap_or_else(|| "App".to_string());
     launch_uwp_package(Some(pfn.as_str()), &app_id)?;
     let mut message =
@@ -3275,12 +3400,23 @@ fn plan_uwp_launch(status: &BedrockRuntimeStatus) -> UwpLaunchPlan {
 /// Every launch that boots the Store client goes through here, so the Xbox
 /// runtime dependencies are installed automatically on the first launch.
 #[cfg(target_os = "windows")]
-fn ensure_and_launch_uwp(app: Option<&crate::bridge::AppHandle>) -> Result<String, String> {
-    // A core deployed locally by this launcher starts straight away; the Store
-    // licence and the Xbox runtime pre-flight are irrelevant for it.
+fn ensure_and_launch_uwp(
+    app: Option<&crate::bridge::AppHandle>,
+    offline_account: bool,
+) -> Result<String, String> {
+    // For online-authenticated accounts, prioritize the real Store/GDK client if installed
+    // so Microsoft/Xbox Live account login and entitlements work seamlessly.
+    if !offline_account {
+        if let Some(pfn) = installed_minecraft_pfn() {
+            launch_uwp_package(Some(&pfn), "App")?;
+            return Ok("已成功唤起 Minecraft 基岩版正版客户端 (Windows)".to_string());
+        }
+    }
+
+    // A core deployed locally by this launcher starts straight away
     if let Some(pfn) = locally_deployed_minecraft_pfn() {
         launch_uwp_package(Some(pfn.as_str()), "App")?;
-        return Ok("已从本地核心唤起 Minecraft 基岩版（未经过 Microsoft Store）".to_string());
+        return Ok("已从本地核心唤起 Minecraft 基岩版".to_string());
     }
 
     let status = get_bedrock_runtime_status(false);
@@ -3486,6 +3622,9 @@ pub fn launch_bedrock_edition(
 ) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
+        // Ensure Xbox Live auth, networking, gaming services and loopback exemptions are active
+        ensure_gaming_services_running(app);
+
         // Packs and worlds imported before the client's data folder existed are
         // staged in the portable folder; deploy them before the game starts so
         // the first launch already sees them.
@@ -3506,7 +3645,7 @@ pub fn launch_bedrock_edition(
                 || clean_vid.eq_ignore_ascii_case("bedrock-uwp")
             {
                 if is_uwp_installed() {
-                    return ensure_and_launch_uwp(app);
+                    return ensure_and_launch_uwp(app, offline_account);
                 }
                 // No Store client installed: a downloaded UWP/AppX core boots directly.
                 if let Some(result) = launch_installed_client_core(app, game_root, "") {
@@ -3569,7 +3708,7 @@ pub fn launch_bedrock_edition(
 
             // If requested standalone version directory is missing, fallback to UWP if installed
             if is_uwp_installed() {
-                return ensure_and_launch_uwp(app);
+                return ensure_and_launch_uwp(app, offline_account);
             }
 
             // Any core this launcher deployed starts with its package identity,
@@ -3595,7 +3734,7 @@ pub fn launch_bedrock_edition(
 
         // If a real Store client is installed, prioritize launching it
         if is_uwp_installed() {
-            return ensure_and_launch_uwp(app);
+            return ensure_and_launch_uwp(app, offline_account);
         }
 
         // A core this launcher deployed is not a Store install, so it is not
@@ -3662,7 +3801,63 @@ pub fn launch_bedrock_edition(
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("Minecraft 基岩版 PC 原生运行环境目前仅支持 Windows 平台。".to_string())
+        let _ = sync_portable_content_to_clients(game_root);
+        let bedrock_versions_dir = game_root.join("bedrock").join("versions");
+
+        // 1. If explicit version requested
+        if let Some(vid) = version_id.filter(|s| !s.trim().is_empty()) {
+            let clean_vid = vid
+                .trim_start_matches("bedrock:")
+                .trim_start_matches("Minecraft 基岩版:")
+                .trim_start_matches("Minecraft 基岩版 ")
+                .trim_start_matches("基岩版 ")
+                .trim();
+
+            if clean_vid.eq_ignore_ascii_case("uwp") || clean_vid.eq_ignore_ascii_case("client") {
+                if let Some(msg) = launch_unix_client() {
+                    return Ok(msg);
+                }
+            } else {
+                let target_dir = resolve_bedrock_version_dir(game_root, clean_vid);
+                if target_dir.is_dir() {
+                    let insp = inspect_bedrock_version_dir(&target_dir);
+                    if let Some(exe) = insp.main_executable {
+                        let work_dir = exe.parent().unwrap_or(&target_dir);
+                        spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
+                        let type_desc = if insp.is_server { "服务端核心" } else { "客户端" };
+                        return Ok(format!("已启动基岩版{type_desc} ({clean_vid})"));
+                    }
+                }
+            }
+        }
+
+        // 2. Launch any installed standalone core in <game_root>/bedrock/versions
+        if let Ok(entries) = std::fs::read_dir(&bedrock_versions_dir) {
+            let mut candidates = Vec::new();
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let dir = entry.path();
+                    let insp = inspect_bedrock_version_dir(&dir);
+                    if let Some(exe) = insp.main_executable {
+                        let work_dir = exe.parent().unwrap_or(&dir).to_path_buf();
+                        candidates.push((exe, work_dir, insp.is_server, insp.folder_name));
+                    }
+                }
+            }
+            candidates.sort_by(|a, b| b.3.cmp(&a.3));
+            if let Some((exe, dir, is_server, name)) = candidates.into_iter().next() {
+                spawn_bedrock_exe(&exe, &dir, is_server)?;
+                let type_desc = if is_server { "服务端核心" } else { "客户端" };
+                return Ok(format!("已启动本地基岩版{type_desc} ({name})"));
+            }
+        }
+
+        // 3. Fall back to launching system MCPELauncher client if available
+        if let Some(msg) = launch_unix_client() {
+            return Ok(msg);
+        }
+
+        Err("未检测到适用于当前系统 (macOS/Linux) 的基岩版运行环境。\n您可在“下载”页面下载基岩版核心/BDS服务端，或安装 MCPELauncher (Minecraft Bedrock for Linux / macOS)。".to_string())
     }
 }
 
@@ -4872,8 +5067,75 @@ fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn client_mojang_dirs(_game_root: &Path, _create: bool) -> Vec<PathBuf> {
-    Vec::new()
+fn launch_unix_client() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        for app_path in ["/Applications/MCPELauncher.app", "~/Applications/MCPELauncher.app"] {
+            let p = if app_path.starts_with("~/") {
+                if let Ok(h) = std::env::var("HOME") {
+                    PathBuf::from(h).join(&app_path[2..])
+                } else {
+                    PathBuf::from(app_path)
+                }
+            } else {
+                PathBuf::from(app_path)
+            };
+            if p.is_dir() {
+                if Command::new("open").arg("-a").arg(&p).spawn().is_ok() {
+                    return Some("已通过 macOS 启动 MCPELauncher 基岩版客户端".to_string());
+                }
+            }
+        }
+    }
+
+    for bin in ["mcpelauncher-client", "mcpelauncher-ui", "/usr/bin/mcpelauncher-client", "/usr/local/bin/mcpelauncher-client", "/opt/homebrew/bin/mcpelauncher-client"] {
+        if Command::new(bin).spawn().is_ok() {
+            return Some("已启动 MCPELauncher 基岩版客户端".to_string());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("flatpak").args(["run", "io.mrarm.mcpelauncher"]).spawn().is_ok() {
+            return Some("已通过 Flatpak 启动 MCPELauncher 基岩版客户端".to_string());
+        }
+    }
+
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(home);
+        let candidates = [
+            home_path.join(".local").join("share").join("mcpelauncher").join("games").join("com.mojang"),
+            home_path.join(".var").join("app").join("io.mrarm.mcpelauncher").join("data").join("mcpelauncher").join("games").join("com.mojang"),
+            home_path.join("Library").join("Application Support").join("mcpelauncher").join("games").join("com.mojang"),
+            home_path.join("Library").join("Application Support").join("MinecraftBedrock").join("games").join("com.mojang"),
+        ];
+        for candidate in candidates {
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+        if create && dirs.is_empty() {
+            #[cfg(target_os = "macos")]
+            let target = home_path.join("Library").join("Application Support").join("mcpelauncher").join("games").join("com.mojang");
+            #[cfg(not(target_os = "macos"))]
+            let target = home_path.join(".local").join("share").join("mcpelauncher").join("games").join("com.mojang");
+
+            if std::fs::create_dir_all(&target).is_ok() {
+                dirs.push(target);
+            }
+        }
+    }
+    let local_bedrock = game_root.join("bedrock").join("data").join("com.mojang");
+    if local_bedrock.is_dir() {
+        dirs.push(local_bedrock);
+    }
+    dirs
 }
 
 fn dedupe_dirs(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -6334,6 +6596,70 @@ pub fn sync_portable_content_to_clients(game_root: &Path) -> usize {
         .filter(|dir| dir.to_string_lossy().to_lowercase() != portable_key)
         .collect();
     sync_portable_to_targets(&portable, &targets)
+}
+
+/// Updates or inserts `mp_username:<username>` in every known `com.mojang/minecraftpe/options.txt`
+/// so Bedrock Edition loads the launcher's account name upon launch.
+pub fn sync_bedrock_username(game_root: &Path, username: &str) {
+    let clean = username.trim();
+    if clean.is_empty() {
+        return;
+    }
+
+    let mut target_dirs = client_mojang_dirs(game_root, true);
+    let portable = portable_mojang_dir(game_root);
+    if !target_dirs.iter().any(|d| d == &portable) {
+        target_dirs.push(portable);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            for pkg in [
+                "Microsoft.MinecraftUWP_8wekyb3d8bbwe",
+                "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe",
+            ] {
+                let candidate = PathBuf::from(&local)
+                    .join("Packages")
+                    .join(pkg)
+                    .join("LocalState")
+                    .join("games")
+                    .join("com.mojang");
+                if candidate.is_dir() && !target_dirs.iter().any(|d| d == &candidate) {
+                    target_dirs.push(candidate);
+                }
+            }
+        }
+    }
+
+    for mojang_dir in target_dirs {
+        let pe_dir = mojang_dir.join("minecraftpe");
+        let options_file = pe_dir.join("options.txt");
+        let _ = std::fs::create_dir_all(&pe_dir);
+
+        let new_content = if let Ok(existing) = std::fs::read_to_string(&options_file) {
+            let mut found = false;
+            let mut lines: Vec<String> = existing
+                .lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("mp_username:") {
+                        found = true;
+                        format!("mp_username:{clean}")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect();
+            if !found {
+                lines.insert(0, format!("mp_username:{clean}"));
+            }
+            lines.join("\r\n") + "\r\n"
+        } else {
+            format!("mp_username:{clean}\r\ngame_difficulty_new:1\r\ngame_thirdperson:0\r\n")
+        };
+
+        let _ = std::fs::write(&options_file, new_content);
+    }
 }
 
 // ---------------------------------------------------------------------------

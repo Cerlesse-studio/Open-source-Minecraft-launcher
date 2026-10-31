@@ -126,6 +126,16 @@ export default function App() {
   const [selectedVersion, setSelectedVersion] = useState("");
   const [account, setAccount] = useState<MsAccount | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  // Playing offline no longer requires signing out: the Microsoft sign-in is
+  // kept and the player can switch between the two from the login menu.
+  const [offlineMode, setOfflineMode] = useState(
+    () => localStorage.getItem("osml.offlineMode") === "1",
+  );
+  useEffect(() => {
+    localStorage.setItem("osml.offlineMode", offlineMode ? "1" : "0");
+  }, [offlineMode]);
+  /** The account launches actually use; `null` means the offline account. */
+  const activeAccount = account?.signedIn && !offlineMode ? account : null;
   const [installTarget, setInstallTarget] = useState<VersionSummary | null>(null);
   const [view, setView] = useState<ViewId>("home");
   const [manifestLoading, setManifestLoading] = useState(true);
@@ -273,8 +283,8 @@ export default function App() {
   // The account decides which Bedrock core a launch may use, so the preference
   // is pushed once here instead of at every launch button.
   useEffect(() => {
-    setBedrockAccountMode(Boolean(account?.signedIn));
-  }, [account]);
+    setBedrockAccountMode(Boolean(activeAccount));
+  }, [activeAccount]);
 
   // Pick up an already signed-in account on startup; the backend renews the
   // session when it aged out (and reports why when it could not).
@@ -1127,7 +1137,13 @@ export default function App() {
                   .replace(/^bedrock-/, "")
                   .replace(/^(Minecraft\s*)?基岩版\s*/, "")
                   .trim();
-          const msg = await launchBedrock(target, settingsRef.current.gameRoot);
+          const currentBedrockName = activeAccount ? activeAccount.name : settings.playerName.trim();
+          const msg = await launchBedrock(
+            target,
+            settingsRef.current.gameRoot,
+            !activeAccount,
+            currentBedrockName,
+          );
           pushToast("success", "已唤起 Minecraft 基岩版", msg);
           pushLog("cobble", `成功启动 Minecraft 基岩版: ${msg}`);
           if (isDesktop) {
@@ -1158,8 +1174,8 @@ export default function App() {
         pushToast("error", "游戏目录为空", "请先在设置中选择游戏目录。");
         return;
       }
-      const launchPlayerName = account?.signedIn ? account.name : settings.playerName.trim();
-      if (!account?.signedIn && !/^[A-Za-z0-9_]{1,16}$/.test(launchPlayerName)) {
+      const launchPlayerName = activeAccount ? activeAccount.name : settings.playerName.trim();
+      if (!activeAccount && !/^[A-Za-z0-9_]{1,16}$/.test(launchPlayerName)) {
         pushToast("error", "昵称无效", "昵称只能包含字母、数字和下划线，长度 1–16 位。");
         setView("settings");
         return;
@@ -1174,7 +1190,9 @@ export default function App() {
       });
       setRuntime({ status: "preparing", versionId, detail: "正在检查游戏文件与 Java" });
       pushLog("cobble", `准备启动 Minecraft ${versionId}…`);
-      pushLog("cobble", "离线模式：单人游戏和离线服务器可用，Realms 请求会被 Mojang 拒绝。");
+      if (!activeAccount) {
+        pushLog("cobble", "离线模式：单人游戏和离线服务器可用，Realms 请求会被 Mojang 拒绝。");
+      }
 
       const launchSettings = resolveVersionLaunchSettings(
         settingsRef.current,
@@ -1216,6 +1234,7 @@ export default function App() {
           windowSize: launchSettings.windowSize,
           jvmArgs: launchSettings.jvmArgs || null,
           language: launchSettings.language || null,
+          offline: !activeAccount,
         });
         // Java may have been installed during launch; reflect it in the UI.
         void detectJavaForRoot(settingsRef.current.gameRoot);
@@ -1235,7 +1254,7 @@ export default function App() {
       selectedVersion,
       settings.javaPath,
       settings.playerName,
-      account,
+      activeAccount,
     ],
   );
 
@@ -1326,7 +1345,8 @@ export default function App() {
           skinType={settings.offlineSkinType}
           customSkinPath={settings.customSkinPath}
           mojangSkinName={settings.mojangSkinName}
-          signedInName={account?.signedIn ? account.name : null}
+          signedInName={activeAccount ? activeAccount.name : null}
+          skinUrl={activeAccount?.skinUrl ?? null}
         />
 
         <main
@@ -1365,9 +1385,12 @@ export default function App() {
               selectedBedrockVersion={selectedBedrockVersion}
               settings={settings}
               onUpdateSettings={updateSettings}
-              accountType={account?.signedIn ? "microsoft" : "offline"}
-              account={account}
+              accountType={activeAccount ? "microsoft" : "offline"}
+              account={activeAccount}
+              storedAccount={account}
               onOpenAccount={() => setAccountOpen(true)}
+              onSelectOffline={() => setOfflineMode(true)}
+              onSelectMicrosoft={() => setOfflineMode(false)}
             />
           ) : (
             <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
@@ -1554,6 +1577,7 @@ export default function App() {
                   onRefreshJava={refreshJava}
                   onOpenFolder={(path) => void openFolder(path)}
                   onNotify={pushToast}
+                  account={activeAccount}
                 />
               ) : null}
             </div>
@@ -1569,6 +1593,7 @@ export default function App() {
         onClientIdChange={(msClientId) => updateSettings({ msClientId })}
         onSignedIn={async (next) => {
           setAccount(next);
+          setOfflineMode(false);
           // 登录成功后从后端重新获取以确保主界面立即更新
           try {
             const fresh = await getMsAccount(settings.msClientId || undefined);

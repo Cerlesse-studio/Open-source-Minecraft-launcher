@@ -141,6 +141,7 @@ export function Avatar({
   skinType = "random",
   customSkinPath,
   mojangSkinName,
+  skinUrl,
 }: {
   name: string;
   size?: number;
@@ -148,19 +149,26 @@ export function Avatar({
   skinType?: OfflineSkinType;
   customSkinPath?: string;
   mojangSkinName?: string;
+  skinUrl?: string | null;
 }) {
   const [customDataUrl, setCustomDataUrl] = useState<string | null>(null);
   const [remoteSkinFailed, setRemoteSkinFailed] = useState(false);
+  const [providerIndex, setProviderIndex] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // A premium skin comes from a third-party render service (minotar), which is
-  // unreachable on some networks. When it fails the procedural head below takes
-  // over, so a signed-in account never ends up with an empty avatar.
+  const MOJANG_PROVIDERS = [
+    (target: string, sz: number) => `https://crafthead.net/helm/${encodeURIComponent(target)}/${sz}`,
+    (target: string, sz: number) => `https://mc-heads.net/avatar/${encodeURIComponent(target)}/${sz}`,
+    (target: string, sz: number) => `https://minotar.net/helm/${encodeURIComponent(target)}/${sz}.png`,
+    (target: string, sz: number) => `https://mineskin.eu/helm/${encodeURIComponent(target)}/${sz}`,
+  ];
+
   useEffect(() => {
     setRemoteSkinFailed(false);
-  }, [skinType, mojangSkinName, name]);
+    setProviderIndex(0);
+  }, [skinType, mojangSkinName, name, skinUrl]);
 
-  // Load custom skin data URL when skinType is custom and path is provided
+  // Load custom skin data URL or official skinUrl
   useEffect(() => {
     let active = true;
     if (skinType === "custom" && customSkinPath) {
@@ -175,17 +183,19 @@ export function Avatar({
             if (active) setCustomDataUrl(null);
           });
       }
+    } else if (skinUrl && (skinType === "mojang" || skinType === "random")) {
+      setCustomDataUrl(skinUrl.replace(/^http:\/\//i, "https://"));
     } else {
       setCustomDataUrl(null);
     }
     return () => {
       active = false;
     };
-  }, [skinType, customSkinPath]);
+  }, [skinType, customSkinPath, skinUrl]);
 
   // When customDataUrl is available, draw the head front + hat layer to canvas
   useEffect(() => {
-    if (skinType !== "custom" || !customDataUrl) return;
+    if (!customDataUrl) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -196,16 +206,25 @@ export function Avatar({
     img.onload = () => {
       ctx.clearRect(0, 0, 64, 64);
       ctx.imageSmoothingEnabled = false;
-      // 1. Base head front (x=8, y=8, w=8, h=8)
-      ctx.drawImage(img, 8, 8, 8, 8, 0, 0, 64, 64);
-      // 2. Hat/helmet front (x=40, y=8, w=8, h=8)
-      ctx.drawImage(img, 40, 8, 8, 8, 0, 0, 64, 64);
+      const isMinecraftSkin =
+        (img.width === 64 && (img.height === 64 || img.height === 32)) ||
+        (img.width === 128 && (img.height === 128 || img.height === 64));
+      if (isMinecraftSkin) {
+        const scale = img.width / 64;
+        ctx.drawImage(img, 8 * scale, 8 * scale, 8 * scale, 8 * scale, 0, 0, 64, 64);
+        ctx.drawImage(img, 40 * scale, 8 * scale, 8 * scale, 8 * scale, 0, 0, 64, 64);
+      } else {
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, 64, 64);
+      }
+    };
+    img.onerror = () => {
+      setCustomDataUrl(null);
     };
     img.src = customDataUrl;
-  }, [skinType, customDataUrl]);
+  }, [customDataUrl]);
 
-  // 1. Custom Skin Rendering
-  if (skinType === "custom" && customSkinPath) {
+  // 1. Direct Skin / Custom Skin Rendering on Canvas
+  if (customDataUrl) {
     return (
       <canvas
         ref={canvasRef}
@@ -218,16 +237,24 @@ export function Avatar({
   }
 
   // 2. Mojang Skin Rendering
-  if (skinType === "mojang" && !remoteSkinFailed) {
+  if ((skinType === "mojang" || skinUrl) && !remoteSkinFailed) {
     const target = mojangSkinName?.trim() || name || "Steve";
+    const currentSrc = MOJANG_PROVIDERS[providerIndex]?.(target, size) ?? `https://mc-heads.net/avatar/${encodeURIComponent(target)}/${size}`;
     return (
       <img
-        src={`https://minotar.net/helm/${target}/${size}.png`}
+        key={`${target}-${providerIndex}`}
+        src={currentSrc}
         alt={target}
         width={size}
         height={size}
         className={cn("shrink-0 object-contain [image-rendering:pixelated]", className)}
-        onError={() => setRemoteSkinFailed(true)}
+        onError={() => {
+          if (providerIndex < MOJANG_PROVIDERS.length - 1) {
+            setProviderIndex((prev) => prev + 1);
+          } else {
+            setRemoteSkinFailed(true);
+          }
+        }}
       />
     );
   }

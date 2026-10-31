@@ -149,7 +149,17 @@ fn add_unix_candidates(list: &mut Vec<(PathBuf, &'static str)>, base: &Path, sou
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            // Linux / Unix standard: <jdk>/bin/java
             add_candidate(list, path.join("bin").join(java_exe()), source);
+            // macOS bundle standard: <jdk>.jdk/Contents/Home/bin/java
+            add_candidate(
+                list,
+                path.join("Contents")
+                    .join("Home")
+                    .join("bin")
+                    .join(java_exe()),
+                source,
+            );
         }
     }
 }
@@ -251,6 +261,19 @@ fn candidate_paths(root: &Path) -> Vec<(PathBuf, &'static str)> {
         }
         add_candidate(&mut list, PathBuf::from("/usr/bin/java"), "系统安装");
         add_candidate(&mut list, PathBuf::from("/usr/local/bin/java"), "系统安装");
+
+        // macOS Homebrew OpenJDK paths
+        for brew_base in ["/opt/homebrew/opt", "/usr/local/opt"] {
+            let base = Path::new(brew_base);
+            for name in ["openjdk", "openjdk@17", "openjdk@21", "openjdk@11", "openjdk@8"] {
+                add_candidate(&mut list, base.join(name).join("bin").join(java_exe()), "系统安装");
+                add_candidate(&mut list, base.join(name).join("libexec").join("openjdk.jdk").join("Contents").join("Home").join("bin").join(java_exe()), "系统安装");
+            }
+        }
+
+        // Additional Linux paths
+        add_unix_candidates(&mut list, Path::new("/usr/lib64/jvm"), "系统安装");
+        add_candidate(&mut list, PathBuf::from("/etc/alternatives/java"), "系统安装");
     }
 
     list

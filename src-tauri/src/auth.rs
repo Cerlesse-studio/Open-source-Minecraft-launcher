@@ -159,7 +159,7 @@ impl AccountRecord {
             client_id: self.client_id.clone(),
             uuid: self.profile.id.clone(),
             name: self.profile.name.clone(),
-            skin_url: self.profile.skin_url.clone(),
+            skin_url: self.profile.skin_url.as_ref().map(|u| u.replace("http://", "https://")),
             xuid: self.minecraft.xuid.clone(),
             entitlements: self.entitlements.clone(),
             session_expires_at: self.minecraft.expires_at,
@@ -639,7 +639,7 @@ pub async fn fetch_profile(access_token: &str) -> Result<MsProfile, String> {
         .iter()
         .find(|skin| skin.state.eq_ignore_ascii_case("ACTIVE"))
         .or_else(|| profile.skins.first())
-        .map(|skin| skin.url.clone())
+        .map(|skin| skin.url.replace("http://", "https://"))
         .filter(|url| !url.is_empty());
     Ok(MsProfile {
         id: profile.id,

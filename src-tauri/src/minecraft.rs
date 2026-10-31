@@ -2344,6 +2344,10 @@ pub struct LaunchRequest {
     /// keeps the legacy dummy session the game accepts in single-player.
     #[serde(default)]
     pub auth: Option<LaunchAuth>,
+    /// The player picked the offline account: never fall back to the stored
+    /// Microsoft session, even though the user is still signed in.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 /// Credentials handed to the game when the user signed in with a real account.
@@ -2461,25 +2465,48 @@ pub fn offline_uuid_with_skin(name: &str, skin_type: Option<&str>) -> String {
     )
 }
 
-async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
-    let profile_url = format!("https://api.mojang.com/users/profiles/minecraft/{name}");
-    let resp = tokio::time::timeout(
-        Duration::from_secs(3),
-        net::client().get(&profile_url).send(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    if !resp.status().is_success() {
-        return None;
+pub fn format_uuid_with_hyphens(uuid: &str) -> String {
+    let clean = uuid.replace('-', "").trim().to_string();
+    if clean.len() == 32 {
+        format!(
+            "{}-{}-{}-{}-{}",
+            &clean[0..8],
+            &clean[8..12],
+            &clean[12..16],
+            &clean[16..20],
+            &clean[20..32]
+        )
+    } else {
+        uuid.to_string()
     }
-    let val: serde_json::Value = resp.json().await.ok()?;
-    let id = val.get("id")?.as_str()?;
+}
+
+async fn fetch_mojang_textures_by_id_or_name(
+    uuid: Option<&str>,
+    name: &str,
+) -> Option<(String, String, String)> {
+    let id = if let Some(u) = uuid.filter(|s| !s.trim().is_empty()) {
+        u.replace('-', "").trim().to_string()
+    } else {
+        let profile_url = format!("https://api.mojang.com/users/profiles/minecraft/{name}");
+        let resp = tokio::time::timeout(
+            Duration::from_secs(5),
+            net::client().get(&profile_url).send(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let val: serde_json::Value = resp.json().await.ok()?;
+        val.get("id")?.as_str()?.to_string()
+    };
 
     let session_url =
         format!("https://sessionserver.mojang.com/session/minecraft/profile/{id}?unsigned=false");
     let s_resp = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(5),
         net::client().get(&session_url).send(),
     )
     .await
@@ -2498,10 +2525,15 @@ async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
-            return Some((val, sig, id.to_string()));
+            return Some((val, sig, id));
         }
     }
     None
+}
+
+#[allow(dead_code)]
+async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
+    fetch_mojang_textures_by_id_or_name(None, name).await
 }
 
 async fn setup_custom_skin_pack(root: &Path, version_id: &str, skin_path: &Path) {
@@ -2833,7 +2865,7 @@ fn build_launch_spec(
     let memory = request.memory_mb.unwrap_or(4096).clamp(512, 65536);
     let skin_type = request.skin_type.as_deref().unwrap_or("random");
     let uuid = match request.auth.as_ref().map(|auth| auth.uuid.trim()) {
-        Some(online_uuid) if !online_uuid.is_empty() => online_uuid.to_string(),
+        Some(online_uuid) if !online_uuid.is_empty() => format_uuid_with_hyphens(online_uuid),
         _ => mojang_uuid_override
             .unwrap_or_else(|| offline_uuid_with_skin(&player_name, Some(skin_type))),
     };
@@ -3210,31 +3242,35 @@ pub async fn prepare_launch(
                 setup_custom_skin_pack(root, &request.version_id, p).await;
             }
         }
-    } else if skin_type == "mojang" {
-        let target_name = request
-            .mojang_skin_name
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&request.player_name);
-        if let Some((val, sig, raw_uuid)) = fetch_mojang_textures(target_name).await {
-            user_properties_override = Some(
-                serde_json::json!({
-                    "textures": [{
-                        "value": val,
-                        "signature": sig
-                    }]
-                })
-                .to_string(),
-            );
-            if raw_uuid.len() == 32 {
-                mojang_uuid_override = Some(format!(
-                    "{}-{}-{}-{}-{}",
-                    &raw_uuid[0..8],
-                    &raw_uuid[8..12],
-                    &raw_uuid[12..16],
-                    &raw_uuid[16..20],
-                    &raw_uuid[20..32]
-                ));
+    } else {
+        let is_online = request.auth.is_some();
+        if is_online || skin_type == "mojang" {
+            let (target_uuid, target_name) = if let Some(auth) = request.auth.as_ref() {
+                (Some(auth.uuid.as_str()), auth.name.as_str())
+            } else {
+                (
+                    None,
+                    request
+                        .mojang_skin_name
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(&request.player_name),
+                )
+            };
+
+            if let Some((val, sig, raw_uuid)) = fetch_mojang_textures_by_id_or_name(target_uuid, target_name).await {
+                user_properties_override = Some(
+                    serde_json::json!({
+                        "textures": [{
+                            "value": val,
+                            "signature": sig
+                        }]
+                    })
+                    .to_string(),
+                );
+                if raw_uuid.len() == 32 {
+                    mojang_uuid_override = Some(format_uuid_with_hyphens(&raw_uuid));
+                }
             }
         }
     }
@@ -4854,6 +4890,7 @@ mod tests {
             jvm_args: None,
             language: None,
             auth,
+            offline: false,
         };
 
         let offline = auth_vars(&request(None), "offline-uuid", "OfflineName");

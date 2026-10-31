@@ -22,6 +22,8 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
+  Sparkles,
+  Star,
   Tag,
   Trash2,
   Wrench,
@@ -74,6 +76,7 @@ import { BedrockPackManager } from "./BedrockPackManager";
 import { JavaPackManager } from "./JavaPackManager";
 import { JavaShortcuts } from "./JavaShortcuts";
 import { WorldManager } from "./WorldManager";
+import { PersonalizationCard, VERSION_PRESET_ICONS } from "./PersonalizationCard";
 
 interface VersionSettingsViewProps {
   manifest: VersionManifest | null;
@@ -96,7 +99,7 @@ interface VersionSettingsViewProps {
   [key: string]: any;
 }
 
-export type VersionSettingsSection = "overview" | "launch" | "mods" | "packs" | "worlds";
+export type VersionSettingsSection = "overview" | "personalize" | "launch" | "mods" | "packs" | "worlds";
 
 type Section = VersionSettingsSection;
 
@@ -1316,6 +1319,8 @@ function VersionOverviewPanel({
   hasOverride,
   isModded,
   isBedrock,
+  onChangeLaunchSettings,
+  onNotify,
   onGoToLaunch,
   onGoToMods,
   onOpenFolder,
@@ -1329,11 +1334,22 @@ function VersionOverviewPanel({
   hasOverride: boolean;
   isModded: boolean;
   isBedrock: boolean;
+  onChangeLaunchSettings?: (patch: Partial<VersionLaunchSettings>) => void;
+  onNotify?: (level: "info" | "success" | "error", title: string, detail?: string) => void;
   onGoToLaunch: () => void;
   onGoToMods: () => void;
   onOpenFolder: (path: string) => void;
   onLaunch: () => void;
 }) {
+  const matchedIcon = VERSION_PRESET_ICONS.find((i) => i.value === launchSettings.icon);
+  const isCustomIconImage =
+    !matchedIcon &&
+    Boolean(
+      launchSettings.icon &&
+        (launchSettings.icon.startsWith("data:") ||
+          launchSettings.icon.includes("/") ||
+          launchSettings.icon.includes("\\"))
+    );
   const versionType = installedVersion?.type ?? summary?.type ?? "release";
   const mcVer = installedVersion?.mcVersion || versionId.split("-")[0];
 
@@ -1372,14 +1388,36 @@ function VersionOverviewPanel({
         <CardContent className="p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-start gap-4">
-              <div className="rounded-2xl border border-border/80 bg-background/60 p-3 shadow-2xs shrink-0">
-                <GrassBlock size={52} />
+              <div className="rounded-2xl border border-border/80 bg-background/60 p-3 shadow-2xs shrink-0 flex items-center justify-center size-[76px]">
+                {matchedIcon && matchedIcon.value !== "auto" ? (
+                  <img
+                    src={matchedIcon.iconSrc}
+                    alt=""
+                    className="size-12 object-contain [image-rendering:pixelated]"
+                  />
+                ) : isCustomIconImage ? (
+                  <img
+                    src={launchSettings.icon}
+                    alt=""
+                    className="size-12 rounded object-contain"
+                  />
+                ) : (
+                  <GrassBlock size={52} />
+                )}
               </div>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-pixel text-[17px] text-foreground font-semibold">
-                    {versionId}
+                  <h2 className="font-pixel text-[17px] text-foreground font-semibold flex items-center gap-1.5">
+                    {launchSettings.customName || versionId}
+                    {launchSettings.favorite ? (
+                      <Star className="size-4 fill-amber-500 text-amber-500 shrink-0 inline ml-1" />
+                    ) : null}
                   </h2>
+                  {launchSettings.customName ? (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground font-mono">
+                      ID: {versionId}
+                    </Badge>
+                  ) : null}
                   <TypeBadge
                     type={versionType}
                     tone={typeTone(versionType)}
@@ -1423,6 +1461,16 @@ function VersionOverviewPanel({
           </div>
         </CardContent>
       </Card>
+
+      {/* Version Personalization Card */}
+      {onChangeLaunchSettings ? (
+        <PersonalizationCard
+          versionId={versionId}
+          settings={launchSettings}
+          onChange={onChangeLaunchSettings}
+          onNotify={onNotify}
+        />
+      ) : null}
 
       {/* Grid of Active Per-Version Configurations */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1842,6 +1890,37 @@ export function VersionSettingsView({
                     onOpenFolder={onOpenFolder}
                   />
                 )}
+              </div>
+            ) : section === "personalize" ? (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
+                      <Sparkles className="size-4" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-foreground">
+                        当前配置版本：<span className="font-mono text-primary font-bold">{selectedVersion}</span> 个性化设置
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        定制该版本的专属图标、归属分类、显示别名、详细备注及快捷收藏状态。
+                      </p>
+                    </div>
+                  </div>
+                  {launchSettings.favorite ? (
+                    <Badge className="h-5 text-[9.5px] bg-amber-500/20 text-amber-500 border-amber-500/30 gap-1">
+                      <Star className="size-3 fill-current" />
+                      已加入收藏夹
+                    </Badge>
+                  ) : null}
+                </div>
+
+                <PersonalizationCard
+                  versionId={selectedVersion}
+                  settings={launchSettings}
+                  onChange={onChangeLaunchSettings}
+                  onNotify={onNotify}
+                />
               </div>
             ) : section === "launch" ? (
               <LaunchSettingsPanel

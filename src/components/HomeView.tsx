@@ -111,7 +111,16 @@ interface HomeViewProps {
   accountType?: "offline" | "microsoft";
   /** The signed-in Microsoft account, shared by both editions. */
   account?: MsAccount | null;
+  /**
+   * The stored Microsoft account, kept even while the player chose to play
+   * offline so the login menu can switch back without signing in again.
+   */
+  storedAccount?: MsAccount | null;
   onOpenAccount?: () => void;
+  /** Play with the offline account while keeping the Microsoft sign-in. */
+  onSelectOffline?: () => void;
+  /** Switch back to the stored Microsoft account. */
+  onSelectMicrosoft?: () => void;
 }
 
 /** Directory part of a home page path, used to resolve its relative resources. */
@@ -461,7 +470,10 @@ export function HomeView({
   onUpdateSettings,
   accountType = "offline",
   account = null,
+  storedAccount = null,
   onOpenAccount,
+  onSelectOffline,
+  onSelectMicrosoft,
 }: HomeViewProps) {
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
   const [bedrockLaunching, setBedrockLaunching] = useState(false);
@@ -639,7 +651,8 @@ export function HomeView({
         activeBedrockVersion === "uwp" || !activeBedrockVersion
           ? undefined
           : activeBedrockVersion;
-      const msg = await launchBedrock(target, gameRoot);
+      const currentName = isOffline ? playerName : (account?.name || playerName);
+      const msg = await launchBedrock(target, gameRoot, isOffline, currentName);
       onNotify?.("success", "基岩版启动 / 自动程序处理中", msg);
       await refreshBedrockStatus();
     } catch (e) {
@@ -855,7 +868,9 @@ export function HomeView({
             ? "此版本尚未安装"
             : "还没有可启动的版本";
   const launchLabel = isRunning
-    ? "结束游戏"
+    ? isBedrock
+      ? "终止基岩版"
+      : "结束游戏"
     : isLaunching || bedrockLaunching
       ? "正在启动…"
       : isBedrock
@@ -868,7 +883,9 @@ export function HomeView({
 
   /** Label of the big button; the right-click menu reuses it. */
   const primaryLabel = isRunning
-    ? "停止运行"
+    ? isBedrock
+      ? "终止基岩版"
+      : "停止运行"
     : isLaunching || bedrockLaunching
       ? "正在启动…"
       : isBedrock
@@ -879,14 +896,14 @@ export function HomeView({
 
   /** The big button and the launch menu run the same action. */
   const handlePrimaryAction = () => {
-    if (isBedrock) {
+    if (isRunning) {
+      onStop();
+    } else if (isBedrock) {
       if (isBedrockInstalled) {
         void handleLaunchBedrock();
       } else {
         onOpenDownloadBedrock?.();
       }
-    } else if (isRunning) {
-      onStop();
     } else {
       onLaunch();
     }
@@ -1327,11 +1344,24 @@ export function HomeView({
                 name={account?.signedIn ? account.name : playerName}
                 size={168}
                 className="size-full transition-transform duration-300 group-hover:scale-105"
-                skinType={account?.signedIn ? "mojang" : settings?.offlineSkinType}
+                skinType={
+                  settings?.offlineSkinType === "custom" && settings?.customSkinPath
+                    ? "custom"
+                    : account?.signedIn
+                      ? settings?.offlineSkinType === "steve" || settings?.offlineSkinType === "alex"
+                        ? settings?.offlineSkinType
+                        : "mojang"
+                      : settings?.offlineSkinType
+                }
                 customSkinPath={settings?.customSkinPath}
                 mojangSkinName={
-                  account?.signedIn ? account.name : settings?.mojangSkinName
+                  account?.signedIn
+                    ? settings?.offlineSkinType === "mojang" && settings?.mojangSkinName?.trim()
+                      ? settings.mojangSkinName.trim()
+                      : account.name
+                    : settings?.mojangSkinName
                 }
+                skinUrl={account?.skinUrl}
               />
               <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
                 {isOffline ? "离线档案" : "在线档案"}
@@ -1435,7 +1465,7 @@ export function HomeView({
                 <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
                   选择登录方式
                 </DropdownMenuLabel>
-                <DropdownMenuItem className="gap-2.5" disabled={Boolean(account?.signedIn)}>
+                <DropdownMenuItem className="gap-2.5" onSelect={() => onSelectOffline?.()}>
                   {account?.signedIn ? (
                     <span className="size-3.5 rounded-full border border-muted-foreground/40" />
                   ) : (
@@ -1443,12 +1473,16 @@ export function HomeView({
                   )}
                   离线账户
                   <span className="ml-auto text-[9px] text-muted-foreground/70">
-                    {account?.signedIn ? "退出登录后生效" : "当前"}
+                    {account?.signedIn ? "切换" : "当前"}
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   className="gap-2.5"
-                  onSelect={() => onOpenAccount?.()}
+                  onSelect={() =>
+                    storedAccount?.signedIn && !account?.signedIn
+                      ? onSelectMicrosoft?.()
+                      : onOpenAccount?.()
+                  }
                 >
                   {account?.signedIn ? (
                     <Check className="size-3.5 text-primary" />
@@ -1456,15 +1490,15 @@ export function HomeView({
                     <span className="size-3.5 rounded-full border border-muted-foreground/40" />
                   )}
                   <span className="min-w-0 flex-1 truncate">
-                    {account?.signedIn ? account.name : "微软账户"}
+                    {storedAccount?.signedIn ? storedAccount.name : "微软账户"}
                   </span>
-                  {account?.signedIn ? (
+                  {storedAccount?.signedIn ? (
                     <span className="ml-auto flex shrink-0 items-center gap-1">
                       <Badge
                         variant="outline"
                         className={cn(
                           "h-4 px-1.5 text-[9px] font-normal",
-                          account.entitlements.java
+                          storedAccount.entitlements.java
                             ? "border-primary/40 text-primary"
                             : "border-border/80 text-muted-foreground/70",
                         )}
@@ -1475,7 +1509,7 @@ export function HomeView({
                         variant="outline"
                         className={cn(
                           "h-4 px-1.5 text-[9px] font-normal",
-                          account.entitlements.bedrock
+                          storedAccount.entitlements.bedrock
                             ? "border-primary/40 text-primary"
                             : "border-border/80 text-muted-foreground/70",
                         )}

@@ -39,6 +39,7 @@ pub struct InstallState {
 pub struct GameState {
     child: Arc<Mutex<Option<Child>>>,
     stopping: Arc<AtomicBool>,
+    bedrock_running: Arc<AtomicBool>,
 }
 
 impl Default for GameState {
@@ -46,6 +47,7 @@ impl Default for GameState {
         Self {
             child: Arc::new(Mutex::new(None)),
             stopping: Arc::new(AtomicBool::new(false)),
+            bedrock_running: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -511,7 +513,7 @@ async fn launch_game(
     // account store instead of travelling through the web UI. Downloading it
     // from the frontend would put a live credential in JavaScript.
     let mut request = request;
-    if request.auth.is_none() {
+    if request.auth.is_none() && !request.offline {
         if let Ok(dir) = account_dir(&app) {
             if let Some(record) = auth::session_for_launch(&dir).await {
                 let _ = app.emit(
@@ -701,21 +703,109 @@ async fn launch_game(
     Ok(pid)
 }
 
-fn stop_game(state: State<'_, GameState>) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn is_bedrock_process_running() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let check_exe = |name: &str| -> bool {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        if let Ok(out) = out {
+            let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            s.contains(&name.to_lowercase())
+        } else {
+            false
+        }
+    };
+
+    check_exe("Minecraft.Windows.exe")
+        || check_exe("bedrock_server.exe")
+        || check_exe("bedrock_server_mod.exe")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_bedrock_process_running() -> bool {
+    for pattern in ["bedrock_server", "mcpelauncher-client", "mcpelauncher-ui", "MCPELauncher"] {
+        if let Ok(output) = std::process::Command::new("pgrep").args(["-f", pattern]).output() {
+            if output.status.success() && !output.stdout.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stop_game(app: AppHandle, state: State<'_, GameState>) -> Result<(), String> {
+    state.stopping.store(true, Ordering::Relaxed);
+    state.bedrock_running.store(false, Ordering::Relaxed);
+
     let mut slot = state
         .child
         .lock()
         .map_err(|_| "游戏进程状态不可用".to_string())?;
     if let Some(child) = slot.as_mut() {
         if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            state.stopping.store(true, Ordering::Relaxed);
-            if let Err(error) = child.kill() {
-                state.stopping.store(false, Ordering::Relaxed);
-                return Err(format!("无法结束游戏进程: {error}"));
-            }
+            let _ = child.kill();
         }
     }
-    // The monitor thread reaps the process and emits the exit event.
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "Minecraft.Windows.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "bedrock_server.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "bedrock_server_mod.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        for pattern in ["bedrock_server", "mcpelauncher-client", "mcpelauncher-ui", "MCPELauncher"] {
+            let _ = std::process::Command::new("pkill")
+                .args(["-9", "-f", pattern])
+                .output();
+        }
+    }
+
+    let _ = app.emit(
+        "game:status",
+        GameStatus {
+            state: "idle".to_string(),
+            detail: None,
+            pid: None,
+            version_id: None,
+        },
+    );
+    let _ = app.emit(
+        "game:exit",
+        GameExitPayload {
+            code: Some(0),
+            version_id: None,
+        },
+    );
+    let _ = app.emit(
+        "game:log",
+        GameLogPayload {
+            stream: "cobble".to_string(),
+            line: "已向游戏进程发送强制终止指令并结束运行".to_string(),
+        },
+    );
+
     Ok(())
 }
 
@@ -856,53 +946,128 @@ async fn install_bedrock_pack(
 
 fn launch_bedrock(
     app: AppHandle,
+    state: State<'_, GameState>,
     version_id: Option<String>,
     root: Option<String>,
     offline_account: Option<bool>,
+    player_name: Option<String>,
 ) -> Result<String, String> {
     let p = match root.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s),
         None => default_root(&app)?,
     };
 
-    // One account, both editions. Java gets its session token handed to the JVM;
-    // Bedrock cannot be handed a token at all (the UWP/GDK client signs itself
-    // in through the Windows/Xbox account, the same way the Store build does), so
-    // the launcher's job here is to boot the correct core and report what the
-    // shared account is entitled to. The stored account is read synchronously —
-    // Bedrock needs no live token, and a network refresh must not delay startup.
     let account = account_dir(&app)
         .ok()
         .and_then(|dir| auth::load_account(&dir));
-    if let Some(record) = account.as_ref() {
-        let _ = app.emit(
-            "game:log",
-            GameLogPayload {
-                stream: "cobble".to_string(),
-                line: format!(
-                    "使用正版账户 {} 启动基岩版（{}）",
-                    record.profile.name,
-                    bedrock_entitlement_note(&record.entitlements)
-                ),
-            },
-        );
+    let is_offline = offline_account.unwrap_or(account.is_none());
+
+    // Synchronize username into Bedrock options.txt (mp_username)
+    let sync_name = if !is_offline {
+        account.as_ref().map(|r| r.profile.name.as_str()).or(player_name.as_deref())
+    } else {
+        player_name.as_deref()
+    };
+    if let Some(name) = sync_name {
+        bedrock::sync_bedrock_username(&p, name);
     }
 
-    // Offline accounts default to the BDS core so a fresh install boots something
-    // playable without a sign-in; a signed-in account boots a real client core.
+    if let Some(record) = account.as_ref() {
+        if !is_offline {
+            let _ = app.emit(
+                "game:log",
+                GameLogPayload {
+                    stream: "cobble".to_string(),
+                    line: format!(
+                        "使用正版账户 {} 启动基岩版（{}）",
+                        record.profile.name,
+                        bedrock_entitlement_note(&record.entitlements)
+                    ),
+                },
+            );
+        }
+    }
+
     let message = bedrock::launch_bedrock_edition(
         &p,
         version_id.as_deref(),
         Some(&app),
-        offline_account.unwrap_or(account.is_none()),
+        is_offline,
     )?;
-    Ok(match account.as_ref() {
-        Some(record) => format!(
-            "{message} · 账户 {}：{}",
-            record.profile.name,
-            bedrock_entitlement_note(&record.entitlements)
-        ),
-        None => message,
+
+    // Mark bedrock as running
+    state.stopping.store(false, Ordering::Relaxed);
+    state.bedrock_running.store(true, Ordering::Relaxed);
+
+    let vid = version_id.clone().unwrap_or_else(|| "bedrock-uwp".to_string());
+
+    let _ = app.emit(
+        "game:status",
+        GameStatus {
+            state: "running".to_string(),
+            detail: Some("Minecraft 基岩版正在运行".to_string()),
+            pid: None,
+            version_id: Some(vid.clone()),
+        },
+    );
+
+    let app_handle = app.clone();
+    let bedrock_running_flag = state.bedrock_running.clone();
+    let stopping_flag = state.stopping.clone();
+    let target_vid = vid.clone();
+
+    std::thread::spawn(move || {
+        // Wait 3.5s for process to initialize before polling
+        std::thread::sleep(Duration::from_millis(3500));
+        while bedrock_running_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1000));
+            if !bedrock_running_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            if !is_bedrock_process_running() {
+                bedrock_running_flag.store(false, Ordering::Relaxed);
+                let requested_stop = stopping_flag.swap(false, Ordering::Relaxed);
+                let code = if requested_stop { Some(0) } else { None };
+
+                let _ = app_handle.emit(
+                    "game:exit",
+                    GameExitPayload {
+                        code,
+                        version_id: Some(target_vid.clone()),
+                    },
+                );
+                let _ = app_handle.emit(
+                    "game:log",
+                    GameLogPayload {
+                        stream: "cobble".to_string(),
+                        line: "Minecraft 基岩版游戏进程已结束".to_string(),
+                    },
+                );
+                let _ = app_handle.emit(
+                    "game:status",
+                    GameStatus {
+                        state: "idle".to_string(),
+                        detail: None,
+                        pid: None,
+                        version_id: Some(target_vid.clone()),
+                    },
+                );
+                break;
+            }
+        }
+    });
+
+    Ok(if !is_offline {
+        match account.as_ref() {
+            Some(record) => format!(
+                "{message} · 账户 {}：{}",
+                record.profile.name,
+                bedrock_entitlement_note(&record.entitlements)
+            ),
+            None => message,
+        }
+    } else {
+        message
     })
 }
 
