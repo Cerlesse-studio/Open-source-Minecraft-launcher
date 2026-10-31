@@ -31,3 +31,20 @@ dist-ssr
 
 # Electron build artifacts
 release/
+
+# Rust build output (any crate)
+**/target/
+
+# Stray/duplicate copies (the real ones live under src-tauri/)
+/src-core/
+/resources/
+/build/
+
+# Local runtime leftovers
+*.pid
+/module-info.class
+/forge_version.json
+/jarjar_options.json
+/log4j2.xml
+/data/
+/.freebuff/
