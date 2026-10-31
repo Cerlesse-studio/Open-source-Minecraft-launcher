@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@/lib/desktop";
 import { cn } from "cn";
 import {
   deleteBedrockWorld,

@@ -1,0 +1,12 @@
+C:\Users\aaajn\Documents\GitHub\Open-source-Minecraft-launcher\src-core\target\debug\deps\tar-4b0e777be9b4eb49.d: C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\lib.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\archive.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\builder.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry_type.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\error.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\header.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\pax.rs
+
+C:\Users\aaajn\Documents\GitHub\Open-source-Minecraft-launcher\src-core\target\debug\deps\libtar-4b0e777be9b4eb49.rmeta: C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\lib.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\archive.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\builder.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry_type.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\error.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\header.rs C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\pax.rs
+
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\lib.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\archive.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\builder.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\entry_type.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\error.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\header.rs:
+C:\Users\aaajn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tar-0.4.46\src\pax.rs:

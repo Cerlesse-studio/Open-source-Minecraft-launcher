@@ -83,7 +83,7 @@
         <p class="page-lede">从环境准备、源码结构到下载引擎、账户体系、EasyTier 联机与基岩版核心。这里记录启动器实际如何工作，而不只是功能清单。</p>
         <div class="page-meta">
           <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
-          <span class="badge">Tauri 2</span>
+          <span class="badge">Electron</span>
           <span class="badge">Rust 2024</span>
           <span class="badge">React 19</span>
           <span class="badge">Windows 10 / 11</span>
@@ -127,7 +127,7 @@
 
         <section class="doc-section" id="overview">
           <h2><span class="h2-index">01</span>概览</h2>
-          <p>Open-source-Minecraft-launcher 是一个基于 <strong>Tauri 2</strong> 的桌面 Minecraft 启动器：前端使用 React 19 + TypeScript，后端使用 Rust 2024。界面通过 Tauri Command 调用后端能力，下载、解包、校验、启动与 EasyTier 进程都由 Rust 持有。</p>
+          <p>Open-source-Minecraft-launcher 是一个基于 <strong>Electron</strong> 的桌面 Minecraft 启动器：前端使用 React 19 + TypeScript，后端使用 Rust 2024。界面通过 Electron IPC 调用后端能力，下载、解包、校验、启动与 EasyTier 进程都由 Rust 持有。</p>
           <p>项目主要面向 Windows 10 / 11 做完整适配；Java 版核心保持跨平台，可在 macOS / Linux 尝试构建运行，基岩版与 Xbox 运行时相关能力目前仅限 Windows。</p>
 
           <div class="doc-grid">
@@ -142,7 +142,7 @@
             <table>
               <thead><tr><th>层级</th><th>技术</th><th>职责</th></tr></thead>
               <tbody>
-                <tr><td>桌面容器</td><td>Tauri 2</td><td>原生窗口、进程管理、IPC、打包</td></tr>
+                <tr><td>桌面容器</td><td>Electron</td><td>原生窗口、进程管理、IPC、打包</td></tr>
                 <tr><td>前端</td><td>React 19 · TypeScript · Vite</td><td>页面、状态与交互</td></tr>
                 <tr><td>UI</td><td>Tailwind CSS 4 · Radix UI · Lucide · Sonner</td><td>样式、组件原语、图标、通知</td></tr>
                 <tr><td>后端</td><td>Rust 2024 · tokio · reqwest · serde</td><td>下载、安装、启动、账户、联机</td></tr>
@@ -154,7 +154,7 @@
 
         <section class="doc-section" id="requirements">
           <h2><span class="h2-index">02</span>环境要求</h2>
-          <p>运行预编译版本与从源码构建的要求不同。预编译版本主要需要系统 WebView 与网络；源码构建还需要 Node.js、Rust 与 Tauri 的系统依赖。</p>
+          <p>运行预编译版本与从源码构建的要求不同。预编译版本需要 Electron 支持的系统环境和网络；源码构建还需要 Node.js 与 Rust 工具链。</p>
 
           <div class="table-wrap">
             <table>
@@ -163,7 +163,7 @@
                 <tr><td>操作系统</td><td><strong>Windows 10 / 11 x64</strong>（推荐，功能完整）；macOS / Linux 可尝试构建运行 Java 版</td></tr>
                 <tr><td>Node.js</td><td>20.19+ 或 22.12+</td></tr>
                 <tr><td>Rust</td><td>stable，1.85+（项目使用 edition 2024）</td></tr>
-                <tr><td>Tauri 2 系统依赖</td><td>Windows WebView2；macOS Xcode Command Line Tools；Linux 的 WebKitGTK 等依赖，见 <a href="https://v2.tauri.app/start/prerequisites/" target="_blank" rel="noopener">Tauri 前置条件</a></td></tr>
+                <tr><td>桌面运行时</td><td>Electron 内置 Chromium，不依赖 WebView2 或 WebKitGTK。</td></tr>
                 <tr><td>网络</td><td>首次安装版本、依赖和 Java 需要联网</td></tr>
                 <tr><td>其他</td><td>基岩版需要 Windows 10 / 11；联机需要公网 IPv6</td></tr>
               </tbody>
@@ -185,20 +185,20 @@
             <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
 npm install
-npm run tauri dev</code></pre>
+npm run start</code></pre>
           </div>
 
           <div class="callout callout-warn">
             <svg class="icon" aria-hidden="true"><use href="#icon-warning"></use></svg>
-            <p><span class="callout-title">Windows PowerShell</span>如果提示「无法加载 npm.ps1，因为在此系统上禁止运行脚本」，改用 <code>npm.cmd run tauri dev</code>，或在 <code>cmd</code> 中执行 <code>npm run tauri dev</code>。</p>
+            <p><span class="callout-title">Windows PowerShell</span>如果提示「无法加载 npm.ps1，因为在此系统上禁止运行脚本」，改用 <code>npm.cmd run start</code>，或在 <code>cmd</code> 中执行 <code>npm run start</code>。</p>
           </div>
 
           <h3>构建安装包</h3>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
-            <pre><code>npm run tauri build</code></pre>
+            <pre><code>npm run electron:build</code></pre>
           </div>
-          <p>构建产物输出在 <code>src-tauri/target/release/bundle/</code>。首次构建需要编译全部 Rust 依赖，会比日常开发慢很多。</p>
+          <p>构建产物输出在 <code>release/</code>。首次构建需要编译全部 Rust 依赖，会比日常开发慢很多。</p>
 
           <h3>测试</h3>
           <div class="code-block">
@@ -213,7 +213,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 
         <section class="doc-section" id="architecture">
           <h2><span class="h2-index">04</span>架构设计</h2>
-          <p>整体分为四层：React 前端负责呈现，Tauri IPC 负责通信，Rust 后端负责所有耗时与关键状态，外部服务提供版本、内容、账户与联机能力。</p>
+          <p>整体分为四层：React 前端负责呈现，Electron IPC 负责通信，Rust 后端负责所有耗时与关键状态，外部服务提供版本、内容、账户与联机能力。</p>
 
           <div class="arch-flow" aria-label="启动器架构图">
             <div class="arch-node">
@@ -224,7 +224,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
             <div class="arch-arrow" aria-hidden="true">→</div>
             <div class="arch-node">
               <span class="arch-node-kicker">BRIDGE</span>
-              <strong>Tauri 2 IPC</strong>
+              <strong>Electron IPC</strong>
               <p>Command 调用 · Event 推送 · 窗口与进程</p>
             </div>
             <div class="arch-arrow" aria-hidden="true">→</div>
@@ -362,7 +362,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 │   └── lib/                      # 类型、IPC、设置、主题、PCL2 主页
 ├── src-tauri/                    # Rust 后端
 │   ├── src/
-│   │   ├── lib.rs                # Tauri 命令注册与共享状态
+│   │   ├── lib.rs                # Rust 命令与共享状态
 │   │   ├── minecraft.rs          # Java 版本、资产、启动
 │   │   ├── loaders.rs            # Forge / NeoForge / Fabric / Quilt
 │   │   ├── net.rs                # 分片下载、镜像容灾与续传
@@ -375,8 +375,8 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 │   │   ├── multiplayer.rs        # EasyTier、虚拟网络与局域网广播
 │   │   └── search_i18n.rs        # 多语言搜索词表
 │   ├── examples/smoke.rs         # 无头下载 / 启动冒烟测试
-│   ├── capabilities/             # Tauri 权限配置
-│   └── tauri.conf.json
+│   └── resources/                # EasyTier 资源
+├── electron/                     # Electron 主进程与预加载桥接
 ├── docs/                         # 官网与截图资源
 ├── public/                       # 图标、字体与静态资源
 ├── package.json
@@ -435,7 +435,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 # 可选的下载 / 启动冒烟测试（会真实下载并尝试启动游戏）
 cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></pre>
           </div>
-          <p>安装包由 <code>npm run tauri build</code> 生成，产物位于 <code>src-tauri/target/release/bundle/</code>。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
+          <p>安装包由 <code>npm run electron:build</code> 生成，产物位于 <code>release/</code>。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
 
           <div class="doc-grid">
             <div class="doc-mini-card"><strong>格式化</strong><span><code>cargo fmt --manifest-path src-tauri/Cargo.toml -- --check</code></span></div>
@@ -498,7 +498,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
               <span class="brand-sub">MINECRAFT LAUNCHER</span>
             </span>
           </a>
-          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Electron / Rust / React 19。</p>
         </div>
         <div class="footer-col">
           <h3>产品</h3>

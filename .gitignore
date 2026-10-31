@@ -28,3 +28,6 @@ dist-ssr
 
 # 本机 cargo 配置（把构建输出放到项目外，见 README「从源码构建」）
 .cargo/config.toml
+
+# Electron build artifacts
+release/

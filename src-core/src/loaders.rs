@@ -1,0 +1,1308 @@
+use crate::minecraft::{Arguments, Artifact, Library, LibraryDownloads, VersionDetail};
+use crate::net;
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderVersionItem {
+    pub version: String,
+    pub stable: bool,
+    pub release_time: Option<String>,
+    pub subtitle: Option<String>,
+    pub download_url: Option<String>,
+    pub file_name: Option<String>,
+    pub sha1: Option<String>,
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionLoadersCatalog {
+    pub mc_version: String,
+    pub forge: Vec<LoaderVersionItem>,
+    pub neoforge: Vec<LoaderVersionItem>,
+    pub fabric: Vec<LoaderVersionItem>,
+    pub quilt: Vec<LoaderVersionItem>,
+    pub optifine: Vec<LoaderVersionItem>,
+    pub fabric_api: Vec<LoaderVersionItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderSelection {
+    pub instance_name: Option<String>,
+    pub loader_type: Option<String>,
+    pub loader_version: Option<String>,
+    pub optifine_version: Option<String>,
+    pub optifine_url: Option<String>,
+    pub optifine_filename: Option<String>,
+    pub fabric_api_version: Option<String>,
+    pub fabric_api_url: Option<String>,
+    pub fabric_api_filename: Option<String>,
+}
+
+impl LoaderSelection {
+    pub fn has_any_addon(&self) -> bool {
+        self.loader_type
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+            || self
+                .optifine_version
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+            || self
+                .fabric_api_version
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+    }
+}
+
+pub struct ExtraModFile {
+    pub label: String,
+    pub url: String,
+    pub dest: PathBuf,
+    pub sha1: Option<String>,
+    pub size: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Catalog Queries
+// ---------------------------------------------------------------------------
+
+async fn get_json_with_timeout_duration<T: for<'de> Deserialize<'de>>(
+    url: &str,
+    timeout: Duration,
+) -> Result<T, String> {
+    let response = net::client()
+        .get(url)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败 ({url}): {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {} ({url})", response.status()));
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+    serde_json::from_str::<T>(&text).map_err(|e| format!("解析响应失败: {e}"))
+}
+
+async fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> {
+    get_json_with_timeout_duration(url, Duration::from_secs(12)).await
+}
+
+#[derive(Deserialize)]
+struct FabricLoaderEntry {
+    loader: FabricLoaderMeta,
+}
+
+#[derive(Deserialize)]
+struct FabricLoaderMeta {
+    version: String,
+    #[serde(default)]
+    stable: bool,
+}
+
+#[derive(Deserialize)]
+struct FabricGlobalLoaderEntry {
+    version: String,
+    #[serde(default)]
+    stable: bool,
+}
+
+async fn fetch_fabric(mc_version: &str) -> Vec<LoaderVersionItem> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut version_candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        version_candidates.push(clean_mc);
+    }
+
+    // 1. Try version-specific endpoints (BMCLAPI mirror first for high speed, then official)
+    for ver in version_candidates {
+        let specific_urls = [
+            format!("https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{ver}"),
+            format!("https://meta.fabricmc.net/v2/versions/loader/{ver}"),
+        ];
+
+        for url in specific_urls {
+            if let Ok(entries) = get_json_with_timeout_duration::<Vec<FabricLoaderEntry>>(
+                &url,
+                Duration::from_secs(6),
+            )
+            .await
+            {
+                if !entries.is_empty() {
+                    return entries
+                        .into_iter()
+                        .take(40)
+                        .enumerate()
+                        .map(|(idx, entry)| LoaderVersionItem {
+                            subtitle: Some(if entry.loader.stable {
+                                if idx == 0 {
+                                    "推荐稳定版".to_string()
+                                } else {
+                                    "稳定版".to_string()
+                                }
+                            } else {
+                                "测试版".to_string()
+                            }),
+                            version: entry.loader.version,
+                            stable: entry.loader.stable,
+                            release_time: None,
+                            download_url: None,
+                            file_name: None,
+                            sha1: None,
+                            size: None,
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to global loader versions list if specific version returned empty or unsupported
+    let global_urls = [
+        "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader",
+        "https://meta.fabricmc.net/v2/versions/loader",
+    ];
+
+    for url in global_urls {
+        if let Ok(entries) = get_json_with_timeout_duration::<Vec<FabricGlobalLoaderEntry>>(
+            url,
+            Duration::from_secs(6),
+        )
+        .await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(40)
+                    .enumerate()
+                    .map(|(idx, entry)| LoaderVersionItem {
+                        subtitle: Some(if entry.stable {
+                            if idx == 0 {
+                                "推荐稳定版 (通用构建)".to_string()
+                            } else {
+                                "稳定版".to_string()
+                            }
+                        } else {
+                            "测试版".to_string()
+                        }),
+                        version: entry.version,
+                        stable: entry.stable,
+                        release_time: None,
+                        download_url: None,
+                        file_name: None,
+                        sha1: None,
+                        size: None,
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+#[derive(Deserialize)]
+struct QuiltLoaderEntry {
+    loader: QuiltLoaderMeta,
+}
+
+#[derive(Deserialize)]
+struct QuiltLoaderMeta {
+    version: String,
+}
+
+async fn fetch_quilt(mc_version: &str) -> Vec<LoaderVersionItem> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        candidates.push(clean_mc);
+    }
+
+    for ver in candidates {
+        let url = format!("https://meta.quiltmc.org/v3/versions/loader/{ver}");
+        if let Ok(entries) =
+            get_json_with_timeout_duration::<Vec<QuiltLoaderEntry>>(&url, Duration::from_secs(6))
+                .await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(35)
+                    .map(|entry| {
+                        let v = entry.loader.version;
+                        let stable =
+                            !v.contains("beta") && !v.contains("alpha") && !v.contains("-rc");
+                        LoaderVersionItem {
+                            version: v,
+                            stable,
+                            release_time: None,
+                            subtitle: Some(if stable {
+                                "稳定版".to_string()
+                            } else {
+                                "测试版".to_string()
+                            }),
+                            download_url: None,
+                            file_name: None,
+                            sha1: None,
+                            size: None,
+                        }
+                    })
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[derive(Deserialize)]
+struct BmclForgeEntry {
+    version: String,
+    modified: Option<String>,
+    branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ForgePromotions {
+    #[serde(default)]
+    promos: std::collections::HashMap<String, String>,
+}
+
+async fn fetch_forge_official(mc_version: &str) -> Option<Vec<LoaderVersionItem>> {
+    let promo_url =
+        "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+    let promos_res = get_json_with_timeout::<ForgePromotions>(promo_url)
+        .await
+        .ok();
+    let promos = promos_res.map(|p| p.promos).unwrap_or_default();
+
+    let rec_key = format!("{mc_version}-recommended");
+    let latest_key = format!("{mc_version}-latest");
+    let rec_ver = promos.get(&rec_key).cloned();
+    let latest_ver = promos.get(&latest_key).cloned();
+
+    let maven_meta_url =
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
+    let mut versions = Vec::new();
+    if let Ok(client_resp) = net::client().get(maven_meta_url).send().await {
+        if client_resp.status().is_success() {
+            if let Ok(xml) = client_resp.text().await {
+                let prefix = format!("<version>{mc_version}-");
+                let mut remaining = &xml[..];
+                while let Some(pos) = remaining.find(&prefix) {
+                    let after = &remaining[pos + prefix.len()..];
+                    if let Some(end) = after.find("</version>") {
+                        let ver = &after[..end];
+                        if !ver.is_empty() {
+                            versions.push(ver.to_string());
+                        }
+                        remaining = &after[end + "</version>".len()..];
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if versions.is_empty() {
+        if let Some(l) = latest_ver.clone() {
+            versions.push(l);
+        }
+        if let Some(r) = rec_ver.clone() {
+            if !versions.contains(&r) {
+                versions.push(r);
+            }
+        }
+    }
+
+    if versions.is_empty() {
+        return None;
+    }
+
+    versions.reverse();
+    let items = versions
+        .into_iter()
+        .take(40)
+        .map(|v| {
+            let is_rec = rec_ver.as_deref() == Some(&v);
+            let is_latest = latest_ver.as_deref() == Some(&v);
+            let subtitle = if is_rec {
+                "推荐稳定版 (官方CDN)".to_string()
+            } else if is_latest {
+                "最新版本 (官方CDN)".to_string()
+            } else {
+                "正式构建 (官方CDN)".to_string()
+            };
+            LoaderVersionItem {
+                version: v,
+                stable: is_rec || !subtitle.contains("Beta"),
+                release_time: None,
+                subtitle: Some(subtitle),
+                download_url: None,
+                file_name: None,
+                sha1: None,
+                size: None,
+            }
+        })
+        .collect();
+
+    Some(items)
+}
+
+async fn fetch_forge(mc_version: &str) -> Vec<LoaderVersionItem> {
+    // 1. Try official Cloudflare Anycast CDN (Asia-Pacific POPs / non-mainland China)
+    if let Some(official) = fetch_forge_official(mc_version).await {
+        if !official.is_empty() {
+            return official;
+        }
+    }
+
+    // 2. Fallback to BMCLAPI
+    let url = format!("https://bmclapi2.bangbang93.com/forge/minecraft/{mc_version}");
+    let Ok(mut entries) = get_json_with_timeout::<Vec<BmclForgeEntry>>(&url).await else {
+        return Vec::new();
+    };
+    // Sort newest first by modified timestamp or version string
+    entries.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| b.version.cmp(&a.version))
+    });
+    entries
+        .into_iter()
+        .take(40)
+        .enumerate()
+        .map(|(idx, item)| {
+            let subtitle = match item.branch.as_deref() {
+                Some(b) if !b.is_empty() => format!("分支 {b}"),
+                _ if idx == 0 => "最新版本".to_string(),
+                _ => "正式构建".to_string(),
+            };
+            LoaderVersionItem {
+                version: item.version,
+                stable: idx == 0,
+                release_time: item.modified,
+                subtitle: Some(subtitle),
+                download_url: None,
+                file_name: None,
+                sha1: None,
+                size: None,
+            }
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BmclNeoForgeEntry {
+    version: String,
+    raw_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NeoForgeMavenVersions {
+    versions: Vec<String>,
+}
+
+fn neoforge_prefix_for_mc(mc_version: &str) -> Option<String> {
+    // Minecraft 1.20.2+ uses NeoForge versioning <minor>.<patch>.<build>
+    // e.g. 1.21.4 -> "21.4.", 1.21 -> "21.0.", 1.20.4 -> "20.4."
+    let rest = mc_version.strip_prefix("1.")?;
+    if rest.contains('-') || rest.contains('w') {
+        return None;
+    }
+    let parts: Vec<&str> = rest.split('.').collect();
+    match parts.as_slice() {
+        [minor] => Some(format!("{minor}.0.")),
+        [minor, patch] => Some(format!("{minor}.{patch}.")),
+        _ => None,
+    }
+}
+
+async fn fetch_neoforge(mc_version: &str) -> Vec<LoaderVersionItem> {
+    // 1. Try official Cloudflare Anycast Maven API first (Asia-Pacific edge POPs, non-mainland China)
+    if let Some(prefix) = neoforge_prefix_for_mc(mc_version) {
+        let maven_url =
+            "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge";
+        if let Ok(meta) = get_json_with_timeout::<NeoForgeMavenVersions>(maven_url).await {
+            let mut matched: Vec<String> = meta
+                .versions
+                .into_iter()
+                .filter(|v| v.starts_with(&prefix))
+                .collect();
+            if !matched.is_empty() {
+                matched.reverse();
+                return matched
+                    .into_iter()
+                    .take(40)
+                    .map(|v| {
+                        let stable = !v.contains("beta") && !v.contains("alpha");
+                        LoaderVersionItem {
+                            version: v,
+                            stable,
+                            release_time: None,
+                            subtitle: Some(if stable {
+                                "稳定版 (官方CDN)".to_string()
+                            } else {
+                                "Beta 构建".to_string()
+                            }),
+                            download_url: None,
+                            file_name: None,
+                            sha1: None,
+                            size: None,
+                        }
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    // 2. Fallback to BMCLAPI
+    let bmcl_url = format!("https://bmclapi2.bangbang93.com/neoforge/list/{mc_version}");
+    if let Ok(mut list) = get_json_with_timeout::<Vec<BmclNeoForgeEntry>>(&bmcl_url).await {
+        if !list.is_empty() {
+            list.reverse();
+            return list
+                .into_iter()
+                .take(40)
+                .map(|entry| {
+                    let v = entry.version;
+                    let stable = !v.contains("beta") && !v.contains("alpha");
+                    LoaderVersionItem {
+                        version: v,
+                        stable,
+                        release_time: None,
+                        subtitle: Some(if stable {
+                            "稳定版".to_string()
+                        } else {
+                            "Beta 构建".to_string()
+                        }),
+                        download_url: entry.raw_version,
+                        file_name: None,
+                        sha1: None,
+                        size: None,
+                    }
+                })
+                .collect();
+        }
+    }
+
+    Vec::new()
+}
+
+#[derive(Deserialize)]
+struct BmclOptiFineEntry {
+    #[serde(rename = "type")]
+    of_type: String,
+    patch: String,
+    filename: Option<String>,
+}
+
+async fn fetch_optifine(mc_version: &str) -> Vec<LoaderVersionItem> {
+    let url = format!("https://bmclapi2.bangbang93.com/optifine/{mc_version}");
+    let Ok(mut entries) = get_json_with_timeout::<Vec<BmclOptiFineEntry>>(&url).await else {
+        return Vec::new();
+    };
+    entries.reverse();
+    entries
+        .into_iter()
+        .take(30)
+        .map(|entry| {
+            let ver = format!("{}_{}", entry.of_type, entry.patch);
+            let stable = !entry.patch.starts_with("pre") && !entry.patch.contains("alpha");
+            let dl_url = format!(
+                "https://bmclapi2.bangbang93.com/optifine/{}/{}/{}",
+                mc_version, entry.of_type, entry.patch
+            );
+            let filename = entry
+                .filename
+                .unwrap_or_else(|| format!("OptiFine_{mc_version}_{ver}.jar"));
+            LoaderVersionItem {
+                version: ver,
+                stable,
+                release_time: None,
+                subtitle: Some(if stable {
+                    "高清修复正式版".to_string()
+                } else {
+                    "预览版 (Preview)".to_string()
+                }),
+                download_url: Some(dl_url),
+                file_name: Some(filename),
+                sha1: None,
+                size: None,
+            }
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct ModrinthVersion {
+    version_number: String,
+    name: String,
+    date_published: Option<String>,
+    version_type: Option<String>,
+    files: Vec<ModrinthFile>,
+}
+
+#[derive(Deserialize)]
+struct ModrinthFile {
+    url: String,
+    filename: String,
+    #[serde(default)]
+    primary: bool,
+    size: Option<u64>,
+    hashes: Option<ModrinthHashes>,
+}
+
+#[derive(Deserialize)]
+struct ModrinthHashes {
+    sha1: Option<String>,
+}
+
+async fn fetch_fabric_api(mc_version: &str) -> Vec<LoaderVersionItem> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        candidates.push(clean_mc);
+    }
+
+    for ver in candidates {
+        let url = format!(
+            "https://api.modrinth.com/v2/project/P7dR8mSH/version?game_versions=%5B%22{ver}%22%5D&loaders=%5B%22fabric%22%5D"
+        );
+        if let Ok(entries) =
+            get_json_with_timeout_duration::<Vec<ModrinthVersion>>(&url, Duration::from_secs(7))
+                .await
+        {
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .take(25)
+                    .filter_map(|entry| {
+                        let file = entry
+                            .files
+                            .iter()
+                            .find(|f| f.primary)
+                            .or_else(|| entry.files.first())?;
+                        let stable = entry.version_type.as_deref() == Some("release");
+                        Some(LoaderVersionItem {
+                            version: entry.version_number,
+                            stable,
+                            release_time: entry.date_published,
+                            subtitle: Some(entry.name),
+                            download_url: Some(file.url.clone()),
+                            file_name: Some(file.filename.clone()),
+                            sha1: file.hashes.as_ref().and_then(|h| h.sha1.clone()),
+                            size: file.size,
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+pub async fn fetch_version_loaders(mc_version: &str) -> Result<VersionLoadersCatalog, String> {
+    let mc = mc_version.trim();
+    if mc.is_empty() {
+        return Err("版本号不能为空".to_string());
+    }
+    let (forge, neoforge, fabric, quilt, optifine, fabric_api) = tokio::join!(
+        fetch_forge(mc),
+        fetch_neoforge(mc),
+        fetch_fabric(mc),
+        fetch_quilt(mc),
+        fetch_optifine(mc),
+        fetch_fabric_api(mc),
+    );
+    Ok(VersionLoadersCatalog {
+        mc_version: mc.to_string(),
+        forge,
+        neoforge,
+        fabric,
+        quilt,
+        optifine,
+        fabric_api,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Profile Merging & Installation
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct LoaderProfileJson {
+    #[serde(rename = "mainClass")]
+    main_class: Option<String>,
+    #[serde(default)]
+    libraries: Vec<Library>,
+    arguments: Option<Arguments>,
+    #[serde(rename = "minecraftArguments")]
+    minecraft_arguments: Option<String>,
+}
+
+fn merge_profile_into_version(base: &mut VersionDetail, profile: LoaderProfileJson) {
+    if let Some(main_class) = profile.main_class {
+        if !main_class.trim().is_empty() {
+            base.main_class = main_class;
+        }
+    }
+    if let Some(mc_args) = profile.minecraft_arguments {
+        base.minecraft_arguments = Some(mc_args);
+    }
+    if let Some(loader_args) = profile.arguments {
+        let target = base.arguments.get_or_insert_with(|| Arguments {
+            game: Vec::new(),
+            jvm: Vec::new(),
+        });
+        target.jvm.extend(loader_args.jvm);
+        target.game.extend(loader_args.game);
+    }
+    // Prepend loader libraries so loader's patched ASM/LaunchWrapper/Mixin takes priority,
+    // while removing conflicting versions of the same (group, artifact, classifier) from base.
+    let mut loader_keys = std::collections::HashSet::new();
+    let mut combined = Vec::with_capacity(profile.libraries.len() + base.libraries.len());
+    for lib in profile.libraries {
+        let key = crate::minecraft::library_conflict_key(&lib);
+        if loader_keys.insert(key) {
+            combined.push(lib);
+        }
+    }
+    for lib in base.libraries.drain(..) {
+        let key = crate::minecraft::library_conflict_key(&lib);
+        if !loader_keys.contains(&key) {
+            combined.push(lib);
+        }
+    }
+    base.libraries = combined;
+}
+
+async fn apply_fabric_or_quilt(
+    base: &mut VersionDetail,
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+) -> Result<(), String> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let mut mc_candidates = vec![mc_version.trim()];
+    if !clean_mc.is_empty() && clean_mc != mc_version.trim() {
+        mc_candidates.push(clean_mc);
+    }
+
+    let mut urls = Vec::new();
+    for ver in mc_candidates {
+        if loader_type == "quilt" {
+            urls.push(format!(
+                "https://meta.quiltmc.org/v3/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+        } else {
+            // Try BMCLAPI mirror first, then official meta
+            urls.push(format!(
+                "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+            urls.push(format!(
+                "https://meta.fabricmc.net/v2/versions/loader/{ver}/{loader_version}/profile/json"
+            ));
+        }
+    }
+
+    let mut last_err = String::new();
+    for url in urls {
+        match get_json_with_timeout_duration::<LoaderProfileJson>(&url, Duration::from_secs(8))
+            .await
+        {
+            Ok(profile) => {
+                merge_profile_into_version(base, profile);
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+    Err(format!("获取 {loader_type} 安装配置失败: {last_err}"))
+}
+
+#[derive(Deserialize)]
+struct InstallerInstallProfile {
+    #[serde(default)]
+    libraries: Vec<Library>,
+    #[serde(rename = "versionInfo")]
+    version_info: Option<LoaderProfileJson>,
+}
+
+fn normalize_forge_library(mut lib: Library, default_maven_base: &str) -> Library {
+    // Ensure libraries that only provide `name` or empty `artifact.url` have a valid URL
+    // BUT do NOT fabricate remote URLs for local processor outputs (such as :client or :server jars)
+    let is_local_target = lib.name.contains(":client") || lib.name.contains(":server");
+    if let Some(ref mut downloads) = lib.downloads {
+        if let Some(ref mut artifact) = downloads.artifact {
+            if artifact
+                .url
+                .as_deref()
+                .map(|u| u.trim().is_empty())
+                .unwrap_or(true)
+            {
+                if !is_local_target {
+                    if let Some(ref path) = artifact.path {
+                        let base = default_maven_base.trim_end_matches('/');
+                        artifact.url = Some(format!("{base}/{path}"));
+                    }
+                }
+            }
+        }
+    } else if lib.url.is_none() && !is_local_target {
+        lib.url = Some(default_maven_base.to_string());
+    }
+    lib
+}
+
+fn extract_installer_archive(
+    installer_path: &Path,
+    libraries_dir: &Path,
+    default_maven_base: &str,
+) -> Result<(LoaderProfileJson, Vec<Library>), String> {
+    let file =
+        std::fs::File::open(installer_path).map_err(|e| format!("无法打开加载器安装包: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("安装包格式无效 (非 ZIP/JAR): {e}"))?;
+
+    // Extract any bundled `maven/` jars inside the installer directly into `libraries/`
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(i) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        if let Some(rel) = name.strip_prefix("maven/") {
+            if rel.is_empty() || rel.contains("..") {
+                continue;
+            }
+            let dest = libraries_dir.join(rel);
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut out) = std::fs::File::create(&dest) {
+                let _ = std::io::copy(&mut entry, &mut out);
+            }
+        }
+    }
+
+    let mut version_json_text = String::new();
+    if let Ok(mut entry) = archive.by_name("version.json") {
+        let _ = entry.read_to_string(&mut version_json_text);
+    }
+
+    let mut install_profile_text = String::new();
+    if let Ok(mut entry) = archive.by_name("install_profile.json") {
+        let _ = entry.read_to_string(&mut install_profile_text);
+    }
+
+    let mut extra_libs = Vec::new();
+    let mut profile_opt: Option<LoaderProfileJson> = None;
+
+    if !version_json_text.is_empty() {
+        let parsed: LoaderProfileJson = serde_json::from_str(&version_json_text)
+            .map_err(|e| format!("解析安装包内 version.json 失败: {e}"))?;
+        profile_opt = Some(parsed);
+    }
+
+    if !install_profile_text.is_empty() {
+        if let Ok(install_prof) =
+            serde_json::from_str::<InstallerInstallProfile>(&install_profile_text)
+        {
+            extra_libs.extend(install_prof.libraries);
+            if profile_opt.is_none() {
+                profile_opt = install_prof.version_info;
+            }
+        }
+    }
+
+    let Some(mut profile) = profile_opt else {
+        return Err("安装包内未找到 version.json 或 versionInfo".to_string());
+    };
+
+    profile.libraries = profile
+        .libraries
+        .into_iter()
+        .map(|l| normalize_forge_library(l, default_maven_base))
+        .collect();
+
+    let extra_libs = extra_libs
+        .into_iter()
+        .filter(|l| {
+            // Skip libraries whose URL is empty and are generated locally by processors unless already extracted
+            l.downloads
+                .as_ref()
+                .and_then(|d| d.artifact.as_ref())
+                .and_then(|a| a.url.as_deref())
+                .map(|u| !u.trim().is_empty())
+                .unwrap_or(true)
+        })
+        .map(|l| normalize_forge_library(l, default_maven_base))
+        .collect();
+
+    Ok((profile, extra_libs))
+}
+
+pub fn get_installer_info(
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+) -> (Vec<String>, &'static str, String) {
+    if loader_type == "neoforge" {
+        let fname = format!("neoforge-{loader_version}-installer.jar");
+        let urls = vec![
+            format!(
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/{loader_version}/{fname}"
+            ),
+            format!(
+                "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/{loader_version}/{fname}"
+            ),
+        ];
+        (urls, "https://maven.neoforged.net/releases/", fname)
+    } else {
+        let fname = format!("forge-{mc_version}-{loader_version}-installer.jar");
+        let urls = vec![
+            format!(
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/{mc_version}-{loader_version}/{fname}"
+            ),
+            format!(
+                "https://bmclapi2.bangbang93.com/forge/download?mcversion={mc_version}&version={loader_version}&category=installer&format=jar"
+            ),
+        ];
+        (urls, "https://maven.minecraftforge.net/", fname)
+    }
+}
+
+pub fn is_valid_patched_client_jar(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    if meta.len() < 100 * 1024 {
+        return false;
+    }
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    let has_mc = archive
+        .by_name("net/minecraft/client/Minecraft.class")
+        .is_ok();
+    has_mc
+        || archive
+            .by_name("net/minecraft/client/main/Main.class")
+            .is_ok()
+}
+
+pub async fn ensure_forge_or_neoforge_client_jar(
+    root: &Path,
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+    java_override: Option<&Path>,
+) -> Result<(), String> {
+    let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let parts: Vec<u32> = clean_mc
+        .split('.')
+        .filter_map(|p| p.parse::<u32>().ok())
+        .collect();
+    // Older Forge (<= 1.12.2) doesn't use modern client.jar post-processing
+    if parts.len() >= 2 && (parts[0] < 1 || (parts[0] == 1 && parts[1] < 13)) {
+        return Ok(());
+    }
+
+    let libraries_dir = root.join("libraries");
+    let client_rel_path = if loader_type == "neoforge" {
+        format!("net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-client.jar")
+    } else {
+        format!("net/minecraftforge/forge/{clean_mc}-{loader_version}/forge-{clean_mc}-{loader_version}-client.jar")
+    };
+    let client_jar_path = libraries_dir.join(&client_rel_path);
+
+    // Check if client jar already exists and contains net/minecraft/client/Minecraft.class
+    let check_path = client_jar_path.clone();
+    let already_valid =
+        tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+            .await
+            .unwrap_or(false);
+    if already_valid {
+        return Ok(());
+    }
+    if client_jar_path.exists() {
+        let _ = tokio::fs::remove_file(&client_jar_path).await;
+    }
+
+    // Ensure launcher_profiles.json exists in root
+    let profiles_json = root.join("launcher_profiles.json");
+    if !profiles_json.exists() {
+        let _ = tokio::fs::write(&profiles_json, b"{\"profiles\":{}}").await;
+    }
+
+    // Ensure versions/<clean_mc>/<clean_mc>.jar and .json exist
+    let vanilla_ver_dir = root.join("versions").join(clean_mc);
+    let vanilla_jar = vanilla_ver_dir.join(format!("{clean_mc}.jar"));
+    let vanilla_json = vanilla_ver_dir.join(format!("{clean_mc}.json"));
+    let _ = tokio::fs::create_dir_all(&vanilla_ver_dir).await;
+
+    if !vanilla_jar.is_file() {
+        // Search versions/ for any matching jar
+        let versions_dir = root.join("versions");
+        let mut found_jar = None;
+        if let Ok(mut entries) = tokio::fs::read_dir(&versions_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let p = entry.path();
+                if p.is_dir() {
+                    let candidate = p.join(format!(
+                        "{}.jar",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                    if candidate.is_file() {
+                        if let Ok(m) = candidate.metadata() {
+                            if m.len() > 10 * 1024 * 1024 {
+                                found_jar = Some(candidate);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(src) = found_jar {
+            let _ = tokio::fs::copy(&src, &vanilla_jar).await;
+        }
+    }
+
+    if !vanilla_json.is_file() {
+        let flat_meta_json = root
+            .join("meta")
+            .join("versions")
+            .join(format!("{clean_mc}.json"));
+        let nested_meta_json = root
+            .join("meta")
+            .join("versions")
+            .join(clean_mc)
+            .join(format!("{clean_mc}.json"));
+        if flat_meta_json.is_file() {
+            let _ = tokio::fs::copy(&flat_meta_json, &vanilla_json).await;
+        } else if nested_meta_json.is_file() {
+            let _ = tokio::fs::copy(&nested_meta_json, &vanilla_json).await;
+        }
+    }
+
+    // Ensure installer jar exists
+    let installers_dir = root.join("meta").join("installers");
+    let _ = tokio::fs::create_dir_all(&installers_dir).await;
+    let (installer_urls, _, file_name) = get_installer_info(clean_mc, loader_type, loader_version);
+    let installer_path = installers_dir.join(&file_name);
+
+    if !net::looks_complete(&installer_path, None) {
+        let mut ok = false;
+        let mut last_err = String::new();
+        for url in &installer_urls {
+            match net::download_file_multithreaded(url, &installer_path, None, None, 4, None, None)
+                .await
+            {
+                Ok(_) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        if !ok {
+            return Err(format!("下载 {loader_type} 安装器失败: {last_err}"));
+        }
+    }
+
+    // Backup any existing full version JSON at the Forge/NeoForge default version ID so --installClient doesn't overwrite a merged profile with a thin stub
+    let default_target_id = if loader_type == "neoforge" {
+        format!("neoforge-{loader_version}")
+    } else {
+        format!("{clean_mc}-forge-{loader_version}")
+    };
+    let default_target_json = root
+        .join("versions")
+        .join(&default_target_id)
+        .join(format!("{default_target_id}.json"));
+    let backup_target_json = tokio::fs::read(&default_target_json).await.ok();
+
+    // Java binary
+    let java_bin = if let Some(j) = java_override {
+        j.to_path_buf()
+    } else {
+        let major = if parts.len() >= 2 && parts[1] >= 21 {
+            21
+        } else if parts.len() >= 2 && parts[1] >= 18 {
+            17
+        } else if parts.len() >= 2 && parts[1] >= 17 {
+            16
+        } else {
+            8
+        };
+        crate::java::ensure_java(root, major, None, None).await?
+    };
+
+    // Run java -jar <installer> --installClient <root>
+    let mut cmd = tokio::process::Command::new(&java_bin);
+    cmd.arg("-jar")
+        .arg(&installer_path)
+        .arg("--installClient")
+        .arg(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("启动加载器处理器失败: {e}"))?;
+
+    if let Some(prev_bytes) = backup_target_json {
+        if prev_bytes.len() > 20_000 {
+            let _ = tokio::fs::write(&default_target_json, prev_bytes).await;
+        }
+    }
+
+    let check_path = client_jar_path.clone();
+    let valid_after = tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+        .await
+        .unwrap_or(false);
+    if valid_after {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tail_out = if stdout.len() > 1000 {
+        &stdout[stdout.len() - 1000..]
+    } else {
+        &stdout
+    };
+    Err(format!(
+        "构建 {loader_type} 客户端核心失败 (exit code: {:?}):\n{stderr}\n{tail_out}",
+        output.status.code()
+    ))
+}
+
+async fn apply_forge_or_neoforge(
+    root: &Path,
+    base: &mut VersionDetail,
+    mc_version: &str,
+    loader_type: &str,
+    loader_version: &str,
+) -> Result<(), String> {
+    let installers_dir = root.join("meta").join("installers");
+    tokio::fs::create_dir_all(&installers_dir)
+        .await
+        .map_err(|e| format!("无法创建安装器缓存目录: {e}"))?;
+
+    let (installer_urls, default_maven, file_name) =
+        get_installer_info(mc_version, loader_type, loader_version);
+
+    let installer_path = installers_dir.join(&file_name);
+    if !net::looks_complete(&installer_path, None) {
+        let mut last_err = String::new();
+        let mut ok = false;
+        for url in &installer_urls {
+            match net::download_file_multithreaded(url, &installer_path, None, None, 4, None, None)
+                .await
+            {
+                Ok(_) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = e;
+                }
+            }
+        }
+        if !ok {
+            return Err(format!("下载 {loader_type} 安装包失败: {last_err}"));
+        }
+    }
+
+    let libs_dir = root.join("libraries");
+    let installer_clone = installer_path.clone();
+    let maven_str = default_maven.to_string();
+    let (profile, _extra_libs) = tokio::task::spawn_blocking(move || {
+        extract_installer_archive(&installer_clone, &libs_dir, &maven_str)
+    })
+    .await
+    .map_err(|e| format!("解析安装包任务失败: {e}"))??;
+
+    merge_profile_into_version(base, profile);
+    Ok(())
+}
+
+pub async fn prepare_addons(
+    root: &Path,
+    instance_dir: &Path,
+    mc_version: &str,
+    version: &mut VersionDetail,
+    selection: &LoaderSelection,
+) -> Result<Vec<ExtraModFile>, String> {
+    if let (Some(loader_type), Some(loader_version)) = (
+        selection
+            .loader_type
+            .as_deref()
+            .filter(|s| !s.trim().is_empty()),
+        selection
+            .loader_version
+            .as_deref()
+            .filter(|s| !s.trim().is_empty()),
+    ) {
+        let kind = loader_type.to_lowercase();
+        match kind.as_str() {
+            "fabric" | "quilt" => {
+                apply_fabric_or_quilt(version, mc_version, &kind, loader_version).await?;
+            }
+            "forge" | "neoforge" => {
+                apply_forge_or_neoforge(root, version, mc_version, &kind, loader_version).await?;
+            }
+            other => {
+                return Err(format!("不支持的模组加载器类型: {other}"));
+            }
+        }
+        version.loader = Some(kind);
+        version.loader_version = Some(loader_version.to_string());
+    }
+
+    let mods_dir = instance_dir.join("mods");
+    let mut extra_mods = Vec::new();
+
+    if let Some(fab_ver) = selection
+        .fabric_api_version
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let mut dl_url = selection.fabric_api_url.clone();
+        let mut fname = selection.fabric_api_filename.clone();
+        let mut sha1 = None;
+        let mut size = None;
+
+        if dl_url.is_none() {
+            let api_list = fetch_fabric_api(mc_version).await;
+            if let Some(found) = api_list.into_iter().find(|item| item.version == fab_ver) {
+                dl_url = found.download_url;
+                fname = found.file_name;
+                sha1 = found.sha1;
+                size = found.size;
+            }
+        }
+
+        if let Some(url) = dl_url {
+            let file_name = fname.unwrap_or_else(|| format!("fabric-api-{fab_ver}.jar"));
+            extra_mods.push(ExtraModFile {
+                label: format!("Fabric API {fab_ver}"),
+                url,
+                dest: mods_dir.join(file_name),
+                sha1,
+                size,
+            });
+        }
+    }
+
+    if let Some(of_ver) = selection
+        .optifine_version
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let url = selection.optifine_url.clone().unwrap_or_else(|| {
+            let parts: Vec<&str> = of_ver.rsplitn(2, '_').collect();
+            if parts.len() == 2 {
+                format!(
+                    "https://bmclapi2.bangbang93.com/optifine/{}/{}/{}",
+                    mc_version, parts[1], parts[0]
+                )
+            } else {
+                format!("https://bmclapi2.bangbang93.com/optifine/{mc_version}/HD_U/{of_ver}")
+            }
+        });
+        let file_name = selection
+            .optifine_filename
+            .clone()
+            .unwrap_or_else(|| format!("OptiFine_{mc_version}_{of_ver}.jar"));
+
+        // Also inject OptiFine wrapper library if installed without a mod loader
+        if selection
+            .loader_type
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            let rel_path = format!("optifine/OptiFine/{mc_version}_{of_ver}/{file_name}");
+            let lib_dest = root.join("libraries").join(&rel_path);
+            extra_mods.push(ExtraModFile {
+                label: format!("OptiFine {of_ver}"),
+                url: url.clone(),
+                dest: lib_dest,
+                sha1: None,
+                size: None,
+            });
+            version.libraries.push(Library {
+                name: format!("optifine:OptiFine:{mc_version}_{of_ver}"),
+                downloads: Some(LibraryDownloads {
+                    artifact: Some(Artifact {
+                        path: Some(rel_path),
+                        sha1: None,
+                        size: None,
+                        url: Some(url.clone()),
+                    }),
+                    classifiers: None,
+                }),
+                natives: None,
+                rules: Vec::new(),
+                url: None,
+                sha1: None,
+                size: None,
+            });
+        }
+
+        extra_mods.push(ExtraModFile {
+            label: format!("OptiFine {of_ver}"),
+            url,
+            dest: mods_dir.join(file_name),
+            sha1: None,
+            size: None,
+        });
+    }
+
+    Ok(extra_mods)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_fabric_loaders() {
+        let items = fetch_fabric("1.20.1").await;
+        assert!(
+            !items.is_empty(),
+            "Fabric loaders for 1.20.1 should not be empty"
+        );
+        assert!(items.iter().any(|i| i.stable));
+    }
+}
