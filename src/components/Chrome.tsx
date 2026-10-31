@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@/lib/desktop";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Coffee,
   Copy,
@@ -53,7 +53,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
 
   return (
     <header className="flex h-11 shrink-0 items-center border-b border-border/70 bg-sidebar/95 backdrop-blur-xs pl-4">
-      <div className="flex items-center gap-2.5" data-desktop-drag-region>
+      <div className="flex items-center gap-2.5" data-tauri-drag-region>
         <img src="/logo.png" alt="" className="size-5 shrink-0 rounded-[4px] object-contain shadow-xs [image-rendering:pixelated]" />
         <span className="font-pixel text-[11px] tracking-[0.16em] text-foreground">
           {title?.trim() || "OPEN-SOURCE MINECRAFT LAUNCHER"}
@@ -61,7 +61,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
       </div>
       <div
         className="h-full flex-1"
-        data-desktop-drag-region
+        data-tauri-drag-region
         onDoubleClick={() => withWindow((window) => window.toggleMaximize())}
       />
       {demo ? (

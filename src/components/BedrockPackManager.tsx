@@ -14,7 +14,7 @@ import {
   UserRound,
   Wrench,
 } from "lucide-react";
-import { open as openDialog } from "@/lib/desktop";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "cn";
 import {
   deleteBedrockPack,

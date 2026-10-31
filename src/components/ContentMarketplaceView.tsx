@@ -22,7 +22,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { open as openDialog } from "@/lib/desktop";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { installBedrockPack, isDesktop, searchContent } from "../lib/backend";
 import { ContentVersionSelectView } from "./ContentVersionSelectView";
 import type {

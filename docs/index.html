@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Open-source-Minecraft-launcher · 轻量、现代、开源的 Minecraft 启动器</title>
-  <meta name="description" content="Open-source-Minecraft-launcher 是一个基于 Electron + Rust + React 19 的开源 Minecraft 启动器，原生支持 Java 版与基岩版，内置多线程下载、微软/离线账户、Modrinth 内容市场与 EasyTier 联机。" />
+  <meta name="description" content="Open-source-Minecraft-launcher 是一个基于 Tauri 2 + Rust + React 19 的开源 Minecraft 启动器，原生支持 Java 版与基岩版，内置多线程下载、微软/离线账户、Modrinth 内容市场与 EasyTier 联机。" />
   <meta name="theme-color" content="#060a07" />
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
@@ -85,7 +85,7 @@
           </h1>
           <p class="hero-lede">
             把 <strong>Java 版与基岩版</strong> 的版本、模组、账户、下载和联机收进一个界面。
-            基于 Electron + Rust + React 19，为 Windows 带来原生、干净、可掌控的开玩体验。
+            基于 Tauri 2 + Rust + React 19，为 Windows 带来原生、干净、可掌控的开玩体验。
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary btn-lg" href="download.html">
@@ -329,9 +329,9 @@
           <div class="about-copy" data-reveal>
             <span class="eyebrow section-kicker">BUILT ON</span>
             <h2 class="section-title">原生性能，透明的技术底座。</h2>
-            <p class="mt-16">界面使用 Electron 内置 Chromium，下载、解包、校验、启动编排与 EasyTier 进程都在 Rust 侧完成。React 只负责把状态与操作呈现出来，下载任务不会因为切换页面而中断。</p>
+            <p class="mt-16">界面使用系统 WebView，下载、解包、校验、启动编排与 EasyTier 进程都在 Rust 侧完成。React 只负责把状态与操作呈现出来，下载任务不会因为切换页面而中断。</p>
             <div class="tech-strip mt-22">
-              <span class="tech-item">Electron</span>
+              <span class="tech-item"><img src="assets/icons/tauri.svg" alt="" /> Tauri 2</span>
               <span class="tech-item"><img src="assets/icons/rust.svg" alt="" /> Rust 2024</span>
               <span class="tech-item"><img src="assets/icons/react.svg" alt="" /> React 19</span>
               <span class="tech-item"><img src="assets/icons/vite.svg" alt="" /> Vite 8</span>
@@ -349,7 +349,7 @@
               <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.0.7</span></div>
               <div class="fact"><span class="fact-label">开源协议</span><span class="fact-value">MIT</span></div>
               <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows 10 / 11</span></div>
-              <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Electron</span></div>
+              <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Tauri 2</span></div>
               <div class="fact"><span class="fact-label">后端</span><span class="fact-value">Rust 2024</span></div>
               <div class="fact"><span class="fact-label">仓库</span><span class="fact-value">Cerlesse-studio</span></div>
             </div>
@@ -395,7 +395,7 @@
               <span class="brand-sub">MINECRAFT LAUNCHER</span>
             </span>
           </a>
-          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Electron / Rust / React 19。</p>
+          <p>一个轻量、现代、开源的高性能 Minecraft 启动器。Java 版与基岩版双架构，基于 Tauri 2 / Rust / React 19。</p>
         </div>
 
         <div class="footer-col">

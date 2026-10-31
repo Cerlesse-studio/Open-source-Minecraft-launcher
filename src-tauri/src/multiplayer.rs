@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::bridge::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::process::{Child, Command};
@@ -566,9 +566,10 @@ fn emit_install(app: &AppHandle, state: &MultiplayerState) {
 }
 
 /// 读取当前的安装任务：本进程里没有任务时，从磁盘恢复上次中断的记录。
+#[tauri::command]
 pub fn get_multiplayer_install_state(
     root: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> MultiplayerInstallState {
     let root_path = PathBuf::from(&root);
     {
@@ -648,7 +649,7 @@ async fn download_candidate(
         last_emit = Instant::now();
 
         let state = progress_app.state::<MultiplayerState>();
-        update_install(state, |install| {
+        update_install(state.inner(), |install| {
             install.stage = "download".to_string();
             install.detail = format!("正在下载 EasyTier {EASYTIER_VERSION}（{label}）");
             install.done_bytes = done;
@@ -691,10 +692,11 @@ async fn download_candidate(
 }
 
 /// 下载并解压官方 EasyTier 内核。已安装或正在下载时不会重复开始。
+#[tauri::command]
 pub async fn install_easytier(
     app: AppHandle,
     root: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<MultiplayerStatus, String> {
     let root_path = PathBuf::from(&root);
     let dir = easytier_dir(&root_path);
@@ -867,10 +869,11 @@ pub async fn install_easytier(
     Ok(status)
 }
 
+#[tauri::command]
 pub fn get_multiplayer_status(
     app: AppHandle,
     root: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> MultiplayerStatus {
     let root_path = PathBuf::from(&root);
     match install_kernel_from_bundle(&app, &root_path) {
@@ -1073,11 +1076,12 @@ fn kernel_finished(result: std::io::Result<Option<std::process::ExitStatus>>) ->
     matches!(result, Ok(Some(_)))
 }
 
+#[tauri::command]
 pub async fn start_multiplayer(
     app: AppHandle,
     root: String,
     config: MultiplayerConfig,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<MultiplayerStatus, String> {
     let root_path = PathBuf::from(&root);
     match install_kernel_from_bundle(&app, &root_path) {
@@ -1297,10 +1301,11 @@ pub async fn start_multiplayer(
     Ok(status)
 }
 
+#[tauri::command]
 pub fn stop_multiplayer(
     app: AppHandle,
     root: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> MultiplayerStatus {
     stop_node(&state);
     emit_log(&app, "cobble", "已断开联机网络");
@@ -1574,6 +1579,7 @@ async fn serve_room_resources(
 
 /// 房主启动资源清单服务。版本、密钥和令牌都没变时复用原端口，
 /// 只更新清单内容；这样重进房间页不会让已发出去的分享码失效。
+#[tauri::command]
 pub async fn start_room_resources(
     root: String,
     version_id: String,
@@ -1582,7 +1588,7 @@ pub async fn start_room_resources(
     token: Option<String>,
     port: Option<u16>,
     host_port: Option<u16>,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<RoomResourcesInfo, String> {
     let root_path = PathBuf::from(&root);
     let version_id = version_id.trim().to_string();
@@ -1702,11 +1708,12 @@ pub async fn start_room_resources(
 
 /// 访客用虚拟地址访问房主的资源清单；请求由 Rust 发出，避免 webview 的
 /// 混合内容/CORS 限制，也顺便绕开了系统代理。
+#[tauri::command]
 pub async fn fetch_room_resources(
     host: String,
     port: u16,
     token: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<RoomResources, String> {
     let socks = runtime_socks_port(&state)
         .ok_or_else(|| "联机网络还没启动，先加入房间再读取资源列表".to_string())?;
@@ -2063,9 +2070,10 @@ fn parse_peer_list(text: &str) -> Result<Vec<MultiplayerPeer>, String> {
 }
 
 /// 读取房间里的在线设备。只在本机回环上跑 CLI，不对外开放任何接口。
+#[tauri::command]
 pub async fn get_multiplayer_peers(
     root: String,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<Vec<MultiplayerPeer>, String> {
     let root_path = PathBuf::from(&root);
     let (running, own_ipv4, rpc_port) = {
@@ -2276,6 +2284,7 @@ fn normalize_overlay(overlay: &str) -> &str {
 
 /// 检查 Windows 防火墙是否已放行 EasyTier 的 TCP/UDP 监听端口，以及
 /// 虚拟网卡上的 Minecraft 端口。只读查询，不需要管理员权限。
+#[tauri::command]
 pub async fn get_multiplayer_firewall_status(
     root: String,
     listen_port: u32,
@@ -2346,6 +2355,7 @@ pub async fn get_multiplayer_firewall_status(
 
 /// 一键写入放行规则：EasyTier 主程序 + 监听端口；房主还额外放行
 /// 虚拟地址上的 Minecraft 端口，避免把游戏端口暴露到公网 IPv6。
+#[tauri::command]
 pub async fn setup_multiplayer_firewall(
     root: String,
     listen_port: u32,
@@ -2554,6 +2564,7 @@ async fn read_ipv6_addresses() -> String {
     String::new()
 }
 
+#[tauri::command]
 pub async fn get_local_ipv6_addresses() -> Vec<LocalIpv6Address> {
     let text = read_ipv6_addresses().await;
     parse_ipv6_lines(&text)
@@ -2791,6 +2802,7 @@ fn endpoint_host_port(peer: &str) -> Result<(String, u16), String> {
 /// 房主关房后，访客本机的 EasyTier 可能要几次 ping 超时才会把对方
 /// 从成员列表里删掉（可能长达几分钟），但房主的监听端口会立刻消失。
 /// 这个检查只做一次 TCP 连接，用来判断房间是否还真的开着。
+#[tauri::command]
 pub async fn probe_multiplayer_endpoint(peer: String) -> Option<bool> {
     let scheme = peer
         .trim()
@@ -2865,6 +2877,7 @@ fn read_lan_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
 /// 版本隔离会改变游戏目录：`all` 在 `versions/<id>/logs`，`none` 在
 /// 根目录的 `logs`，`modded` 则只有模组版本才隔离。直接复用启动时的
 /// 目录解析，避免读错日志。
+#[tauri::command]
 pub async fn read_minecraft_lan_port(
     root: String,
     version_id: String,
@@ -2882,10 +2895,11 @@ pub async fn read_minecraft_lan_port(
     lan_port_from_log(&text)
 }
 
+#[tauri::command]
 pub async fn probe_minecraft_host(
     host: String,
     port: u16,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
 ) -> Result<MinecraftHostStatus, String> {
     Ok(
         match ping_server(&host, port, runtime_socks_port(&state)).await {
@@ -2916,9 +2930,10 @@ fn sanitize_lan_text(text: &str) -> String {
         .collect()
 }
 
+#[tauri::command]
 pub async fn start_lan_bridge(
     app: AppHandle,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
     host: String,
     port: u16,
     motd: Option<String>,
@@ -3032,9 +3047,10 @@ pub async fn start_lan_bridge(
     })
 }
 
+#[tauri::command]
 pub fn stop_lan_bridge(
     app: AppHandle,
-    state: State<'_, MultiplayerState>,
+    state: tauri::State<'_, MultiplayerState>,
     local_port: u16,
 ) -> bool {
     let mut bridges = state

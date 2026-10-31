@@ -6,7 +6,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { getCurrentWindow } from "@/lib/desktop";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar, TitleBar } from "./components/Chrome";
 import { DownloadCatalogView } from "./components/DownloadCatalogView";
 import { DownloadsView, type DownloadFileEvent } from "./components/DownloadsView";

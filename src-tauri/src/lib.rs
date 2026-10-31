@@ -1,4 +1,3 @@
-pub mod bridge;
 pub mod auth;
 pub mod bedrock;
 pub mod bedrock_store;
@@ -23,7 +22,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::bridge::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -119,6 +119,7 @@ fn default_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+#[tauri::command]
 fn set_download_preference(source: String, custom_url: Option<String>, threads: Option<u32>) {
     net::set_download_preference(
         &source,
@@ -127,10 +128,12 @@ fn set_download_preference(source: String, custom_url: Option<String>, threads: 
     );
 }
 
+#[tauri::command]
 async fn probe_download_sources(custom_url: Option<String>) -> Vec<net::DownloadSourceProbe> {
     net::probe_download_sources(custom_url.as_deref()).await
 }
 
+#[tauri::command]
 async fn get_version_manifest(
     root: String,
     force: Option<bool>,
@@ -143,6 +146,7 @@ async fn get_version_manifest(
     minecraft::fetch_manifest(&root, force.unwrap_or(false)).await
 }
 
+#[tauri::command]
 async fn get_betacraft_manifest(
     root: String,
     force: Option<bool>,
@@ -155,6 +159,7 @@ async fn get_betacraft_manifest(
     minecraft::fetch_betacraft_manifest(&root, force.unwrap_or(false)).await
 }
 
+#[tauri::command]
 fn get_installed_versions(root: String) -> Result<Vec<InstalledVersion>, String> {
     minecraft::list_installed(&PathBuf::from(root))
 }
@@ -179,6 +184,7 @@ fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
     }
 }
 
+#[tauri::command]
 async fn read_skin_as_data_url(path: String) -> Result<String, String> {
     use base64::Engine;
     let bytes = tokio::fs::read(&path)
@@ -194,6 +200,7 @@ async fn read_skin_as_data_url(path: String) -> Result<String, String> {
 const MAX_HOME_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Read the player's custom home page from disk as UTF-8 text.
+#[tauri::command]
 async fn read_home_page_file(path: String) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -221,6 +228,7 @@ async fn read_home_page_file(path: String) -> Result<String, String> {
 
 /// Fetch an online home page as text. Doing this in Rust rather than the webview
 /// keeps the request clear of CORS, which would reject most hosts.
+#[tauri::command]
 async fn fetch_home_page(url: String) -> Result<String, String> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -268,6 +276,7 @@ mod tests {
     }
 }
 
+#[tauri::command]
 async fn search_content(
     query: String,
     project_type: String,
@@ -289,6 +298,7 @@ async fn search_content(
     .await
 }
 
+#[tauri::command]
 async fn get_content_versions(
     project_id_or_slug: String,
     game_version: Option<String>,
@@ -297,16 +307,19 @@ async fn get_content_versions(
     content::get_content_versions(project_id_or_slug, game_version, loader).await
 }
 
+#[tauri::command]
 async fn download_content_file(
     request: content::DownloadContentRequest,
 ) -> Result<content::DownloadContentResult, String> {
     content::download_content_file(request).await
 }
 
+#[tauri::command]
 async fn get_version_loaders(mc_version: String) -> Result<loaders::VersionLoadersCatalog, String> {
     loaders::fetch_version_loaders(&mc_version).await
 }
 
+#[tauri::command]
 async fn install_version(
     app: AppHandle,
     state: State<'_, InstallState>,
@@ -369,6 +382,7 @@ async fn install_version(
     }
 }
 
+#[tauri::command]
 fn detect_java(root: String) -> Vec<JavaStatus> {
     java::detect_installs_for_ui(&PathBuf::from(root))
         .into_iter()
@@ -381,6 +395,7 @@ fn detect_java(root: String) -> Vec<JavaStatus> {
         .collect()
 }
 
+#[tauri::command]
 fn get_system_info(app: AppHandle, state: State<'_, GameState>) -> Result<SystemInfo, String> {
     let root = default_root(&app)?;
     let java_installs = java::detect_installs_for_ui(&root)
@@ -502,6 +517,7 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     });
 }
 
+#[tauri::command]
 async fn launch_game(
     app: AppHandle,
     state: State<'_, GameState>,
@@ -701,6 +717,7 @@ async fn launch_game(
     Ok(pid)
 }
 
+#[tauri::command]
 fn stop_game(state: State<'_, GameState>) -> Result<(), String> {
     let mut slot = state
         .child
@@ -719,6 +736,7 @@ fn stop_game(state: State<'_, GameState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
 fn get_bedrock_status(
     app: AppHandle,
     root: Option<String>,
@@ -730,14 +748,17 @@ fn get_bedrock_status(
     Ok(bedrock::get_bedrock_status(&p))
 }
 
+#[tauri::command]
 async fn get_bedrock_versions(api_source: Option<String>) -> Vec<bedrock::BedrockVersionItem> {
     bedrock::get_bedrock_versions_async(api_source.as_deref()).await
 }
 
+#[tauri::command]
 async fn get_bedrock_content(category: Option<String>) -> Vec<bedrock::BedrockContentItem> {
     bedrock::get_bedrock_content_async(category.as_deref()).await
 }
 
+#[tauri::command]
 async fn install_bedrock_version(
     app: AppHandle,
     state: State<'_, InstallState>,
@@ -794,6 +815,7 @@ async fn install_bedrock_version(
     }
 }
 
+#[tauri::command]
 async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Result<bool, String> {
     let mut aborted = false;
     if let Ok(mut guard) = state.abort_handle.lock() {
@@ -833,6 +855,7 @@ async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Resul
     Ok(aborted)
 }
 
+#[tauri::command]
 async fn install_bedrock_pack(
     app: AppHandle,
     source: String,
@@ -854,6 +877,7 @@ async fn install_bedrock_pack(
     bedrock::install_bedrock_pack(&p, &source, &final_filename).await
 }
 
+#[tauri::command]
 fn launch_bedrock(
     app: AppHandle,
     version_id: Option<String>,
@@ -919,26 +943,32 @@ fn bedrock_entitlement_note(entitlements: &auth::Entitlements) -> &'static str {
     }
 }
 
+#[tauri::command]
 fn get_bedrock_runtime_status(force: Option<bool>) -> bedrock::BedrockRuntimeStatus {
     bedrock::get_bedrock_runtime_status(force.unwrap_or(false))
 }
 
+#[tauri::command]
 fn auto_provision_bedrock_runtime(app: AppHandle) -> bedrock::BedrockRuntimeStatus {
     bedrock::provision_bedrock_runtime(Some(&app))
 }
 
+#[tauri::command]
 fn check_bedrockboot_dependencies(force: Option<bool>) -> bedrock::BedrockFullDependencyReport {
     bedrock::check_bedrockboot_dependencies(force.unwrap_or(false))
 }
 
+#[tauri::command]
 fn auto_fix_bedrockboot_dependencies(app: AppHandle) -> bedrock::BedrockFullDependencyReport {
     bedrock::auto_fix_bedrockboot_dependencies(Some(&app))
 }
 
+#[tauri::command]
 fn enable_bedrock_developer_mode() -> Result<(), String> {
     bedrock::enable_developer_mode()
 }
 
+#[tauri::command]
 async fn auto_install_bds_fallback(
     app: AppHandle,
     version_id: String,
@@ -951,7 +981,8 @@ async fn auto_install_bds_fallback(
     bedrock::find_or_install_bds_fallback(&app, &p, &version_id).await
 }
 
-fn open_folder(_app: AppHandle, path: String) -> Result<(), String> {
+#[tauri::command]
+fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("目录路径为空".to_string());
@@ -973,6 +1004,10 @@ fn open_folder(_app: AppHandle, path: String) -> Result<(), String> {
         target
     };
 
+    let dir_str = dir.to_string_lossy().to_string();
+    if app.opener().open_path(&dir_str, None::<&str>).is_ok() {
+        return Ok(());
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -1012,6 +1047,7 @@ fn open_folder(_app: AppHandle, path: String) -> Result<(), String> {
 /// Returns `None` when the search page has no entry whose English name matches
 /// the project, so the UI can fall back to the search URL instead of opening an
 /// unrelated mod page.
+#[tauri::command]
 async fn resolve_mcmod_entry(
     title: String,
     slug: String,
@@ -1020,7 +1056,8 @@ async fn resolve_mcmod_entry(
     Ok(mcmod::find_entry(&title, &slug, &project_type).await)
 }
 
-fn open_url(_app: AppHandle, url: String) -> Result<(), String> {
+#[tauri::command]
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err("链接为空".to_string());
@@ -1029,6 +1066,9 @@ fn open_url(_app: AppHandle, url: String) -> Result<(), String> {
         return Err("仅支持打开 http/https 链接".to_string());
     }
 
+    if app.opener().open_url(trimmed, None::<&str>).is_ok() {
+        return Ok(());
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -1058,6 +1098,7 @@ fn open_url(_app: AppHandle, url: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
 async fn delete_version(
     app: AppHandle,
     version_id: String,
@@ -1070,6 +1111,7 @@ async fn delete_version(
     minecraft::delete_version(&p, &version_id).await
 }
 
+#[tauri::command]
 async fn delete_bedrock_version(
     app: AppHandle,
     version_id: String,
@@ -1082,6 +1124,7 @@ async fn delete_bedrock_version(
     bedrock::delete_bedrock_version(&p, &version_id).await
 }
 
+#[tauri::command]
 async fn clean_download_cache(app: AppHandle, root: Option<String>) -> Result<u64, String> {
     let p = match root.filter(|s| !s.trim().is_empty()) {
         Some(s) => PathBuf::from(s),
@@ -1090,10 +1133,12 @@ async fn clean_download_cache(app: AppHandle, root: Option<String>) -> Result<u6
     bedrock::clean_download_cache(&p).await
 }
 
+#[tauri::command]
 async fn get_bedrock_loaders(mc_version: String) -> Result<bedrock::BedrockLoadersCatalog, String> {
     Ok(bedrock::fetch_bedrock_loaders(&mc_version).await)
 }
 
+#[tauri::command]
 async fn install_bedrock_loader(
     app: AppHandle,
     version_id: String,
@@ -1108,6 +1153,7 @@ async fn install_bedrock_loader(
     bedrock::install_bedrock_loader(&p, &version_id, &loader_type, &loader_version).await
 }
 
+#[tauri::command]
 fn get_bedrock_mods(
     app: AppHandle,
     version_id: String,
@@ -1120,6 +1166,7 @@ fn get_bedrock_mods(
     bedrock::get_bedrock_mods(&p, &version_id)
 }
 
+#[tauri::command]
 fn toggle_bedrock_mod(
     app: AppHandle,
     version_id: String,
@@ -1134,6 +1181,7 @@ fn toggle_bedrock_mod(
     bedrock::toggle_bedrock_mod(&p, &version_id, &mod_id, enabled)
 }
 
+#[tauri::command]
 fn delete_bedrock_mod(
     app: AppHandle,
     version_id: String,
@@ -1147,6 +1195,7 @@ fn delete_bedrock_mod(
     bedrock::delete_bedrock_mod(&p, &version_id, &mod_id)
 }
 
+#[tauri::command]
 fn install_bedrock_mod_file(
     app: AppHandle,
     version_id: String,
@@ -1160,6 +1209,7 @@ fn install_bedrock_mod_file(
     bedrock::install_bedrock_mod_file(&p, &version_id, &file_path)
 }
 
+#[tauri::command]
 fn get_bedrock_packs(
     app: AppHandle,
     root: Option<String>,
@@ -1171,6 +1221,7 @@ fn get_bedrock_packs(
     Ok(bedrock::get_bedrock_packs(&p))
 }
 
+#[tauri::command]
 fn set_bedrock_pack_enabled(
     app: AppHandle,
     path: String,
@@ -1184,6 +1235,7 @@ fn set_bedrock_pack_enabled(
     bedrock::set_bedrock_pack_enabled(&p, &path, enabled)
 }
 
+#[tauri::command]
 fn delete_bedrock_pack(app: AppHandle, path: String, root: Option<String>) -> Result<(), String> {
     let p = match root {
         Some(s) => PathBuf::from(s),
@@ -1192,6 +1244,7 @@ fn delete_bedrock_pack(app: AppHandle, path: String, root: Option<String>) -> Re
     bedrock::delete_bedrock_pack(&p, &path)
 }
 
+#[tauri::command]
 fn import_bedrock_pack_file(
     app: AppHandle,
     file_path: String,
@@ -1204,6 +1257,7 @@ fn import_bedrock_pack_file(
     bedrock::install_bedrock_pack_from_file(&p, &file_path)
 }
 
+#[tauri::command]
 fn get_java_mods(
     app: AppHandle,
     version_id: String,
@@ -1216,6 +1270,7 @@ fn get_java_mods(
     minecraft::get_java_mods(&p, &version_id)
 }
 
+#[tauri::command]
 fn toggle_java_mod(
     app: AppHandle,
     version_id: String,
@@ -1230,6 +1285,7 @@ fn toggle_java_mod(
     minecraft::toggle_java_mod(&p, &version_id, &file_name, enabled)
 }
 
+#[tauri::command]
 fn delete_java_mod(
     app: AppHandle,
     version_id: String,
@@ -1243,6 +1299,7 @@ fn delete_java_mod(
     minecraft::delete_java_mod(&p, &version_id, &file_name)
 }
 
+#[tauri::command]
 fn install_java_mod_file(
     app: AppHandle,
     version_id: String,
@@ -1256,6 +1313,7 @@ fn install_java_mod_file(
     minecraft::install_java_mod_file(&p, &version_id, std::path::Path::new(&file_path))
 }
 
+#[tauri::command]
 fn get_java_resource_packs(
     app: AppHandle,
     version_id: String,
@@ -1273,6 +1331,7 @@ fn get_java_resource_packs(
     ))
 }
 
+#[tauri::command]
 fn toggle_java_resource_pack(
     app: AppHandle,
     version_id: String,
@@ -1288,6 +1347,7 @@ fn toggle_java_resource_pack(
     minecraft::toggle_java_resource_pack(&p, &version_id, &file_name, enabled, isolation.as_deref())
 }
 
+#[tauri::command]
 fn delete_java_resource_pack(
     app: AppHandle,
     version_id: String,
@@ -1302,6 +1362,7 @@ fn delete_java_resource_pack(
     minecraft::delete_java_resource_pack(&p, &version_id, &file_name, isolation.as_deref())
 }
 
+#[tauri::command]
 fn install_java_resource_pack_file(
     app: AppHandle,
     version_id: String,
@@ -1316,6 +1377,7 @@ fn install_java_resource_pack_file(
     minecraft::install_java_resource_pack_file(&p, &version_id, &file_path, isolation.as_deref())
 }
 
+#[tauri::command]
 fn get_java_worlds(
     app: AppHandle,
     version_id: String,
@@ -1333,6 +1395,7 @@ fn get_java_worlds(
     ))
 }
 
+#[tauri::command]
 fn delete_java_world(
     app: AppHandle,
     version_id: String,
@@ -1347,6 +1410,7 @@ fn delete_java_world(
     minecraft::delete_java_world(&p, &version_id, &folder, isolation.as_deref())
 }
 
+#[tauri::command]
 fn install_java_world_file(
     app: AppHandle,
     version_id: String,
@@ -1361,6 +1425,7 @@ fn install_java_world_file(
     minecraft::install_java_world_file(&p, &version_id, &file_path, isolation.as_deref())
 }
 
+#[tauri::command]
 fn get_bedrock_worlds(
     app: AppHandle,
     root: Option<String>,
@@ -1372,6 +1437,7 @@ fn get_bedrock_worlds(
     Ok(bedrock::get_bedrock_worlds(&p))
 }
 
+#[tauri::command]
 fn delete_bedrock_world(app: AppHandle, path: String, root: Option<String>) -> Result<(), String> {
     let p = match root {
         Some(s) => PathBuf::from(s),
@@ -1380,6 +1446,7 @@ fn delete_bedrock_world(app: AppHandle, path: String, root: Option<String>) -> R
     bedrock::delete_bedrock_world(&p, &path)
 }
 
+#[tauri::command]
 fn import_bedrock_world_file(
     app: AppHandle,
     file_path: String,
@@ -1401,10 +1468,12 @@ fn account_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法定位启动器数据目录: {error}"))
 }
 
+#[tauri::command]
 async fn ms_login_begin(client_id: Option<String>) -> Result<auth::DeviceCodeInfo, String> {
     auth::begin_device_login(client_id.as_deref()).await
 }
 
+#[tauri::command]
 async fn ms_login_poll(
     app: AppHandle,
     device_code: String,
@@ -1421,6 +1490,7 @@ async fn ms_login_poll(
     }
 }
 
+#[tauri::command]
 async fn get_ms_account(
     app: AppHandle,
     client_id: Option<String>,
@@ -1429,7 +1499,178 @@ async fn get_ms_account(
     Ok(auth::account_view(&dir, client_id.as_deref()).await)
 }
 
+#[tauri::command]
 async fn ms_sign_out(app: AppHandle) -> Result<(), String> {
     let dir = account_dir(&app)?;
     auth::clear_account(&dir)
+}
+
+/// Label of the launcher-owned Microsoft sign-in window.
+const LOGIN_WINDOW_LABEL: &str = "ms-login";
+
+/// Opens the Microsoft sign-in page in a window owned by the launcher.
+///
+/// This exists because the system browser is usually signed into a Microsoft
+/// account already (Edge even ties into the Windows account), and then the
+/// sign-in page locks itself to that address with no way to type another one.
+/// The launcher's own webview shares none of that session, so the page shows a
+/// normal, editable e-mail field every time. Only Microsoft sign-in hosts are
+/// accepted — see `auth::is_microsoft_login_url`.
+///
+/// Must stay `async`. On Windows a synchronous command runs inside WebView2's
+/// own IPC callback, so building another webview from there re-enters the
+/// message pump and deadlocks: the window appears blank and never loads. Async
+/// commands run off the event-loop thread, which is the documented fix.
+#[tauri::command]
+async fn open_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    if !auth::is_microsoft_login_url(&url) {
+        return Err("登录窗口只接受微软官方登录页面地址。".to_string());
+    }
+    let target = url
+        .parse()
+        .map_err(|error| format!("登录地址无效: {error}"))?;
+
+    // Reuse the window when it is already open (a second code would otherwise
+    // stack up windows), just point it at the new page.
+    if let Some(existing) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
+        existing
+            .navigate(target)
+            .map_err(|error| format!("无法打开登录页面: {error}"))?;
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        LOGIN_WINDOW_LABEL,
+        tauri::WebviewUrl::External(target),
+    )
+    .title("Microsoft 账户登录")
+    .inner_size(520.0, 720.0)
+    .resizable(true)
+    .build()
+    .map_err(|error| format!("无法打开登录窗口: {error}"))?;
+    Ok(())
+}
+
+/// Closes the sign-in window once the login finished (or was abandoned).
+#[tauri::command]
+fn close_login_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
+        window
+            .close()
+            .map_err(|error| format!("无法关闭登录窗口: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // 老系统（XP / Vista / 7 / 8 / 8.1）缺少 WebView2 运行时，窗口创建不出来；
+    // 先给出明确提示，而不是让用户看到「双击了没反应」。
+    if !platform::run_checks() {
+        return;
+    }
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(InstallState::default())
+        .manage(GameState::default())
+        .manage(multiplayer::MultiplayerState::default())
+        .invoke_handler(tauri::generate_handler![
+            set_download_preference,
+            probe_download_sources,
+            get_version_manifest,
+            get_betacraft_manifest,
+            get_installed_versions,
+            read_skin_as_data_url,
+            read_home_page_file,
+            fetch_home_page,
+            get_version_loaders,
+            search_content,
+            get_content_versions,
+            download_content_file,
+            install_version,
+            delete_version,
+            detect_java,
+            get_system_info,
+            launch_game,
+            stop_game,
+            open_folder,
+            open_url,
+            resolve_mcmod_entry,
+            get_bedrock_status,
+            get_bedrock_versions,
+            get_bedrock_content,
+            install_bedrock_version,
+            delete_bedrock_version,
+            install_bedrock_pack,
+            launch_bedrock,
+            get_bedrock_runtime_status,
+            auto_provision_bedrock_runtime,
+            check_bedrockboot_dependencies,
+            auto_fix_bedrockboot_dependencies,
+            enable_bedrock_developer_mode,
+            auto_install_bds_fallback,
+            clean_download_cache,
+            cancel_install,
+            get_bedrock_loaders,
+            install_bedrock_loader,
+            get_bedrock_mods,
+            toggle_bedrock_mod,
+            delete_bedrock_mod,
+            install_bedrock_mod_file,
+            get_bedrock_packs,
+            set_bedrock_pack_enabled,
+            delete_bedrock_pack,
+            import_bedrock_pack_file,
+            get_java_mods,
+            toggle_java_mod,
+            delete_java_mod,
+            install_java_mod_file,
+            get_java_resource_packs,
+            toggle_java_resource_pack,
+            delete_java_resource_pack,
+            install_java_resource_pack_file,
+            get_java_worlds,
+            delete_java_world,
+            install_java_world_file,
+            get_bedrock_worlds,
+            delete_bedrock_world,
+            import_bedrock_world_file,
+            ms_login_begin,
+            ms_login_poll,
+            get_ms_account,
+            ms_sign_out,
+            open_login_window,
+            close_login_window,
+            multiplayer::get_multiplayer_status,
+            multiplayer::get_multiplayer_peers,
+            multiplayer::get_multiplayer_firewall_status,
+            multiplayer::setup_multiplayer_firewall,
+            multiplayer::get_multiplayer_install_state,
+            multiplayer::install_easytier,
+            multiplayer::start_multiplayer,
+            multiplayer::stop_multiplayer,
+            multiplayer::start_room_resources,
+            multiplayer::fetch_room_resources,
+            multiplayer::get_local_ipv6_addresses,
+            multiplayer::read_minecraft_lan_port,
+            multiplayer::probe_multiplayer_endpoint,
+            multiplayer::probe_minecraft_host,
+            multiplayer::start_lan_bridge,
+            multiplayer::stop_lan_bridge,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 关掉启动器时一起结束 EasyTier 内核与局域网广播，避免留下
+            // 后台进程和仍然可见的「局域网世界」。
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<multiplayer::MultiplayerState>();
+                multiplayer::shutdown(&state);
+            }
+        });
 }

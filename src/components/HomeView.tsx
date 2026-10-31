@@ -22,7 +22,7 @@ import {
   SquareDashed,
   UserRound,
 } from "lucide-react";
-import { open as openDialog } from "@/lib/desktop";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
