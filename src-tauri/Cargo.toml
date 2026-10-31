@@ -30,6 +30,9 @@ sha1 = "0.10"
 md-5 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
+# Chrome 扩展弹窗里 <link>/<script>/<img> 与 CSS url() 需要就地内联，
+# 否则 iframe 的 srcDoc 没有扩展目录作为基准地址。
+regex = "1"
 tar = "0.4"
 base64 = "0.22"
 

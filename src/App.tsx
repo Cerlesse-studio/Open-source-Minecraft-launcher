@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -8,15 +10,56 @@ import {
 } from "react";
 import { getCurrentWindow } from "@/lib/desktop";
 import { Sidebar, TitleBar } from "./components/Chrome";
-import { DownloadCatalogView } from "./components/DownloadCatalogView";
-import { DownloadsView, type DownloadFileEvent } from "./components/DownloadsView";
+import type { DownloadFileEvent } from "./components/DownloadsView";
 import { HomeView } from "./components/HomeView";
-import { MultiplayerView } from "./components/MultiplayerView";
-import { SettingsView } from "./components/SettingsView";
-import { VersionInstallView } from "./components/VersionInstallView";
-import { VersionSelectView } from "./components/VersionSelectView";
-import { VersionSettingsView } from "./components/VersionSettingsView";
+import { extensionRuntime } from "./lib/extensions";
 import type { LogEntry } from "./components/Console";
+
+const DownloadCatalogView = lazy(() =>
+  import("./components/DownloadCatalogView").then((m) => ({
+    default: m.DownloadCatalogView,
+  })),
+);
+const DownloadsView = lazy(() =>
+  import("./components/DownloadsView").then((m) => ({
+    default: m.DownloadsView,
+  })),
+);
+const MultiplayerView = lazy(() =>
+  import("./components/MultiplayerView").then((m) => ({
+    default: m.MultiplayerView,
+  })),
+);
+const SettingsView = lazy(() =>
+  import("./components/SettingsView").then((m) => ({
+    default: m.SettingsView,
+  })),
+);
+const ExtensionsView = lazy(() =>
+  import("./components/ExtensionsView").then((m) => ({
+    default: m.ExtensionsView,
+  })),
+);
+const VersionInstallView = lazy(() =>
+  import("./components/VersionInstallView").then((m) => ({
+    default: m.VersionInstallView,
+  })),
+);
+const VersionSelectView = lazy(() =>
+  import("./components/VersionSelectView").then((m) => ({
+    default: m.VersionSelectView,
+  })),
+);
+const VersionSettingsView = lazy(() =>
+  import("./components/VersionSettingsView").then((m) => ({
+    default: m.VersionSettingsView,
+  })),
+);
+const AccountDialog = lazy(() =>
+  import("./components/AccountDialog").then((m) => ({
+    default: m.AccountDialog,
+  })),
+);
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
@@ -42,7 +85,6 @@ import {
   stopGame,
   subscribe,
 } from "./lib/backend";
-import { AccountDialog } from "./components/AccountDialog";
 import { applyThemeToDom } from "./lib/theme";
 import { timeNow } from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
@@ -656,6 +698,9 @@ export default function App() {
         if (status.state !== "preparing") {
           setLaunchProgress(null);
         }
+        if (status.state === "running") {
+          extensionRuntime.notifyGameLaunch(status);
+        }
         if (status.state === "running" && isDesktop) {
           const vis = activeVisibilityRef.current;
           if (vis === "close") {
@@ -679,6 +724,7 @@ export default function App() {
     track(
       subscribe("game:exit", (payload) => {
         setLaunchProgress(null);
+        extensionRuntime.notifyGameExit(payload);
         if (isDesktop && activeVisibilityRef.current === "hide") {
           try {
             const win = getCurrentWindow();
@@ -1393,6 +1439,7 @@ export default function App() {
               onSelectMicrosoft={() => setOfflineMode(false)}
             />
           ) : (
+            <Suspense fallback={null}>
             <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
               {view === "multiplayer" ? (
                 <MultiplayerView
@@ -1567,6 +1614,15 @@ export default function App() {
                 />
               ) : null}
 
+              {view === "extensions" ? (
+                <ExtensionsView
+                  gameRoot={settings.gameRoot}
+                  onNotification={(title, message, type) =>
+                    pushToast(type === "error" ? "error" : type === "warning" ? "info" : "success", title, message)
+                  }
+                />
+              ) : null}
+
               {view === "settings" ? (
                 <SettingsView
                   settings={settings}
@@ -1581,30 +1637,35 @@ export default function App() {
                 />
               ) : null}
             </div>
+            </Suspense>
           )}
         </main>
       </div>
 
-      <AccountDialog
-        open={accountOpen}
-        onClose={() => setAccountOpen(false)}
-        account={account}
-        clientId={settings.msClientId ?? ""}
-        onClientIdChange={(msClientId) => updateSettings({ msClientId })}
-        onSignedIn={async (next) => {
-          setAccount(next);
-          setOfflineMode(false);
-          // 登录成功后从后端重新获取以确保主界面立即更新
-          try {
-            const fresh = await getMsAccount(settings.msClientId || undefined);
-            if (fresh) setAccount(fresh);
-          } catch {
-            // 忽略错误，使用对话框传入的账户即可
-          }
-        }}
-        onSignedOut={() => setAccount(null)}
-        onNotify={pushToast}
-      />
+      {accountOpen ? (
+        <Suspense fallback={null}>
+          <AccountDialog
+            open={accountOpen}
+            onClose={() => setAccountOpen(false)}
+            account={account}
+            clientId={settings.msClientId ?? ""}
+            onClientIdChange={(msClientId) => updateSettings({ msClientId })}
+            onSignedIn={async (next) => {
+              setAccount(next);
+              setOfflineMode(false);
+              // 登录成功后从后端重新获取以确保主界面立即更新
+              try {
+                const fresh = await getMsAccount(settings.msClientId || undefined);
+                if (fresh) setAccount(fresh);
+              } catch {
+                // 忽略错误，使用对话框传入的账户即可
+              }
+            }}
+            onSignedOut={() => setAccount(null)}
+            onNotify={pushToast}
+          />
+        </Suspense>
+      ) : null}
 
       <Toaster theme="dark" position="bottom-right" />
     </div>

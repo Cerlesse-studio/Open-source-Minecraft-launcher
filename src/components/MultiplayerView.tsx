@@ -119,8 +119,8 @@ function RoleCard({
       className="group flex w-full flex-col rounded-xl border border-border/70 bg-card/55 p-4 text-left transition-colors hover:border-primary/40 hover:bg-card/80 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:outline-none"
     >
       <span className="flex w-full items-center justify-between">
-        <span className="flex size-9 items-center justify-center rounded-lg border border-border/60 bg-muted/20 text-foreground/80 transition-colors group-hover:border-primary/25 group-hover:bg-primary/10 group-hover:text-primary">
-          <Icon className="size-4" />
+        <span className="flex size-9 items-center justify-center rounded-lg border border-border/60 bg-muted/20 text-foreground/80 transition-colors group-hover:border-primary/30 group-hover:bg-primary/10 group-hover:text-primary">
+          <Icon className="size-4 shrink-0 transition-colors" />
         </span>
         <ArrowRight className="size-4 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
       </span>
@@ -1348,7 +1348,7 @@ export function MultiplayerView({
                     ? (installProgress?.error ?? "可重试，或在下载管理器查看")
                     : kernelIncomplete
                       ? "内置内核释放不完整（缺少 Packet.dll），重新下载即可修复。"
-                      : "内核随安装包内置，正常不会走到这一步。"}
+                      : "联机功能集成官方 EasyTier 核心（与 PCL2 联机同款），首次使用一键高速就绪。"}
             </p>
           </div>
           {!installing ? (
@@ -1422,6 +1422,10 @@ export function MultiplayerView({
               detail="选好房间版本并设置密码，把局域网世界分享给访客。"
               steps={["选版本", "设密码", "发分享码"]}
               onClick={() => {
+                if (!installed && !installing) {
+                  onNotify("info", "准备联机组件", "正在自动下载 EasyTier 核心组件（与 PCL2 同款），首次使用即点即用。");
+                  void handleInstall();
+                }
                 setConfig((current) =>
                   current.peers.length > 0 || current.hostIpv4
                     ? {
@@ -1442,7 +1446,13 @@ export function MultiplayerView({
               title="加入房间"
               detail="粘贴分享码，或者只填房主的 IPv6 地址和房间密码。"
               steps={["分享码", "IPv6 + 密码", "直接连接"]}
-              onClick={() => setPage("join")}
+              onClick={() => {
+                if (!installed && !installing) {
+                  onNotify("info", "准备联机组件", "正在自动下载 EasyTier 核心组件（与 PCL2 同款），首次使用即点即用。");
+                  void handleInstall();
+                }
+                setPage("join");
+              }}
             />
           </div>
         </div>

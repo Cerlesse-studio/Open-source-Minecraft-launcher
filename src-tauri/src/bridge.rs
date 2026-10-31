@@ -514,6 +514,69 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             app.state::<MultiplayerState>(),
             argument(&args, "localPort")?,
         )),
+        "list_extensions" => to_value(
+            crate::list_extensions(app.clone(), argument(&args, "root").ok()).await?,
+        ),
+        "install_extension_zip" => to_value(
+            crate::install_extension_zip(
+                app.clone(),
+                argument(&args, "zipPath")?,
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "install_extension_dir" => to_value(
+            crate::install_extension_dir(
+                app.clone(),
+                argument(&args, "dirPath")?,
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "toggle_extension" => to_value(
+            crate::toggle_extension(
+                app.clone(),
+                argument(&args, "id")?,
+                argument(&args, "enabled")?,
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "uninstall_extension" => to_value(
+            crate::uninstall_extension(
+                app.clone(),
+                argument(&args, "id")?,
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "export_extension_zip" => to_value(
+            crate::export_extension_zip(
+                app.clone(),
+                argument(&args, "id")?,
+                argument(&args, "targetPath")?,
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "create_sample_extension" => to_value(
+            crate::create_sample_extension(
+                app.clone(),
+                argument(&args, "targetDir").ok(),
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
+        "execute_extension_rust" => to_value(
+            crate::execute_extension_rust(
+                app.clone(),
+                argument(&args, "id")?,
+                argument(&args, "fnName")?,
+                argument(&args, "payload").unwrap_or(serde_json::Value::Null),
+                argument(&args, "root").ok(),
+            )
+            .await?,
+        ),
         _ => Err(format!("Unknown command: {command}")),
     }
 }

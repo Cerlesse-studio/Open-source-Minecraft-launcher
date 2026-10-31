@@ -14,6 +14,24 @@ function accentHex(value?: string): string {
   return HEX_PATTERN.test(clean) ? clean : DEFAULT_ACCENT;
 }
 
+export function hexToRgb(hex: string): string {
+  const clean = hex.replace(/^#/, "");
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `${r}, ${g}, ${b}`;
+}
+
+export function hslToRgb(h: number, s: number, l: number): string {
+  s /= 100;
+  l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) =>
+    l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return `${Math.round(255 * f(0))}, ${Math.round(255 * f(8))}, ${Math.round(255 * f(4))}`;
+}
+
 function readableForeground(hex: string): string {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
@@ -105,6 +123,7 @@ function applyPanelHue(root: HTMLElement, hue: number, dark: boolean): void {
   const panels = dark ? DARK_PANELS : LIGHT_PANELS;
   for (const [token, saturation, lightness] of panels) {
     root.style.setProperty(token, `hsl(${hue}, ${saturation}%, ${lightness}%)`);
+    root.style.setProperty(`${token}-rgb`, hslToRgb(hue, saturation, lightness));
   }
 }
 
@@ -113,6 +132,8 @@ export function applyThemeToDom(settings: LauncherSettings): void {
 
   const root = document.documentElement;
   const { color, fg } = getEffectivePrimaryColor(settings);
+  const primaryRgb = hexToRgb(color);
+  const primaryFgRgb = hexToRgb(fg === "#ffffff" ? "#ffffff" : "#0b1408");
 
   const mode = settings.themeMode ?? "dark";
   const isDark =
@@ -123,8 +144,11 @@ export function applyThemeToDom(settings: LauncherSettings): void {
 
   // 1. Primary & accent CSS variables
   root.style.setProperty("--primary", color);
+  root.style.setProperty("--primary-rgb", primaryRgb);
   root.style.setProperty("--primary-foreground", fg);
+  root.style.setProperty("--primary-fg-rgb", primaryFgRgb);
   root.style.setProperty("--ring", color);
+  root.style.setProperty("--ring-rgb", primaryRgb);
   root.style.setProperty("--sidebar-primary", color);
   root.style.setProperty("--sidebar-primary-foreground", fg);
   root.style.setProperty("--sidebar-ring", color);
@@ -180,9 +204,7 @@ export function applyThemeToDom(settings: LauncherSettings): void {
     root.classList.remove("mica-enabled");
   }
 
-  // 8. Surface opacity: scales the derived panel tokens in styles.css, so the
-  //    slider fades every card, popover, input, the sidebar and the page
-  //    backdrop together. Clamped so text never floats on nothing.
+  // 8. Surface opacity
   const surfaceAlpha = Math.min(1, Math.max(0.3, (settings.uiOpacity ?? 100) / 100));
   root.style.setProperty("--surface-alpha", String(surfaceAlpha));
 }

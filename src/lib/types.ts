@@ -493,12 +493,61 @@ export interface LauncherSettings {
 export type ViewId =
   | "home"
   | "multiplayer"
-  | "version-select"
   | "download"
+  | "extensions"
+  | "version-select"
   | "version-install"
   | "download-progress"
   | "version-settings"
   | "settings";
+
+export interface ExtensionScripts {
+  javascript?: string;
+  rust?: string;
+}
+
+export interface ExtensionTab {
+  title: string;
+  entry: string;
+}
+
+export interface ExtensionUi {
+  popup?: string;
+  tab?: ExtensionTab;
+}
+
+export interface ExtensionManifest {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  icon?: string;
+  permissions?: string[];
+  scripts?: ExtensionScripts;
+  ui?: ExtensionUi;
+}
+
+export type ExtensionFormat = "osml" | "chrome";
+
+export interface ExtensionItem {
+  id: string;
+  manifest: ExtensionManifest;
+  enabled: boolean;
+  folderPath: string;
+  hasRust: boolean;
+  hasJavascript: boolean;
+  hasUi: boolean;
+  iconDataUrl?: string;
+  jsCode?: string;
+  rustSourceOrWasm?: string;
+  wasmBase64?: string;
+  uiHtml?: string;
+  format?: ExtensionFormat;
+  manifestVersion?: number;
+  hostPermissions?: string[];
+  i18n?: Record<string, string>;
+}
 
 export type GameEdition = "java" | "bedrock";
 
@@ -794,3 +843,56 @@ export interface BedrockWorldItem {
   locationPath: string;
 }
 
+
+export interface ElectronChromiumProfile {
+  versions: {
+    electron: string;
+    chrome: string;
+    v8: string;
+    node: string;
+  };
+  isPackaged: boolean;
+  coldStartupMs: number | null;
+  processCount: number;
+  memoryWorkingSetMb: number;
+  processes: Array<{
+    pid: number;
+    type: string;
+    memoryMb: number;
+  }>;
+  runtimeFuses: Record<string, boolean> | null;
+  disabledFeatures: string[];
+  disabledSwitches: string[];
+  webPreferencesBaseline: Record<string, boolean>;
+  baseline: {
+    timestamp: string;
+    targetEvaluated: string;
+    totalDistSizeMb: number;
+    l1Packaging: {
+      electronInDevDependencies: boolean;
+      asarEnabled: boolean;
+      compression: string;
+      afterPackConfigured: boolean;
+      electronLanguages: string[];
+      localesStats: {
+        totalLocalesCount: number;
+        keptLocalesCount: number;
+        keptLocalesKb: number;
+        prunableSavingsMb: number;
+      };
+      coreFilesIntegrity: Array<{
+        name: string;
+        role: string;
+        required: boolean;
+        exists: boolean;
+        sizeBytes: number;
+      }>;
+    };
+    l3SourceGn: {
+      exists: boolean;
+      path: string;
+      args: Record<string, boolean | number | string>;
+      imports: string[];
+    };
+  };
+}

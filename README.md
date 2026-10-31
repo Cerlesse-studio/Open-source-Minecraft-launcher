@@ -29,7 +29,7 @@ Java 版 × 基岩版 · 一个应用全搞定
   <img alt="Linux" src="https://img.shields.io/badge/Linux-Java%20版-FCC624?style=flat-square&logo=linux&logoColor=black" />
 </p>
 
-[✨ 特性](#-特性) · [🖼️ 预览](#️-预览) · [🚀 快速开始](#-快速开始) · [🏗️ 架构](#️-架构) · [❓ FAQ](#-faq) · [🤝 贡献](#-贡献)
+[✨ 特性](#-特性) · [🖼️ 预览](#️-预览) · [🚀 快速开始](#-快速开始) · [🏗️ 架构](#️-架构) · [🧩 扩展](#-扩展开发) · [❓ FAQ](#-faq) · [🤝 贡献](#-贡献)
 
 </div>
 
@@ -160,11 +160,22 @@ flowchart LR
 | `src-tauri/src/bedrock.rs` | 基岩版部署 |
 | `src-tauri/src/content.rs` | 内容市场 |
 | `src-tauri/src/multiplayer.rs` | EasyTier 联机 |
+| `src-tauri/src/extension.rs` | 扩展安装、Chrome 兼容与弹窗资源内联 |
+| `src/lib/extensions.ts` | 扩展运行时与 `chrome.*` 兼容层 |
 | `src-tauri/src/auth.rs` · `java.rs` | 账户与 Java |
 
 <sub>`src-tauri/` 仅为沿用的 Rust 工程路径，运行时已不再使用 Tauri。</sub>
 
 </details>
+
+## 🧩 扩展开发
+
+扩展页面支持两种扩展：启动器原生格式（JavaScript + Rust/WASM）与 Chrome 扩展格式（Manifest V2 / V3）。可以安装 `.zip`、`.crx`，也可以直接载入已解压目录。
+
+- 完整开发指南与兼容性对照：[扩展开发](docs/extensions.md)
+- 安装位置：`<游戏目录>/extensions/`（未配置游戏目录时为 `~/.cobble/extensions/`）
+- 已支持 `chrome.storage`、`chrome.runtime` 消息、`chrome.notifications`、`chrome.i18n` 等常用子集；content script、tabs、网络拦截等网页能力不在兼容范围内
+- CRX 只剥离容器头，不校验签名，请只安装可信来源
 
 ## ❓ FAQ
 

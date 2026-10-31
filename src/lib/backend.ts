@@ -35,6 +35,7 @@ import {
   demoEmit,
 } from "./demo";
 import type {
+  ExtensionItem,
   BedrockContentItem,
   BedrockFullDependencyReport,
   BedrockLoadersCatalog,
@@ -1372,3 +1373,50 @@ export async function stopLanBridge(localPort: number): Promise<boolean> {
   return invoke<boolean>("stop_lan_bridge", { localPort });
 }
 
+export async function listExtensions(root?: string): Promise<ExtensionItem[]> {
+  if (!isDesktop) return [];
+  return invoke<ExtensionItem[]>("list_extensions", { root });
+}
+
+export async function installExtensionZip(zipPath: string, root?: string): Promise<ExtensionItem> {
+  return invoke<ExtensionItem>("install_extension_zip", { zipPath, root });
+}
+
+export async function installExtensionDir(dirPath: string, root?: string): Promise<ExtensionItem> {
+  return invoke<ExtensionItem>("install_extension_dir", { dirPath, root });
+}
+
+export async function toggleExtension(id: string, enabled: boolean, root?: string): Promise<void> {
+  return invoke<void>("toggle_extension", { id, enabled, root });
+}
+
+export async function uninstallExtension(id: string, root?: string): Promise<void> {
+  return invoke<void>("uninstall_extension", { id, root });
+}
+
+export async function exportExtensionZip(id: string, targetPath: string, root?: string): Promise<string> {
+  return invoke<string>("export_extension_zip", { id, targetPath, root });
+}
+
+export async function createSampleExtension(targetDir?: string, root?: string): Promise<string> {
+  return invoke<string>("create_sample_extension", { targetDir, root });
+}
+
+export async function executeExtensionRust(
+  id: string,
+  fnName: string,
+  payload: unknown = {},
+  root?: string
+): Promise<any> {
+  return invoke<any>("execute_extension_rust", { id, fnName, payload, root });
+}
+
+
+export async function getElectronChromiumProfile(): Promise<import("./types").ElectronChromiumProfile | null> {
+  if (!isDesktop) return null;
+  try {
+    return await invoke<import("./types").ElectronChromiumProfile>("get_electron_chromium_profile");
+  } catch {
+    return null;
+  }
+}

@@ -11,6 +11,7 @@ pub mod multiplayer;
 mod net;
 pub mod platform;
 pub mod search_i18n;
+pub mod extension;
 
 use minecraft::{
     InstallProgress, InstallResult, InstalledVersion, LaunchRequest, LaunchSpec, ProgressFn,
@@ -1597,4 +1598,71 @@ async fn get_ms_account(
 async fn ms_sign_out(app: AppHandle) -> Result<(), String> {
     let dir = account_dir(&app)?;
     auth::clear_account(&dir)
+}
+
+pub async fn list_extensions(
+    app: AppHandle,
+    root: Option<String>,
+) -> Result<Vec<extension::ExtensionItem>, String> {
+    extension::list_extensions(&app, root.as_deref())
+}
+
+pub async fn install_extension_zip(
+    app: AppHandle,
+    zip_path: String,
+    root: Option<String>,
+) -> Result<extension::ExtensionItem, String> {
+    extension::install_extension_zip(&app, &zip_path, root.as_deref())
+}
+
+pub async fn install_extension_dir(
+    app: AppHandle,
+    dir_path: String,
+    root: Option<String>,
+) -> Result<extension::ExtensionItem, String> {
+    extension::install_extension_dir(&app, &dir_path, root.as_deref())
+}
+
+pub async fn toggle_extension(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+    root: Option<String>,
+) -> Result<(), String> {
+    extension::toggle_extension(&app, &id, enabled, root.as_deref())
+}
+
+pub async fn uninstall_extension(
+    app: AppHandle,
+    id: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    extension::uninstall_extension(&app, &id, root.as_deref())
+}
+
+pub async fn export_extension_zip(
+    app: AppHandle,
+    id: String,
+    target_path: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    extension::export_extension_zip(&app, &id, &target_path, root.as_deref())
+}
+
+pub async fn create_sample_extension(
+    app: AppHandle,
+    target_dir: Option<String>,
+    root: Option<String>,
+) -> Result<String, String> {
+    extension::create_sample_extension(&app, target_dir.as_deref(), root.as_deref())
+}
+
+pub async fn execute_extension_rust(
+    app: AppHandle,
+    id: String,
+    fn_name: String,
+    payload: serde_json::Value,
+    root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    extension::execute_extension_rust(&app, &id, &fn_name, payload, root.as_deref())
 }

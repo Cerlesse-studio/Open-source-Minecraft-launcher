@@ -2,6 +2,24 @@
 @import "tw-animate-css";
 
 @font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
   font-family: "Silkscreen";
   src: url("/fonts/silkscreen-400.woff2") format("woff2");
   font-style: normal;
@@ -22,28 +40,41 @@
 :root {
   color-scheme: dark;
   accent-color: var(--primary);
+  --primary: #9bdd6b;
+  --primary-rgb: 155, 221, 107;
+  --primary-foreground: #0b1408;
+  --primary-fg-rgb: 11, 20, 8;
   --background-solid: #080b09;
+  --background-rgb: 8, 11, 9;
   --foreground: #e9efe6;
+  --foreground-rgb: 233, 239, 230;
   --card-solid: #101511;
+  --card-rgb: 16, 21, 17;
   --card-foreground: #e9efe6;
   --popover-solid: #141a15;
+  --popover-rgb: 20, 26, 21;
   --popover-foreground: #e9efe6;
-  --primary: #9bdd6b;
-  --primary-foreground: #0b1408;
   --secondary-solid: #1b231d;
+  --secondary-rgb: 27, 35, 29;
   --secondary-foreground: #dce6da;
+  --secondary-fg-rgb: 220, 230, 218;
   --muted-solid: #171e19;
+  --muted-rgb: 23, 30, 25;
   --muted-foreground: #93a395;
+  --muted-fg-rgb: 147, 163, 149;
   --accent-solid: #1f2a21;
+  --accent-rgb: 31, 42, 33;
   --accent-foreground: #f0f5ec;
+  --accent-fg-rgb: 240, 245, 236;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
-  /* State color (enabled / finished / fastest). Deliberately independent of the
-     accent: green here means "good", not "this is the theme". */
   --success: #34d399;
   --border: #26312a;
+  --border-rgb: 38, 49, 42;
   --input: #2a352d;
+  --input-rgb: 42, 53, 45;
   --ring: #9bdd6b;
+  --ring-rgb: 155, 221, 107;
   --chart-1: #9bdd6b;
   --chart-2: #6de0d0;
   --chart-3: #e3c269;
@@ -51,41 +82,72 @@
   --chart-5: #9d8be0;
   --radius: 0.75rem;
   --sidebar-solid: #0c100d;
+  --sidebar-rgb: 12, 16, 13;
   --sidebar-foreground: #e9efe6;
   --sidebar-primary: #9bdd6b;
   --sidebar-primary-foreground: #0b1408;
   --sidebar-accent-solid: #182019;
+  --sidebar-accent-rgb: 24, 32, 25;
   --sidebar-accent-foreground: #f0f5ec;
   --sidebar-border: #232d26;
   --sidebar-ring: #9bdd6b;
+
+  /* Surfaces: 彻底摒弃 color-mix，使用百分之百兼容旧内核的标准 CSS 属性 */
+  --surface-alpha: 1;
+  --media-solid: #0c120d;
+  --background: var(--background-solid);
+  --card: var(--card-solid);
+  --popover: var(--popover-solid);
+  --secondary: var(--secondary-solid);
+  --muted: var(--muted-solid);
+  --accent: var(--accent-solid);
+  --sidebar: var(--sidebar-solid);
+  --sidebar-accent: var(--sidebar-accent-solid);
 }
 
 .dark {
   --background-solid: #080b09;
+  --background-rgb: 8, 11, 9;
   --foreground: #e9efe6;
+  --foreground-rgb: 233, 239, 230;
   --card-solid: #101511;
+  --card-rgb: 16, 21, 17;
   --card-foreground: #e9efe6;
   --popover-solid: #141a15;
+  --popover-rgb: 20, 26, 21;
   --popover-foreground: #e9efe6;
   --primary: #9bdd6b;
+  --primary-rgb: 155, 221, 107;
   --primary-foreground: #0b1408;
+  --primary-fg-rgb: 11, 20, 8;
   --secondary-solid: #1b231d;
+  --secondary-rgb: 27, 35, 29;
   --secondary-foreground: #dce6da;
+  --secondary-fg-rgb: 220, 230, 218;
   --muted-solid: #171e19;
+  --muted-rgb: 23, 30, 25;
   --muted-foreground: #93a395;
+  --muted-fg-rgb: 147, 163, 149;
   --accent-solid: #1f2a21;
+  --accent-rgb: 31, 42, 33;
   --accent-foreground: #f0f5ec;
+  --accent-fg-rgb: 240, 245, 236;
   --destructive: #e07363;
   --destructive-foreground: #1b0906;
   --success: #34d399;
   --border: #26312a;
+  --border-rgb: 38, 49, 42;
   --input: #2a352d;
+  --input-rgb: 42, 53, 45;
   --ring: #9bdd6b;
+  --ring-rgb: 155, 221, 107;
   --sidebar-solid: #0c100d;
+  --sidebar-rgb: 12, 16, 13;
   --sidebar-foreground: #e9efe6;
   --sidebar-primary: #9bdd6b;
   --sidebar-primary-foreground: #0b1408;
   --sidebar-accent-solid: #182019;
+  --sidebar-accent-rgb: 24, 32, 25;
   --sidebar-accent-foreground: #f0f5ec;
   --sidebar-border: #232d26;
   --sidebar-ring: #9bdd6b;
@@ -94,51 +156,41 @@
 .light {
   color-scheme: light;
   --background-solid: #f6f8f5;
+  --background-rgb: 246, 248, 245;
   --foreground: #151e16;
+  --foreground-rgb: 21, 30, 22;
   --card-solid: #ffffff;
+  --card-rgb: 255, 255, 255;
   --card-foreground: #151e16;
   --popover-solid: #ffffff;
+  --popover-rgb: 255, 255, 255;
   --popover-foreground: #151e16;
   --secondary-solid: #eef3ed;
+  --secondary-rgb: 238, 243, 237;
   --secondary-foreground: #1f2a21;
+  --secondary-fg-rgb: 31, 42, 33;
   --muted-solid: #eef3ed;
+  --muted-rgb: 238, 243, 237;
   --muted-foreground: #5a6e5e;
+  --muted-fg-rgb: 90, 110, 94;
   --accent-solid: #e2ede1;
+  --accent-rgb: 226, 237, 225;
   --accent-foreground: #151e16;
+  --accent-fg-rgb: 21, 30, 22;
   --destructive: #e05243;
   --destructive-foreground: #ffffff;
-  /* Darker green so state chips stay readable on white. */
   --success: #059669;
   --border: #d4e0d3;
+  --border-rgb: 212, 224, 211;
   --input: #d4e0d3;
+  --input-rgb: 212, 224, 211;
   --sidebar-solid: #f0f5ee;
+  --sidebar-rgb: 240, 245, 238;
   --sidebar-foreground: #151e16;
   --sidebar-accent-solid: #e4eee2;
+  --sidebar-accent-rgb: 228, 238, 226;
   --sidebar-accent-foreground: #151e16;
   --sidebar-border: #d4e0d3;
-}
-
-/* Surfaces.
-   Every panel, popover, input and the page backdrop derive from the solid
-   tokens above, so one setting (--surface-alpha, written by lib/theme.ts) can
-   fade every component at once without touching component classes. At 1 it
-   resolves to the exact solid color. */
-:root {
-  --surface-alpha: 1;
-  /* Dark media/tile surfaces (news covers, version icon tiles, the console).
-     They stay dark in both modes, but take the accent's hue so they do not
-     stay green when another accent is picked. */
-  --media-solid: color-mix(in oklab, var(--primary) 14%, #04060a);
-  --background: color-mix(in oklab, var(--background-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --card: color-mix(in oklab, var(--card-solid) calc(var(--surface-alpha) * 100%), transparent);
-  /* Menus, selects and tooltips float above the page: fading them makes the
-     form underneath bleed through the options, so floating layers stay solid. */
-  --popover: var(--popover-solid);
-  --secondary: color-mix(in oklab, var(--secondary-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --muted: color-mix(in oklab, var(--muted-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --accent: color-mix(in oklab, var(--accent-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --sidebar: color-mix(in oklab, var(--sidebar-solid) calc(var(--surface-alpha) * 100%), transparent);
-  --sidebar-accent: color-mix(in oklab, var(--sidebar-accent-solid) calc(var(--surface-alpha) * 100%), transparent);
 }
 
 .reduce-motion,
@@ -185,8 +237,8 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-grass: var(--primary);
-  --color-grass-bright: color-mix(in oklab, var(--primary) 70%, white);
-  --color-grass-deep: color-mix(in oklab, var(--primary) 60%, black);
+  --color-grass-bright: #b8ec92;
+  --color-grass-deep: #4f802d;
   --color-diamond: #6de0d0;
   --color-gold: #e3c269;
   --color-ember: #e59b68;
@@ -226,13 +278,13 @@
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--primary) 32%, transparent);
+    background: rgba(var(--primary-rgb, 155, 221, 107), 0.32);
     color: var(--foreground);
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) transparent;
+    scrollbar-color: rgba(var(--foreground-rgb, 233, 239, 230), 0.2) transparent;
   }
 
   ::-webkit-scrollbar {
@@ -240,9 +292,17 @@
     height: 8px;
   }
 
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
   ::-webkit-scrollbar-thumb {
-    background: color-mix(in oklab, var(--foreground) 20%, transparent);
+    background: rgba(var(--foreground-rgb, 233, 239, 230), 0.2);
     border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--foreground-rgb, 233, 239, 230), 0.35);
   }
 }
 
@@ -269,11 +329,10 @@
 
   .grass-glow {
     box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--primary) 16%, transparent),
-      0 12px 40px -18px color-mix(in oklab, var(--primary) 50%, transparent);
+      0 0 0 1px rgba(var(--primary-rgb, 155, 221, 107), 0.16),
+      0 12px 40px -18px rgba(var(--primary-rgb, 155, 221, 107), 0.5);
   }
 
-  /* Same purpose as the old green literals, now accent-tinted. */
   .media-surface {
     background-color: var(--media-solid);
   }
@@ -281,18 +340,18 @@
   .media-surface-fade {
     background-image: linear-gradient(
       to top,
-      var(--media-solid),
-      color-mix(in oklab, var(--media-solid) 45%, transparent),
-      transparent
+      #0c120d,
+      rgba(12, 18, 13, 0.45) 55%,
+      transparent 100%
     );
   }
 
   .console-surface {
-    background-color: color-mix(in oklab, var(--media-solid) 70%, transparent);
+    background-color: rgba(12, 18, 13, 0.7);
   }
 
   .accent-glow {
-    box-shadow: 0 0 24px -10px color-mix(in oklab, var(--primary) 65%, transparent);
+    box-shadow: 0 0 24px -10px rgba(var(--primary-rgb, 155, 221, 107), 0.65);
   }
 
   .pixelated {
@@ -322,3 +381,17 @@
 }
 
 [data-desktop-drag-region] { -webkit-app-region: drag; }
+
+/* 针对 Electron 22 (Chromium 108) 的 group-hover 图标高亮与半透明增强保底 */
+.group:hover .group-hover\:bg-primary\/10 {
+  background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.1) !important;
+}
+.group:hover .group-hover\:border-primary\/25 {
+  border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.25) !important;
+}
+.group:hover .group-hover\:border-primary\/30 {
+  border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important;
+}
+.group:hover .group-hover\:text-primary {
+  color: var(--primary) !important;
+}

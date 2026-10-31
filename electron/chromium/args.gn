@@ -1,0 +1,70 @@
+# =============================================================================
+# Electron 内置 Chromium 内核源码级定制编译配置 (L3 GN Args)
+# 依据《Electron 内置 Chromium 内核裁剪与专业化定制开发文档》第 5.4 节编制
+# 用法：
+#   e build --gn-args-file electron/chromium/args.gn
+#   e build electron:dist
+# =============================================================================
+
+import("//electron/build/args/release.gn")
+
+# -----------------------------------------------------------------------------
+# 1. 正式构建与去符号优化 (大幅降低二进制体积与提升执行效率)
+# -----------------------------------------------------------------------------
+is_official_build = true
+is_component_build = false
+is_debug = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+use_thin_lto = true
+
+# -----------------------------------------------------------------------------
+# 2. 裁剪不需要的 Chromium / Electron 大型子系统
+# -----------------------------------------------------------------------------
+# 禁用内置 PDF 预览器
+enable_pdf = false
+enable_pdf_viewer = false
+
+# 禁用打印与打印预览子系统
+enable_printing = false
+enable_print_preview = false
+enable_basic_printing = false
+use_cups = false
+
+# 禁用 Chrome 原生扩展系统 (启动器使用自身沙盒化的 Rust+JS 扩展机制)
+enable_extensions = false
+enable_electron_extensions = false
+
+# 禁用 Widevine DRM 模块
+enable_widevine = false
+
+# 禁用 VR / OpenXR 与投屏发现服务
+enable_vr = false
+enable_openxr = false
+enable_mdns = false
+enable_service_discovery = false
+
+# -----------------------------------------------------------------------------
+# 3. 隐私、遥测与后台网络请求收敛
+# -----------------------------------------------------------------------------
+safe_browsing_mode = 0
+enable_reporting = false
+
+# -----------------------------------------------------------------------------
+# 4. Electron 特性按需收敛
+# -----------------------------------------------------------------------------
+# 从编译期彻底移除 ELECTRON_RUN_AS_NODE 模式（配合 L2 Fuse 双重加固）
+enable_run_as_node = false
+
+# 禁用离屏渲染 (Offscreen Rendering)、内置拼写检查词典与画中画
+enable_osr = false
+enable_builtin_spellchecker = false
+enable_picture_in_picture = false
+
+# -----------------------------------------------------------------------------
+# 5. 编解码器策略 (第 5.4 / 6.1 / 9 节：默认保留开源 VP8/VP9/Opus/Vorbis)
+# 仅在确认业务完全不依赖 H.264 / AAC 时取消下方注释
+# -----------------------------------------------------------------------------
+proprietary_codecs = false
+ffmpeg_branding = "Chromium"

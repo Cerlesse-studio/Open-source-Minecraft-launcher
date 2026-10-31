@@ -9,6 +9,7 @@ import {
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Puzzle,
   Settings2,
   Square,
   X,
@@ -125,6 +126,7 @@ const NAV_ITEMS: Array<{
     icon: Network,
   },
   { id: "download", label: "下载", hint: "下载新的游戏版本与进入下载进度", icon: Download },
+  { id: "extensions", label: "扩展", hint: "Chrome MV2/MV3 兼容与 Rust + JS 扩展系统", icon: Puzzle },
   { id: "settings", label: "设置", hint: "启动器总设置", icon: Settings2 },
 ];
 

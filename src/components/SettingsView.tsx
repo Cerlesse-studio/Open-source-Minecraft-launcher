@@ -31,7 +31,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "cn";
-import { isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend";
+import { getElectronChromiumProfile, isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend";
 import { joinPath, shortPath } from "../lib/format";
 import { DEFAULT_ACCENT } from "../lib/theme";
 import type {
@@ -48,6 +48,7 @@ import type {
   SystemInfo,
   VersionIsolation,
   WindowSizeMode,
+  ElectronChromiumProfile,
 } from "../lib/types";
 import { Avatar, PageHeader } from "./ui";
 import { Badge } from "@/components/ui/badge";
@@ -339,6 +340,13 @@ export function SettingsView({
   const [skinCollapsed, setSkinCollapsed] = useState(false);
   const [sourceProbes, setSourceProbes] = useState<DownloadSourceProbe[] | null>(null);
   const [probingSources, setProbingSources] = useState(false);
+  const [chromiumProfile, setChromiumProfile] = useState<ElectronChromiumProfile | null>(null);
+
+  useEffect(() => {
+    if (isDesktop) {
+      void getElectronChromiumProfile().then(setChromiumProfile);
+    }
+  }, [activeTab]);
   const cleanName = /^[A-Za-z0-9_]{1,16}$/.test(settings.playerName);
 
   // Custom mirror latency changes when the URL changes, so drop stale results.
@@ -2153,8 +2161,63 @@ export function SettingsView({
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
                   <span className="text-[11.5px] text-muted-foreground">运行模式</span>
                   <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-                    {isDesktop ? "Electron 桌面版" : "Web 预览"}
+                    {isDesktop ? "原生轻量级 WebView 桌面版 (Win / macOS / Linux)" : "Web 预览"}
                   </Badge>
+                </div>
+              </div>
+            </SettingsSection>
+
+            <SettingsSection
+              title="跨平台轻量级原生 WebView 内核与安全基线"
+              icon={<Cpu className="size-4" />}
+            >
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-lg border border-border/50 bg-muted/15 p-2.5">
+                    <div className="text-[10.5px] text-muted-foreground">WebView 渲染核心</div>
+                    <div className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
+                      {chromiumProfile?.versions.chrome ?? "Custom"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-muted/15 p-2.5">
+                    <div className="text-[10.5px] text-muted-foreground">冷启动至可交互</div>
+                    <div className="mt-0.5 font-mono text-[12px] font-semibold text-primary">
+                      {chromiumProfile?.coldStartupMs != null ? `${chromiumProfile.coldStartupMs} ms` : "已就绪"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-muted/15 p-2.5">
+                    <div className="text-[10.5px] text-muted-foreground">工作集内存 / 进程</div>
+                    <div className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
+                      {chromiumProfile ? `${chromiumProfile.memoryWorkingSetMb} MB · ${chromiumProfile.processCount} 进程` : "—"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-muted/15 p-2.5">
+                    <div className="text-[10.5px] text-muted-foreground">发行包体积</div>
+                    <div className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
+                      {chromiumProfile?.baseline ? `${chromiumProfile.baseline.totalDistSizeMb} MB` : "—"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 rounded-lg border border-border/50 bg-muted/15 p-3 text-[11.5px]">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">L1 打包层裁剪</span>
+                    <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/10 text-emerald-400 text-[10px]">
+                      零捆绑浏览器运行时 · 节省 ~240 MB 落盘体积
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">L2 运行时与 Fuse 加固</span>
+                    <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/10 text-emerald-400 text-[10px]">
+                      Rust 进程内直连 IPC · 禁用 14 项冗余特性
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">L3 源码级 GN 裁剪配置</span>
+                    <Badge variant="outline" className="border-primary/35 bg-primary/10 text-primary font-mono text-[10px]">
+                      Win WebView2 · macOS WKWebView · Linux WebKitGTK
+                    </Badge>
+                  </div>
                 </div>
               </div>
             </SettingsSection>

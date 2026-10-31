@@ -326,15 +326,40 @@ fn bundled_kernel_dir(app: &AppHandle) -> Option<PathBuf> {
 
 /// 内核随安装包分发：第一次用到时直接拷到游戏目录，不再走下载流程。
 /// 已经有完整内核时什么也不做，返回 `Ok(false)`。
+fn bundled_kernel_zip(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("resources").join("easytier").join("easytier-bundle.zip"));
+        candidates.push(dir.join("easytier").join("easytier-bundle.zip"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("resources").join("easytier").join("easytier-bundle.zip"));
+            candidates.push(parent.join("easytier").join("easytier-bundle.zip"));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 fn install_kernel_from_bundle(app: &AppHandle, root: &Path) -> Result<bool, String> {
     if kernel_installed(root) {
         return Ok(false);
     }
-    let Some(source) = bundled_kernel_dir(app) else {
-        return Ok(false);
-    };
-    copy_kernel_dir(&source, &easytier_dir(root))?;
-    Ok(true)
+    let target = easytier_dir(root);
+    if let Some(source) = bundled_kernel_dir(app) {
+        copy_kernel_dir(&source, &target)?;
+        return Ok(true);
+    }
+    if let Some(zip_path) = bundled_kernel_zip(app) {
+        std::fs::create_dir_all(&target)
+            .map_err(|error| format!("无法创建内核目录 {}：{error}", target.display()))?;
+        extract_binaries(&zip_path, &target)?;
+        let _ = std::fs::write(target.join("version.txt"), EASYTIER_VERSION);
+        if kernel_dir_ok(&target) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// 把一份完整的内核目录拷到游戏目录。
