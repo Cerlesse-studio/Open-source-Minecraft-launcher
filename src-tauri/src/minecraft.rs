@@ -1532,7 +1532,7 @@ async fn download_jobs_with_tracker(
 
                 let file_bytes: u64;
                 if !was_skipped {
-                    let file_threads = if job.size.unwrap_or(0) >= 1_048_576 {
+                    let file_threads = if job.size.map(|s| s >= 1_048_576).unwrap_or(true) {
                         (worker_count / 2).clamp(2, 6)
                     } else {
                         1
@@ -1612,6 +1612,46 @@ async fn download_jobs_with_tracker(
         done.load(Ordering::Relaxed),
         skipped.load(Ordering::Relaxed),
     ))
+}
+
+fn native_binary_count(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| {
+                            matches!(ext.to_ascii_lowercase().as_str(), "dll" | "so" | "dylib")
+                        })
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn has_native_binaries(dir: &Path) -> bool {
+    native_binary_count(dir) > 0
+}
+
+fn natives_fingerprint(jars: &[PathBuf]) -> String {
+    let mut fingerprint = String::new();
+    for jar in jars {
+        let metadata = std::fs::metadata(jar).ok();
+        let len = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        let modified = metadata
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        fingerprint.push_str(&format!("{}|{len}|{modified};", jar.to_string_lossy()));
+    }
+    fingerprint
 }
 
 fn extract_natives(jars: &[PathBuf], natives_dir: &Path) -> Result<usize, String> {
@@ -1888,40 +1928,69 @@ async fn download_client_with_tracker(
         }
     }
 
-    let worker_id = worker_offset + 1;
-    let client_threads = concurrency.clamp(1, 8);
+    let client_threads = concurrency.clamp(1, 64);
     let segments = net::recommended_segments(client.size, client_threads);
     let jar_name = format!("{}.jar", version.id);
-    tracker.set_worker_task(
-        worker_id,
-        Some(ActiveDownloadTask {
-            worker_id,
-            name: jar_name.clone(),
-            stage: "client".to_string(),
-            done_bytes: 0,
-            total_bytes: total,
-            segments,
-        }),
-    );
+    let worker_count = (segments as usize).max(1);
+
+    for w in 0..worker_count {
+        let wid = worker_offset + w + 1;
+        let part_total = if total > 0 && worker_count > 0 {
+            total / (worker_count as u64)
+        } else {
+            total
+        };
+        let seg_name = if worker_count > 1 {
+            format!("{jar_name} (分片 #{})", w + 1)
+        } else {
+            jar_name.clone()
+        };
+        tracker.set_worker_task(
+            wid,
+            Some(ActiveDownloadTask {
+                worker_id: wid,
+                name: seg_name,
+                stage: "client".to_string(),
+                done_bytes: 0,
+                total_bytes: part_total,
+                segments,
+            }),
+        );
+    }
 
     tracker.emit_now("client", 0, total, format!("下载 {jar_name}"));
 
     let tracker_for_bytes = tracker.clone();
     let mut on_progress = move |done: u64, reported_total: u64, delta: u64| {
-        let total = if reported_total > 0 {
+        let current_total = if reported_total > 0 {
             reported_total
         } else {
             total
         };
-        tracker_for_bytes.update_worker_bytes(worker_id, done, total, delta);
+        if worker_count > 1 {
+            let part_done = done / (worker_count as u64);
+            let part_total = current_total / (worker_count as u64);
+            for w in 0..worker_count {
+                let wid = worker_offset + w + 1;
+                tracker_for_bytes.update_worker_bytes(
+                    wid,
+                    part_done,
+                    part_total,
+                    if w == 0 { delta } else { 0 },
+                );
+            }
+        } else {
+            let wid = worker_offset + 1;
+            tracker_for_bytes.update_worker_bytes(wid, done, current_total, delta);
+        }
         tracker_for_bytes.emit_throttled(
             "client",
             done,
-            total,
+            current_total,
             format!(
                 "{:.1} / {:.1} MB",
                 done as f64 / 1_048_576.0,
-                total as f64 / 1_048_576.0
+                current_total as f64 / 1_048_576.0
             ),
         );
     };
@@ -1937,7 +2006,10 @@ async fn download_client_with_tracker(
     )
     .await;
 
-    tracker.set_worker_task(worker_id, None);
+    for w in 0..worker_count {
+        let wid = worker_offset + w + 1;
+        tracker.set_worker_task(wid, None);
+    }
     let downloaded = match res {
         Ok(b) => b,
         Err(err) => {
@@ -2161,11 +2233,11 @@ pub async fn install_version_with_options(
     tracker.set_stage_status("prepare", "done");
 
     let client_threads = if threads <= 4 {
-        1
+        2.min(threads)
     } else {
-        2.min(threads / 8).max(2)
+        (threads / 4).clamp(2, 16)
     };
-    let available = threads.saturating_sub(1);
+    let available = threads.saturating_sub(client_threads).max(2);
     let (libs_threads, assets_threads, addons_threads) = if has_addons {
         let addon = (available * 2 / 10).clamp(1, 8);
         let rem = available.saturating_sub(addon);
@@ -2179,7 +2251,7 @@ pub async fn install_version_with_options(
     };
 
     let client_offset = 0;
-    let libs_offset = 1;
+    let libs_offset = client_offset + client_threads;
     let assets_offset = libs_offset + libs_threads;
     let addons_offset = assets_offset + assets_threads;
 
@@ -2419,6 +2491,7 @@ pub struct LaunchSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub java_major: u32,
+    pub notes: Vec<String>,
 }
 
 fn is_alex_uuid(bytes: &[u8; 16]) -> bool {
@@ -2481,16 +2554,79 @@ pub fn format_uuid_with_hyphens(uuid: &str) -> String {
     }
 }
 
-async fn fetch_mojang_textures_by_id_or_name(
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TextureCacheEntry {
+    val: String,
+    sig: String,
+    id: String,
+    cached_at_secs: u64,
+}
+
+static TEXTURE_MEMORY_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, TextureCacheEntry>>,
+> = std::sync::OnceLock::new();
+
+fn get_texture_cache() -> &'static std::sync::Mutex<HashMap<String, TextureCacheEntry>> {
+    TEXTURE_MEMORY_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn current_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn texture_disk_cache_path(root: &Path, key: &str) -> PathBuf {
+    let clean_key = key.replace(|c: char| !c.is_alphanumeric(), "_");
+    root.join("cache")
+        .join("textures")
+        .join(format!("{clean_key}.json"))
+}
+
+fn read_texture_cache(root: &Path, key: &str) -> Option<TextureCacheEntry> {
+    if let Ok(guard) = get_texture_cache().lock() {
+        if let Some(entry) = guard.get(key) {
+            return Some(entry.clone());
+        }
+    }
+    let path = texture_disk_cache_path(root, key);
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(entry) = serde_json::from_str::<TextureCacheEntry>(&content) {
+            if let Ok(mut guard) = get_texture_cache().lock() {
+                guard.insert(key.to_string(), entry.clone());
+            }
+            return Some(entry);
+        }
+    }
+    None
+}
+
+fn write_texture_cache(root: &Path, key: &str, entry: &TextureCacheEntry) {
+    if let Ok(mut guard) = get_texture_cache().lock() {
+        guard.insert(key.to_string(), entry.clone());
+    }
+    let path = texture_disk_cache_path(root, key);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(entry) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+async fn fetch_and_cache_mojang_textures(
+    root: &Path,
     uuid: Option<&str>,
     name: &str,
+    cache_key: &str,
 ) -> Option<(String, String, String)> {
     let id = if let Some(u) = uuid.filter(|s| !s.trim().is_empty()) {
         u.replace('-', "").trim().to_string()
     } else {
         let profile_url = format!("https://api.mojang.com/users/profiles/minecraft/{name}");
         let resp = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_millis(1500),
             net::client().get(&profile_url).send(),
         )
         .await
@@ -2506,7 +2642,7 @@ async fn fetch_mojang_textures_by_id_or_name(
     let session_url =
         format!("https://sessionserver.mojang.com/session/minecraft/profile/{id}?unsigned=false");
     let s_resp = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_millis(1500),
         net::client().get(&session_url).send(),
     )
     .await
@@ -2525,15 +2661,68 @@ async fn fetch_mojang_textures_by_id_or_name(
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
+            let entry = TextureCacheEntry {
+                val: val.clone(),
+                sig: sig.clone(),
+                id: id.clone(),
+                cached_at_secs: current_timestamp_secs(),
+            };
+            write_texture_cache(root, cache_key, &entry);
             return Some((val, sig, id));
         }
     }
     None
 }
+async fn fetch_mojang_textures_by_id_or_name(
+    root: &Path,
+    uuid: Option<&str>,
+    name: &str,
+) -> Option<(String, String, String)> {
+    let cache_key = if let Some(u) = uuid.filter(|s| !s.trim().is_empty()) {
+        u.replace('-', "").trim().to_lowercase()
+    } else {
+        name.trim().to_lowercase()
+    };
+
+    if cache_key.is_empty() {
+        return None;
+    }
+
+    let cached = read_texture_cache(root, &cache_key);
+    let now = current_timestamp_secs();
+
+    // Cache valid for 7 days (604800 secs)
+    if let Some(entry) = &cached {
+        if now.saturating_sub(entry.cached_at_secs) < 7 * 86400 {
+            return Some((entry.val.clone(), entry.sig.clone(), entry.id.clone()));
+        }
+    }
+
+    // Stale-While-Revalidate: return existing cached skin immediately (0ms delay!)
+    // and refresh asynchronously in background
+    if let Some(entry) = cached {
+        let root_buf = root.to_path_buf();
+        let uuid_owned = uuid.map(String::from);
+        let name_owned = name.to_string();
+        let key_owned = cache_key.clone();
+        tokio::spawn(async move {
+            let _ = fetch_and_cache_mojang_textures(
+                &root_buf,
+                uuid_owned.as_deref(),
+                &name_owned,
+                &key_owned,
+            )
+            .await;
+        });
+        return Some((entry.val, entry.sig, entry.id));
+    }
+
+    fetch_and_cache_mojang_textures(root, uuid, name, &cache_key).await
+}
 
 #[allow(dead_code)]
 async fn fetch_mojang_textures(name: &str) -> Option<(String, String, String)> {
-    fetch_mojang_textures_by_id_or_name(None, name).await
+    fetch_mojang_textures_by_id_or_name(Path::new("."), None, name).await
 }
 
 async fn setup_custom_skin_pack(root: &Path, version_id: &str, skin_path: &Path) {
@@ -2605,11 +2794,7 @@ fn valid_player_name(name: &str) -> bool {
 }
 
 fn classpath_separator() -> &'static str {
-    if cfg!(windows) {
-        ";"
-    } else {
-        ":"
-    }
+    if cfg!(windows) { ";" } else { ":" }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2787,6 +2972,631 @@ pub fn is_modded_version(version: &VersionDetail) -> bool {
     false
 }
 
+fn parse_memory_spec_mb(arg: &str) -> Option<u64> {
+    let s = arg.trim();
+    let num_part = if let Some(stripped) = s.strip_prefix("-Xmx") {
+        stripped
+    } else if let Some(stripped) = s.strip_prefix("-Xms") {
+        stripped
+    } else {
+        return None;
+    };
+    if num_part.is_empty() {
+        return None;
+    }
+    let last_char = num_part.chars().last()?.to_ascii_uppercase();
+    if last_char.is_ascii_digit() {
+        let val: u64 = num_part.parse().ok()?;
+        return Some(val / (1024 * 1024));
+    }
+    let value_str = &num_part[..num_part.len() - 1];
+    let val: u64 = value_str.parse().ok()?;
+    match last_char {
+        'G' => Some(val * 1024),
+        'M' => Some(val),
+        'K' => Some((val / 1024).max(1)),
+        _ => None,
+    }
+}
+
+fn is_deprecated_vm_flag(arg: &str, java_major: u32) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    if java_major >= 8 {
+        if lower.starts_with("-xx:permsize=") || lower.starts_with("-xx:maxpermsize=") {
+            return true;
+        }
+    }
+    if java_major >= 9 {
+        if lower.contains("cmsincrementalmode")
+            || lower.contains("cmsincrementalpacing")
+            || lower.contains("useparnewgc")
+        {
+            return true;
+        }
+    }
+    if java_major >= 11 {
+        if lower.contains("aggressiveopts") {
+            return true;
+        }
+    }
+    if java_major >= 14 {
+        if lower.contains("useconcmarksweepgc")
+            || lower.starts_with("-xx:cms")
+            || lower.starts_with("-xx:+usecms")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Options that only exist on newer runtimes. Java 8 aborts with
+/// "Unrecognized option: --add-opens" before Minecraft writes a log, so these
+/// are dropped together with their separate value argument.
+///
+/// Returns `(takes_separate_value, min_java_major)`.
+fn module_option_spec(arg: &str) -> Option<(bool, u32)> {
+    const PAIRED: &[(&str, u32)] = &[
+        ("--add-opens", 9),
+        ("--add-exports", 9),
+        ("--add-reads", 9),
+        ("--add-modules", 9),
+        ("--limit-modules", 9),
+        ("--patch-module", 9),
+        ("--module-path", 9),
+        ("--upgrade-module-path", 9),
+        ("-p", 9),
+    ];
+    const SINGLE_PREFIX: &[(&str, u32)] = &[
+        ("--illegal-access=", 9),
+        ("--enable-native-access=", 17),
+        ("--enable-preview", 11),
+        ("--sun-misc-unsafe-memory-access=", 23),
+    ];
+    for &(name, min) in PAIRED {
+        if arg == name {
+            return Some((true, min));
+        }
+        if arg.len() > name.len() && arg.starts_with(name) && arg.as_bytes()[name.len()] == b'=' {
+            return Some((false, min));
+        }
+    }
+    for &(prefix, min) in SINGLE_PREFIX {
+        if arg.starts_with(prefix) {
+            return Some((false, min));
+        }
+    }
+    None
+}
+
+/// Removes runtime options the selected Java cannot parse (see
+/// [`module_option_spec`]), keeping every other argument in order.
+fn strip_unsupported_runtime_options(
+    args: Vec<String>,
+    java_major: u32,
+    messages: &mut Vec<String>,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut iter = args.into_iter().peekable();
+    let mut dropped = 0usize;
+    while let Some(arg) = iter.next() {
+        if let Some((paired, min)) = module_option_spec(arg.trim()) {
+            if java_major < min {
+                if paired {
+                    // The value never starts with `-`; guard anyway so a
+                    // malformed template cannot swallow the next real option.
+                    if iter.peek().map(|next| !next.starts_with('-')).unwrap_or(false) {
+                        iter.next();
+                    }
+                }
+                dropped += 1;
+                continue;
+            }
+        }
+        out.push(arg);
+    }
+    if dropped > 0 {
+        messages.push(format!(
+            "当前 Java {java_major} 不支持 {dropped} 个模块系统参数（如 --add-opens），已自动移除避免 \"Unrecognized option\" 启动失败"
+        ));
+    }
+    out
+}
+
+/// Whether a garbage collector can be selected on this runtime without extra
+/// unlock flags. Anything returning `false` is replaced with G1.
+fn gc_supported_on(gc: &str, java_major: u32, is_64bit: bool) -> bool {
+    match gc {
+        // ZGC is production-ready from 15 and 64-bit only.
+        "UseZGC" => is_64bit && java_major >= 15,
+        // Shenandoah is production-ready from 15 (and missing on Oracle builds,
+        // which the boot preflight catches).
+        "UseShenandoahGC" => is_64bit && java_major >= 15,
+        // Epsilon never frees memory: Minecraft dies with OutOfMemoryError in
+        // minutes. It is never a sensible game setting.
+        "UseEpsilonGC" => false,
+        "UseConcMarkSweepGC" | "UseParNewGC" => java_major < 14,
+        "UseParallelOldGC" => java_major < 15,
+        _ => true,
+    }
+}
+
+/// 针对 Minecraft 进行 JVM 参数清洗、去重与冲突仲裁：
+/// 1. 垃圾回收器 (GC) 冲突仲裁：若同时出现多个互斥的 GC 参数（如 UseG1GC, UseZGC, UseParallelGC 等），
+///    严格进行单选仲裁，剔除其余冲突 GC，杜绝 "Conflicting collector combinations" 崩溃；
+/// 2. 内存冲突仲裁：统一规范 -Xmx 与 -Xms，防止用户额外参数或版本参数覆盖导致 initial heap > max heap，
+///    并在 32 位 Java 下强制安全截断；
+/// 3. 历史废弃参数清洗：在 Java 9/11/17/21 等高版本下自动剔除 CMSIncrementalMode、AggressiveOpts、CMS 参数等；
+/// 4. 实验性参数排序保障：确保 -XX:+UnlockExperimentalVMOptions 处于实验参数之前；
+/// 5. 系统属性 (-D) 去重。
+pub fn sanitize_jvm_arguments(
+    raw_args: Vec<String>,
+    java_major: u32,
+    is_64bit: bool,
+    fallback_memory_mb: u64,
+) -> (Vec<String>, Vec<String>) {
+    let mut messages = Vec::new();
+
+    // 0. 移除当前 Java 无法识别的模块系统参数（Java 8 + --add-opens 等）
+    let raw_args = strip_unsupported_runtime_options(raw_args, java_major, &mut messages);
+
+    // 1. 提取并仲裁 -Xmx 与 -Xms
+    let mut explicit_xmx = None;
+    let mut explicit_xms = None;
+    for arg in &raw_args {
+        if arg.starts_with("-Xmx") {
+            if let Some(mb) = parse_memory_spec_mb(arg) {
+                explicit_xmx = Some(mb);
+            }
+        } else if arg.starts_with("-Xms") {
+            if let Some(mb) = parse_memory_spec_mb(arg) {
+                explicit_xms = Some(mb);
+            }
+        }
+    }
+
+    let mut max_mb = explicit_xmx.unwrap_or(fallback_memory_mb).clamp(256, 65536);
+    if !is_64bit && max_mb > 1024 {
+        max_mb = 1024;
+        messages.push("检测到 32 位 Java 环境，最大堆内存已安全限制为 1024M，防止 JVM 初始化闪退".to_string());
+    }
+
+    let mut init_mb = explicit_xms.unwrap_or_else(|| (max_mb / 2).clamp(if !is_64bit { 256 } else { 512 }, 2048));
+    if init_mb > max_mb {
+        init_mb = max_mb;
+        messages.push("已自动纠正初始堆内存 (-Xms) 高于最大堆内存 (-Xmx) 的冲突配置".to_string());
+    }
+
+    // 2. 识别 GC 参数并仲裁（单选机制，解决 Conflicting collector combinations）
+    const KNOWN_GCS: &[&str] = &[
+        "UseG1GC",
+        "UseZGC",
+        "UseShenandoahGC",
+        "UseParallelGC",
+        "UseParallelOldGC",
+        "UseSerialGC",
+        "UseConcMarkSweepGC",
+        "UseParNewGC",
+        "UseEpsilonGC",
+    ];
+
+    let mut present_gcs = Vec::new();
+    for arg in &raw_args {
+        for &gc in KNOWN_GCS {
+            if arg == &format!("-XX:+{gc}") {
+                present_gcs.push((gc, true));
+            } else if arg == &format!("-XX:-{gc}") {
+                present_gcs.push((gc, false));
+            }
+        }
+    }
+
+    // 挑选最后一个被开启的 GC
+    let mut chosen_gc = None;
+    for &(gc, enabled) in present_gcs.iter().rev() {
+        if enabled {
+            chosen_gc = Some(gc);
+            break;
+        }
+    }
+
+    // 校验所选 GC 与当前 Java 版本/位数是否兼容（CMS 在 14+ 已移除、ZGC 需 15+ 且 64 位、
+    // Epsilon 不回收内存会很快 OOM 等），不兼容时统一回退到 G1GC
+    if let Some(gc) = chosen_gc {
+        if !gc_supported_on(gc, java_major, is_64bit) {
+            messages.push(format!(
+                "当前 Java {}（{}）不支持或不适合 {}，已自动替换为 G1GC 避免 VM 启动崩溃",
+                java_major,
+                if is_64bit { "64 位" } else { "32 位" },
+                gc
+            ));
+            chosen_gc = Some("UseG1GC");
+        }
+    }
+
+    let unique_enabled_gcs: HashSet<_> = present_gcs.iter().filter(|(_, en)| *en).map(|(gc, _)| *gc).collect();
+    if unique_enabled_gcs.len() > 1 {
+        if let Some(gc) = chosen_gc {
+            messages.push(format!("检测到同时指定了多个互斥的垃圾回收器，已自动仲裁保留 [{}] 并清理冲突项", gc));
+        }
+    }
+
+    // 3. 过滤并重组非内存参数
+    let mut non_mem_args = Vec::new();
+    // Keep first-seen order (deterministic command lines, easier log diffs)
+    // while letting later duplicates override the value.
+    let mut system_prop_order: Vec<String> = Vec::new();
+    let mut seen_system_props: HashMap<String, String> = HashMap::new();
+    let mut has_unlock_experimental = false;
+
+    for arg in raw_args {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() || trimmed.starts_with("-Xmx") || trimmed.starts_with("-Xms") {
+            continue;
+        }
+
+        // 检查废弃参数
+        if is_deprecated_vm_flag(trimmed, java_major) {
+            messages.push(format!("已自动移除当前 Java {} 不支持的历史废弃参数: {}", java_major, trimmed));
+            continue;
+        }
+
+        // 检查 GC 互斥参数
+        let mut is_gc_flag = false;
+        for &gc in KNOWN_GCS {
+            if trimmed == format!("-XX:+{gc}") || trimmed == format!("-XX:-{gc}") {
+                is_gc_flag = true;
+                break;
+            }
+        }
+        if is_gc_flag {
+            // GC 开关统一在重构时添加 chosen_gc
+            continue;
+        }
+
+        // 如果最终未采用 G1GC，清理 G1GC 专属参数
+        if chosen_gc != Some("UseG1GC") {
+            if trimmed.starts_with("-XX:G1") || trimmed == "-XX:+UseStringDeduplication" {
+                continue;
+            }
+        }
+
+        // 如果最终未采用 CMS，清理 CMS 专属参数
+        if chosen_gc != Some("UseConcMarkSweepGC") {
+            if trimmed.starts_with("-XX:CMS") || trimmed.starts_with("-XX:+CMS") || trimmed.starts_with("-XX:-CMS") {
+                continue;
+            }
+        }
+
+        // 记录 UnlockExperimentalVMOptions
+        if trimmed == "-XX:+UnlockExperimentalVMOptions" {
+            has_unlock_experimental = true;
+            continue;
+        }
+
+        // 系统属性 -D 去重（除类路径、原生库路径外）
+        if trimmed.starts_with("-D") && trimmed.contains('=') && !trimmed.starts_with("-Djava.class.path") && !trimmed.starts_with("-Djava.library.path") {
+            let key = trimmed.split('=').next().unwrap_or(trimmed).to_string();
+            if seen_system_props.insert(key.clone(), trimmed.to_string()).is_none() {
+                system_prop_order.push(key);
+            }
+            continue;
+        }
+
+        non_mem_args.push(trimmed.to_string());
+    }
+
+    // 4. 重组最终 JVM 参数
+    let mut final_args = Vec::new();
+    final_args.push(format!("-Xms{init_mb}M"));
+    final_args.push(format!("-Xmx{max_mb}M"));
+
+    if let Some(gc) = chosen_gc {
+        final_args.push(format!("-XX:+{gc}"));
+    }
+
+    if has_unlock_experimental {
+        final_args.push("-XX:+UnlockExperimentalVMOptions".to_string());
+    }
+
+    for key in system_prop_order {
+        if let Some(prop) = seen_system_props.remove(&key) {
+            final_args.push(prop);
+        }
+    }
+
+    final_args.extend(non_mem_args);
+
+    (final_args, messages)
+}
+
+/// VM-level flags (`-X…` / `-XX:…`) are what make the JVM refuse to start
+/// ("Could not create the Java Virtual Machine", "Unrecognized VM option",
+/// "Invalid maximum heap size", "Could not reserve enough space"). Those
+/// failures happen before Minecraft writes a single log line.
+fn is_vm_flag(arg: &str) -> bool {
+    arg.starts_with("-X") && !arg.starts_with("-Xbootclasspath")
+}
+
+fn is_unlock_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-XX:+UnlockExperimentalVMOptions" | "-XX:+UnlockDiagnosticVMOptions"
+    )
+}
+
+fn replace_heap_flags(args: &mut Vec<String>, xms_mb: u64, xmx_mb: u64) {
+    args.retain(|a| !a.starts_with("-Xmx") && !a.starts_with("-Xms"));
+    args.insert(0, format!("-Xmx{xmx_mb}M"));
+    args.insert(0, format!("-Xms{xms_mb}M"));
+}
+
+/// 启动前 VM 自检：用最终的 VM 参数执行一次 `java <flags> -version`。
+///
+/// 预检失败时按以下顺序逐级降级，直到 JVM 能够成功创建：
+/// 1. 逐个探测并移除当前 Java 不认识的 `-XX` / `-X` 参数（例如在 Java 17 上
+///    使用了 Java 21 才有的 `-XX:+ZGenerational`、OpenJ9 不认识的 HotSpot 参数）；
+/// 2. 把初始堆降到 256M（物理内存紧张时 -Xms 的提交会直接失败）；
+/// 3. 逐级降低最大堆内存（32 位 / 内存不足 / 页面文件过小）；
+/// 4. 移除全部调优参数，只保留内存设置。
+///
+/// 结果按「Java 路径 + 参数」缓存，正常启动只多一次约 100ms 的预检。
+fn ensure_vm_bootable(
+    java: &Path,
+    jvm_args: Vec<String>,
+    is_64bit: bool,
+    notes: &mut Vec<String>,
+) -> Vec<String> {
+    let vm_flags = |args: &[String]| -> Vec<String> {
+        args.iter().filter(|a| is_vm_flag(a)).cloned().collect()
+    };
+    let boots = |args: &[String]| -> bool {
+        let flags = vm_flags(args);
+        let refs: Vec<&str> = flags.iter().map(String::as_str).collect();
+        java::jvm_flags_supported(java, &refs)
+    };
+
+    if boots(&jvm_args) {
+        return jvm_args;
+    }
+
+    // If even a flag-free JVM cannot start (broken install, antivirus holding
+    // the binary, very slow first start), degrading arguments would only hide
+    // the real cause. Leave them untouched and let the launch report it.
+    if !java::jvm_flags_supported(java, &["-Dcobble.preflight=1"]) {
+        notes.push("启动前 VM 自检：所选 Java 无法正常响应，已跳过参数降级（请检查 Java 是否完整或被安全软件拦截）".to_string());
+        return jvm_args;
+    }
+
+    let mut args = jvm_args;
+
+    // Step 1: find individually rejected flags (probed in parallel).
+    let unlocks: Vec<String> = args.iter().filter(|a| is_unlock_flag(a)).cloned().collect();
+    let candidates: Vec<String> = args
+        .iter()
+        .filter(|a| is_vm_flag(a) && !is_unlock_flag(a))
+        .filter(|a| !a.starts_with("-Xmx") && !a.starts_with("-Xms"))
+        .cloned()
+        .collect();
+    let rejected: HashSet<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = candidates
+            .iter()
+            .map(|flag| {
+                let unlocks = &unlocks;
+                scope.spawn(move || {
+                    let mut probe: Vec<&str> = unlocks.iter().map(String::as_str).collect();
+                    probe.push(flag.as_str());
+                    (flag.clone(), java::jvm_flags_supported(java, &probe))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter(|(_, ok)| !ok)
+            .map(|(flag, _)| flag)
+            .collect()
+    });
+    if !rejected.is_empty() {
+        let mut list: Vec<&String> = rejected.iter().collect();
+        list.sort();
+        notes.push(format!(
+            "启动前 VM 自检：当前 Java 不支持以下参数，已自动移除 → {}",
+            list.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")
+        ));
+        args.retain(|a| !rejected.contains(a));
+        if boots(&args) {
+            return args;
+        }
+    }
+
+    // Step 2/3: heap reservation problems.
+    let current_xmx = args
+        .iter()
+        .find(|a| a.starts_with("-Xmx"))
+        .and_then(|a| parse_memory_spec_mb(a))
+        .unwrap_or(2048);
+    let mut ladder: Vec<u64> = vec![current_xmx];
+    for candidate in [current_xmx * 3 / 4, current_xmx / 2, 4096, 3072, 2048, 1536, 1024, 768, 512] {
+        if candidate >= 512 && candidate < current_xmx && !ladder.contains(&candidate) {
+            ladder.push(candidate);
+        }
+    }
+    if !is_64bit {
+        ladder.retain(|mb| *mb <= 1024);
+        if ladder.is_empty() {
+            ladder.push(1024);
+        }
+    }
+    for xmx in ladder {
+        let mut trial = args.clone();
+        replace_heap_flags(&mut trial, 256.min(xmx), xmx);
+        if boots(&trial) {
+            notes.push(if xmx == current_xmx {
+                "启动前 VM 自检：系统可用内存不足以预留初始堆，已将 -Xms 降为 256M".to_string()
+            } else {
+                format!(
+                    "启动前 VM 自检：无法分配 {current_xmx}M 最大堆内存（可能是 32 位 Java、物理内存或虚拟内存不足），已自动降为 {xmx}M"
+                )
+            });
+            return trial;
+        }
+    }
+
+    // Step 4: last resort — drop every tuning flag, keep a conservative heap.
+    let mut minimal: Vec<String> = args.into_iter().filter(|a| !is_vm_flag(a)).collect();
+    let safe_xmx = if is_64bit { current_xmx.min(2048) } else { 1024 };
+    replace_heap_flags(&mut minimal, 256, safe_xmx);
+    notes.push(format!(
+        "启动前 VM 自检未通过，已移除全部 JVM 调优参数并以安全模式（{safe_xmx}M）启动；若仍失败请在设置中改用自动检测的 Java"
+    ));
+    minimal
+}
+
+/// Old LWJGL 2 builds (1.12.2 and older) and some Java 8 releases cannot load
+/// native libraries from a path containing non-ASCII characters — exactly what
+/// happens with a Chinese Windows user name or launcher folder. Mirror the
+/// extracted natives into an ASCII-only directory in that case.
+fn ascii_safe_natives_dir(natives_dir: &Path, version_id: &str, notes: &mut Vec<String>) -> PathBuf {
+    if natives_dir.to_string_lossy().is_ascii() {
+        return natives_dir.to_path_buf();
+    }
+    let mut bases: Vec<PathBuf> = Vec::new();
+    #[cfg(windows)]
+    {
+        for var in ["ProgramData", "PUBLIC", "SystemDrive"] {
+            if let Ok(value) = std::env::var(var) {
+                let mut base = PathBuf::from(value);
+                if var == "SystemDrive" {
+                    base.push("\\");
+                }
+                bases.push(base);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        bases.push(std::env::temp_dir());
+        bases.push(PathBuf::from("/tmp"));
+    }
+    let safe_id: String = version_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    // Short stable hash so two instances with the same sanitized id never share.
+    let hash = natives_dir
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    for base in bases {
+        if !base.to_string_lossy().is_ascii() {
+            continue;
+        }
+        let target = base
+            .join("CobbleLauncher")
+            .join("natives")
+            .join(format!("{safe_id}-{:08x}", hash as u32));
+        if std::fs::create_dir_all(&target).is_err() {
+            continue;
+        }
+        let mut ok = true;
+        if let Ok(entries) = std::fs::read_dir(natives_dir) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                if !src.is_file() {
+                    continue;
+                }
+                let dest = target.join(entry.file_name());
+                let same = match (std::fs::metadata(&src), std::fs::metadata(&dest)) {
+                    (Ok(a), Ok(b)) => a.len() == b.len(),
+                    _ => false,
+                };
+                // A running game keeps the DLL mapped; an identical file is fine.
+                if !same && std::fs::copy(&src, &dest).is_err() {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok && has_native_binaries(&target) {
+            notes.push(format!(
+                "原生库路径包含中文等非 ASCII 字符，已映射到 {} 防止 LWJGL 加载失败",
+                target.display()
+            ));
+            return target;
+        }
+    }
+    natives_dir.to_path_buf()
+}
+
+/// Encodes an argfile for the Java launcher. The launcher reads `@argfiles`
+/// in the system ANSI code page on Windows, so a UTF-8 file would mangle
+/// non-ASCII paths (e.g. `C:\Users\张三`) and Java reports
+/// "ClassNotFoundException" for the main class. Returns `None` when the text
+/// cannot be represented, in which case arguments are passed directly.
+#[cfg(windows)]
+fn encode_argfile(text: &str) -> Option<Vec<u8>> {
+    if text.is_ascii() {
+        return Some(text.as_bytes().to_vec());
+    }
+    unsafe extern "system" {
+        fn WideCharToMultiByte(
+            code_page: u32,
+            flags: u32,
+            wide: *const u16,
+            wide_len: i32,
+            out: *mut u8,
+            out_len: i32,
+            default_char: *const u8,
+            used_default: *mut i32,
+        ) -> i32;
+    }
+    const CP_ACP: u32 = 0;
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let len = i32::try_from(wide.len()).ok()?;
+    let mut used_default = 0i32;
+    // SAFETY: pointers and lengths come from live Vec buffers; a null output
+    // buffer with length 0 asks only for the required size.
+    let needed = unsafe {
+        WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wide.as_ptr(),
+            len,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            &mut used_default,
+        )
+    };
+    if needed <= 0 || used_default != 0 {
+        return None;
+    }
+    let mut out = vec![0u8; needed as usize];
+    let written = unsafe {
+        WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wide.as_ptr(),
+            len,
+            out.as_mut_ptr(),
+            needed,
+            std::ptr::null(),
+            &mut used_default,
+        )
+    };
+    if written <= 0 || used_default != 0 {
+        return None;
+    }
+    out.truncate(written as usize);
+    Some(out)
+}
+
+#[cfg(not(windows))]
+fn encode_argfile(text: &str) -> Option<Vec<u8>> {
+    Some(text.as_bytes().to_vec())
+}
+
 fn build_launch_spec(
     root: &Path,
     version: &VersionDetail,
@@ -2826,6 +3636,12 @@ fn build_launch_spec(
     if !client_jar.is_file() {
         return Err("客户端 jar 不存在，请重新安装该版本".to_string());
     }
+    if std::fs::metadata(&client_jar)
+        .map(|meta| meta.len() == 0)
+        .unwrap_or(true)
+    {
+        return Err("客户端 jar 为空或下载不完整，请在下载页重新安装该版本".to_string());
+    }
 
     let version_isolation = request.version_isolation.as_deref().unwrap_or("all");
     let target_game_dir = match version_isolation {
@@ -2862,7 +3678,6 @@ fn build_launch_spec(
     features.insert("is_quick_play_multiplayer".to_string(), false);
     features.insert("is_quick_play_realms".to_string(), false);
 
-    let memory = request.memory_mb.unwrap_or(4096).clamp(512, 65536);
     let skin_type = request.skin_type.as_deref().unwrap_or("random");
     let uuid = match request.auth.as_ref().map(|auth| auth.uuid.trim()) {
         Some(online_uuid) if !online_uuid.is_empty() => format_uuid_with_hyphens(online_uuid),
@@ -2877,35 +3692,86 @@ fn build_launch_spec(
         .unwrap_or_else(|| "legacy".to_string());
 
     let plan = plan_libraries(root, version, &features);
-    let mut classpath = plan.classpath;
+    let mut classpath = Vec::new();
+    let mut seen_cp = HashSet::new();
+    for p in plan.classpath {
+        let key = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if seen_cp.insert(key) {
+            classpath.push(p);
+        }
+    }
+    let client_jar_key = std::fs::canonicalize(&client_jar).unwrap_or_else(|_| client_jar.clone());
+    if seen_cp.insert(client_jar_key) {
+        classpath.push(client_jar.clone());
+    }
     let client_jar_filename = client_jar
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    classpath.push(client_jar);
     let classpath_string = classpath
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join(classpath_separator());
 
+    // A version directory can look installed while a download was interrupted.
+    // Java only reports a `NoClassDefFoundError` and exits with code 1 in that
+    // case, which is hard to diagnose from the game console. Refuse to start
+    // and name the missing file instead.
+    let missing_files: Vec<String> = classpath
+        .iter()
+        .filter(|path| {
+            !path.is_file()
+                || std::fs::metadata(path)
+                    .map(|meta| meta.len() == 0)
+                    .unwrap_or(true)
+        })
+        .take(3)
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    if !missing_files.is_empty() {
+        return Err(format!(
+            "游戏依赖不完整，缺少：{}。请在下载页重新安装 {}。",
+            missing_files.join("、"),
+            version.id
+        ));
+    }
+
     let natives_dir = instance_dir.join("natives");
     std::fs::create_dir_all(&natives_dir).map_err(|e| format!("无法创建 natives 目录: {e}"))?;
-    let has_native_binaries = std::fs::read_dir(&natives_dir)
-        .ok()
-        .map(|entries| {
-            entries.flatten().any(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "dll" | "so" | "dylib"))
-                    .unwrap_or(false)
-            })
-        })
+    // Re-extract only when the native jars changed or the previous extraction
+    // did not finish. Always deleting the directory would fail on Windows while
+    // the previous game process still has a DLL mapped.
+    let native_fingerprint = natives_fingerprint(&plan.native_jars);
+    let marker_path = natives_dir.join(".cobble-natives");
+    let marker_value = format!(
+        "{}|count={}",
+        native_fingerprint,
+        native_binary_count(&natives_dir)
+    );
+    let marker_matches = std::fs::read_to_string(&marker_path)
+        .map(|value| value.trim() == marker_value)
         .unwrap_or(false);
-    if !has_native_binaries && !plan.native_jars.is_empty() {
-        let _ = extract_natives(&plan.native_jars, &natives_dir);
+    if !marker_matches || !has_native_binaries(&natives_dir) {
+        let _ = std::fs::remove_file(&marker_path);
+        if !plan.native_jars.is_empty() {
+            let count = extract_natives(&plan.native_jars, &natives_dir).map_err(|error| {
+                format!(
+                    "无法准备 {} 的原生库：{error}。请先关闭仍在运行的游戏后重试。",
+                    version.id
+                )
+            })?;
+            let _ = std::fs::write(&marker_path, format!("{native_fingerprint}|count={count}"));
+        }
     }
+    if !has_native_binaries(&natives_dir) {
+        return Err(format!(
+            "原生库缺失，无法启动 {}。请在下载页重新安装该版本。",
+            version.id
+        ));
+    }
+    let mut launch_notes: Vec<String> = Vec::new();
+    let natives_dir = ascii_safe_natives_dir(&natives_dir, &version.id, &mut launch_notes);
 
     let mut vars: HashMap<String, String> = HashMap::new();
     let insert = |vars: &mut HashMap<String, String>, k: &str, v: String| {
@@ -2997,11 +3863,133 @@ fn build_launch_spec(
     }
     insert(&mut vars, "profile_name", player_name.to_string());
 
+    // 探测 Java 架构（64 位 vs 32 位），防止 32 位 JVM 分配 4G 堆导致初始化崩溃：
+    // Invalid maximum heap size: -Xmx4096M (The specified size exceeds the maximum representable size)
+    let java_install = java::probe_java(&java, "启动安全自检");
+    let is_64bit = java_install.as_ref().map(|i| i.is_64bit).unwrap_or(true);
+    // The version metadata only says which Java it *needs*; the runtime that
+    // actually runs may be newer (manual selection, compatible fallback).
+    // Every flag decision below must follow the real runtime, otherwise e.g.
+    // CMS flags survive on Java 17 and the VM refuses to start.
+    let required_major = java_major;
+    let java_major = java_install
+        .as_ref()
+        .map(|i| i.major)
+        .filter(|major| *major > 0)
+        .unwrap_or(required_major);
+    if java_major != required_major {
+        launch_notes.push(format!(
+            "该版本声明需要 Java {required_major}，当前使用 Java {java_major}，已按实际运行时调整 JVM 参数"
+        ));
+    }
+
+    let configured_memory = request.memory_mb.unwrap_or(4096).clamp(512, 65536);
+    let (memory, memory_clamped_32bit) = if !is_64bit && configured_memory > 1024 {
+        (1024, true)
+    } else {
+        (configured_memory, false)
+    };
+
+    // Keep the initial heap modest. Asking the JVM to reserve most of -Xmx up
+    // front fails on machines that are already busy, and that failure happens
+    // before Minecraft writes a log: Java simply exits with code 1.
+    let xms = (memory / 2).clamp(if !is_64bit { 256 } else { 512 }, 2048);
     let mut jvm_args: Vec<String> = vec![
-        format!("-Xms{}M", (memory / 2).clamp(512, 2048)),
+        format!("-Xms{xms}M"),
         format!("-Xmx{memory}M"),
         format!("-Dminecraft.launcher.brand={custom_info}"),
     ];
+    if memory_clamped_32bit {
+        jvm_args.push("-Dcobble.jvm.32bit_clamped=true".to_string());
+    }
+
+    // Helper: append optimization arg if not already specified by user or version json
+    fn add_opt_arg(args: &mut Vec<String>, existing: &[String], arg: &str) {
+        let key = arg.split('=').next().unwrap_or(arg);
+        let key_prefix = if key.starts_with("-XX:+") || key.starts_with("-XX:-") {
+            &key[5..]
+        } else {
+            key
+        };
+        let already_present = args.iter().chain(existing.iter()).any(|a| {
+            if a == arg || a.starts_with(key) {
+                return true;
+            }
+            if (a.starts_with("-XX:+") || a.starts_with("-XX:-")) && a[5..].starts_with(key_prefix)
+            {
+                return true;
+            }
+            false
+        });
+        if !already_present {
+            args.push(arg.to_string());
+        }
+    }
+
+    let version_jvm_raw = version
+        .arguments
+        .as_ref()
+        .map(|a| collect_arguments(&a.jvm, &features, &vars))
+        .unwrap_or_default();
+    let extra_jvm_raw: Vec<String> = request
+        .jvm_args
+        .as_deref()
+        .map(|s| s.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+
+    let combined_existing: Vec<String> = version_jvm_raw
+        .iter()
+        .chain(extra_jvm_raw.iter())
+        .cloned()
+        .collect();
+
+    let has_custom_gc = combined_existing
+        .iter()
+        .any(|a| (a.starts_with("-XX:+Use") || a.starts_with("-XX:-Use")) && a.ends_with("GC"));
+
+    // G1GC preset. Only stable flags are generated here: experimental options
+    // such as `G1NewSizePercent` make the JVM abort with exit code 1 unless the
+    // unlock flag precedes them, and that happens before Minecraft writes any
+    // log. A missing version log is therefore a launcher bug, not a mod bug.
+    //
+    // The preset is also probed against the selected Java. Non-HotSpot runtimes
+    // reject `-XX:+UseG1GC` outright, which used to make every launch fail with
+    // code 1 even though the version and account were fine.
+    let preset_flags: Vec<&str> = if java_major >= 9 {
+        vec![
+            "-XX:+UseG1GC",
+            "-XX:G1ReservePercent=20",
+            "-XX:MaxGCPauseMillis=50",
+            "-XX:G1HeapRegionSize=32M",
+            "-XX:+ParallelRefProcEnabled",
+        ]
+    } else {
+        vec![
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=50",
+            "-XX:+ParallelRefProcEnabled",
+        ]
+    };
+    let preset_supported = !has_custom_gc && java::jvm_flags_supported(&java, &preset_flags);
+    if preset_supported {
+        for flag in &preset_flags {
+            add_opt_arg(&mut jvm_args, &combined_existing, flag);
+        }
+        // String deduplication is G1-only and experimental on Java 8; it is
+        // safe to add only alongside a verified preset on Java 9+.
+        if java_major >= 9 {
+            add_opt_arg(
+                &mut jvm_args,
+                &combined_existing,
+                "-XX:+UseStringDeduplication",
+            );
+        }
+    }
+
+    // UTF-8 encoding is a system property, not a VM tuning flag, and is safe on
+    // every runtime. Do not force the IPv4 stack: it breaks IPv6 servers, which
+    // is the main connection path this launcher targets.
+    add_opt_arg(&mut jvm_args, &combined_existing, "-Dfile.encoding=UTF-8");
     let legacy_template = version.arguments.is_none();
     let window_args_supported = window_size_supported(version);
 
@@ -3077,6 +4065,19 @@ fn build_launch_spec(
         }
     }
 
+    // 针对版本特性与系统环境，对所有 JVM 参数进行冲突仲裁与安全清洗：
+    // 消除 GC 互斥冲突、纠正内存倒挂、移除高版本废弃参数、确保实验参数解锁顺序
+    let (sanitized_args, sanitize_notes) = sanitize_jvm_arguments(
+        jvm_args,
+        java_major,
+        is_64bit,
+        memory,
+    );
+    launch_notes.extend(sanitize_notes);
+
+    // 启动前 VM 自检：确保最终参数能让 JVM 成功创建，否则逐级安全降级
+    let mut jvm_args = ensure_vm_bootable(&java, sanitized_args, is_64bit, &mut launch_notes);
+
     jvm_args.push(version.main_class.clone());
 
     let mut game_args = if let Some(arguments) = &version.arguments {
@@ -3138,6 +4139,52 @@ fn build_launch_spec(
         }
     }
 
+    // Windows 命令行上限为 32767 个字符（含 Java 路径与游戏参数）。大型整合包的类路径
+    // 可能超出该限制导致 CreateProcess 失败，此时在 Java 9+ 上改用标准 @argfile 传递
+    // JVM 参数。argfile 由 Java 启动器按系统 ANSI 代码页读取，因此按该编码写入；
+    // 无法表示的字符（极少见）则保持直接传参。只在真正需要时使用，避免引入额外风险。
+    let main_class_index = jvm_args.len().saturating_sub(1);
+    let command_len: usize = java.to_string_lossy().len()
+        + 3
+        + jvm_args
+            .iter()
+            .chain(game_args.iter())
+            .map(|a| a.len() + 3)
+            .sum::<usize>();
+    if cfg!(windows) && command_len > 30_000 {
+        if java_major >= 9 {
+            let argfile_path = instance_dir.join(".cobble_jvm_args.txt");
+            let mut argfile_content = String::new();
+            for arg in &jvm_args[..main_class_index] {
+                if arg.contains(' ') || arg.contains('\t') || arg.contains('"') || arg.contains('#') {
+                    argfile_content.push('"');
+                    argfile_content.push_str(&arg.replace('\\', "\\\\").replace('"', "\\\""));
+                    argfile_content.push('"');
+                } else {
+                    argfile_content.push_str(arg);
+                }
+                argfile_content.push('\n');
+            }
+            match encode_argfile(&argfile_content) {
+                Some(bytes) if std::fs::write(&argfile_path, &bytes).is_ok() => {
+                    let main_class = jvm_args[main_class_index].clone();
+                    jvm_args = vec![format!("@{}", argfile_path.to_string_lossy()), main_class];
+                    launch_notes.push(format!(
+                        "启动命令长度 {command_len} 字符接近 Windows 上限，已改用 JVM 参数文件传递"
+                    ));
+                }
+                _ => launch_notes.push(
+                    "启动命令过长且路径含系统代码页无法表示的字符，无法使用参数文件；若启动失败请将游戏目录移动到纯英文路径"
+                        .to_string(),
+                ),
+            }
+        } else {
+            launch_notes.push(format!(
+                "启动命令长度 {command_len} 字符超过 Windows 上限且 Java 8 不支持参数文件；建议减少模组数量或缩短游戏目录路径"
+            ));
+        }
+    }
+
     let mut args = jvm_args;
     args.extend(game_args);
 
@@ -3146,6 +4193,7 @@ fn build_launch_spec(
         args,
         cwd: target_game_dir,
         java_major,
+        notes: launch_notes,
     })
 }
 
@@ -3188,6 +4236,7 @@ pub async fn prepare_launch(
 
     let version_id = request.version_id.clone();
     let app_progress = progress.clone();
+    let java_threads = net::download_threads().clamp(2, 16);
     let java_progress: JavaProgressFn = Arc::new(move |p| {
         let mut item = InstallProgress::basic(
             version_id.clone(),
@@ -3199,17 +4248,22 @@ pub async fn prepare_launch(
         if p.stage == "download" {
             item.downloaded_bytes = p.done;
             item.total_bytes = p.total;
-            item.threads = 8;
-            item.active_threads = if p.done < p.total { 8 } else { 0 };
-            if p.done < p.total {
-                item.active_tasks.push(ActiveDownloadTask {
-                    worker_id: 1,
-                    name: format!("temurin-jre-{java_major}"),
-                    stage: "java".to_string(),
-                    done_bytes: p.done,
-                    total_bytes: p.total,
-                    segments: 8,
-                });
+            let worker_count = java_threads;
+            item.threads = worker_count;
+            item.active_threads = if p.done < p.total { worker_count } else { 0 };
+            if p.done < p.total && p.total > 0 {
+                let part_done = p.done / (worker_count as u64);
+                let part_total = p.total / (worker_count as u64);
+                item.active_tasks = (0..worker_count)
+                    .map(|w| ActiveDownloadTask {
+                        worker_id: w + 1,
+                        name: format!("temurin-jre-{java_major} (分片 #{})", w + 1),
+                        stage: "java".to_string(),
+                        done_bytes: part_done,
+                        total_bytes: part_total,
+                        segments: worker_count as u32,
+                    })
+                    .collect();
             }
         }
         app_progress(item);
@@ -3258,7 +4312,9 @@ pub async fn prepare_launch(
                 )
             };
 
-            if let Some((val, sig, raw_uuid)) = fetch_mojang_textures_by_id_or_name(target_uuid, target_name).await {
+            if let Some((val, sig, raw_uuid)) =
+                fetch_mojang_textures_by_id_or_name(root, target_uuid, target_name).await
+            {
                 user_properties_override = Some(
                     serde_json::json!({
                         "textures": [{
@@ -4973,12 +6029,14 @@ mod tests {
             sha1: None,
             size: None,
         };
-        assert!(artifact_job(
-            &artifact,
-            Path::new("test"),
-            "net.minecraftforge:forge:1.21.11-61.2.4:client"
-        )
-        .is_none());
+        assert!(
+            artifact_job(
+                &artifact,
+                Path::new("test"),
+                "net.minecraftforge:forge:1.21.11-61.2.4:client"
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -5319,11 +6377,13 @@ description="A minimap."
         assert_eq!(listed[0].name, "Cartoon");
         assert_eq!(listed[0].pack_format, Some(15));
         assert!(!listed[0].enabled);
-        assert!(listed[0]
-            .icon_data_url
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("data:image/png;base64,"));
+        assert!(
+            listed[0]
+                .icon_data_url
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("data:image/png;base64,")
+        );
 
         // A hand-edited options.txt may list the bare name instead of
         // `file/<name>`; both mean the same pack.
@@ -5438,5 +6498,137 @@ description="A minimap."
         assert!(get_java_worlds(&temp, "1.20.1", Some("all")).is_empty());
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_sanitize_jvm_arguments_resolves_conflicts() {
+        // 1. 测试多个互斥 GC 仲裁：保留最后一个开启的 GC，剔除其它 GC
+        let raw = vec![
+            "-XX:+UseG1GC".to_string(),
+            "-XX:+UseZGC".to_string(),
+            "-XX:-UseParallelGC".to_string(),
+            "-XX:+UnlockExperimentalVMOptions".to_string(),
+            "-XX:G1ReservePercent=20".to_string(), // 选了 ZGC 后 G1 专属参数应被剔除
+            "-Dfile.encoding=GBK".to_string(),
+            "-Dfile.encoding=UTF-8".to_string(),   // 系统属性去重保留最后
+            "-Xmx8192M".to_string(),
+            "-Xms16384M".to_string(),              // 初始内存倒挂，应纠正
+        ];
+        let (cleaned, notes) = sanitize_jvm_arguments(raw, 21, true, 4096);
+        assert!(cleaned.contains(&"-XX:+UseZGC".to_string()));
+        assert!(!cleaned.contains(&"-XX:+UseG1GC".to_string()));
+        assert!(!cleaned.contains(&"-XX:G1ReservePercent=20".to_string()));
+        assert!(cleaned.contains(&"-Xms8192M".to_string()));
+        assert!(cleaned.contains(&"-Xmx8192M".to_string()));
+        assert!(cleaned.contains(&"-Dfile.encoding=UTF-8".to_string()));
+        assert!(!cleaned.contains(&"-Dfile.encoding=GBK".to_string()));
+        assert!(!notes.is_empty());
+
+        // 2. 测试 32 位 Java 内存防护与废弃 CMS 移除
+        let raw_32 = vec![
+            "-XX:+UseConcMarkSweepGC".to_string(),
+            "-XX:+CMSIncrementalMode".to_string(),
+            "-Xmx4096M".to_string(),
+        ];
+        let (cleaned_32, notes_32) = sanitize_jvm_arguments(raw_32, 17, false, 4096);
+        assert!(cleaned_32.contains(&"-Xmx1024M".to_string()));
+        assert!(cleaned_32.contains(&"-XX:+UseG1GC".to_string())); // Java 17 移除 CMS，纠正为 G1
+        assert!(!cleaned_32.contains(&"-XX:+CMSIncrementalMode".to_string()));
+        assert!(!notes_32.is_empty());
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn java8_drops_module_options_with_their_values() {
+        let raw = strings(&[
+            "-Xmx2048M",
+            "--add-opens",
+            "java.base/java.lang=ALL-UNNAMED",
+            "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
+            "-p",
+            "C:/libs/a.jar;C:/libs/b.jar",
+            "--illegal-access=permit",
+            "-cp",
+            "C:/game/client.jar",
+            "net.minecraft.client.main.Main",
+        ]);
+        let (cleaned, notes) = sanitize_jvm_arguments(raw, 8, true, 2048);
+        assert!(!cleaned.iter().any(|a| a.starts_with("--add") || a == "-p" || a.starts_with("--illegal")));
+        assert!(!cleaned.iter().any(|a| a.contains("ALL-UNNAMED") || a.contains("a.jar")));
+        // Unrelated pairs survive in order.
+        let cp = cleaned.iter().position(|a| a == "-cp").expect("-cp kept");
+        assert_eq!(cleaned[cp + 1], "C:/game/client.jar");
+        assert!(notes.iter().any(|n| n.contains("模块系统参数")));
+    }
+
+    #[test]
+    fn java17_keeps_module_options() {
+        let raw = strings(&["--add-opens", "java.base/java.lang=ALL-UNNAMED", "-Xmx2048M"]);
+        let (cleaned, _) = sanitize_jvm_arguments(raw, 17, true, 2048);
+        let idx = cleaned.iter().position(|a| a == "--add-opens").expect("kept");
+        assert_eq!(cleaned[idx + 1], "java.base/java.lang=ALL-UNNAMED");
+    }
+
+    #[test]
+    fn incompatible_gc_falls_back_to_g1() {
+        // ZGC on Java 11 needs experimental unlock and is not production ready.
+        let (cleaned, _) = sanitize_jvm_arguments(strings(&["-XX:+UseZGC"]), 11, true, 4096);
+        assert!(cleaned.contains(&"-XX:+UseG1GC".to_string()));
+        assert!(!cleaned.contains(&"-XX:+UseZGC".to_string()));
+
+        // ZGC on 32-bit is never available.
+        let (cleaned, _) = sanitize_jvm_arguments(strings(&["-XX:+UseZGC"]), 21, false, 1024);
+        assert!(cleaned.contains(&"-XX:+UseG1GC".to_string()));
+
+        // Epsilon never collects garbage.
+        let (cleaned, _) = sanitize_jvm_arguments(
+            strings(&["-XX:+UnlockExperimentalVMOptions", "-XX:+UseEpsilonGC"]),
+            21,
+            true,
+            4096,
+        );
+        assert!(cleaned.contains(&"-XX:+UseG1GC".to_string()));
+        assert!(!cleaned.contains(&"-XX:+UseEpsilonGC".to_string()));
+    }
+
+    #[test]
+    fn system_properties_keep_deterministic_order() {
+        let raw = strings(&["-Da=1", "-Db=2", "-Da=3", "-Dc=4"]);
+        let (cleaned, _) = sanitize_jvm_arguments(raw, 17, true, 2048);
+        let props: Vec<&String> = cleaned.iter().filter(|a| a.starts_with("-D")).collect();
+        assert_eq!(props, vec!["-Da=3", "-Db=2", "-Dc=4"]);
+    }
+
+    #[test]
+    fn runtime_compatibility_rules() {
+        assert!(java::runtime_compatible(8, 8));
+        assert!(!java::runtime_compatible(8, 17), "legacy versions must stay on Java 8");
+        assert!(java::runtime_compatible(17, 21));
+        assert!(java::runtime_compatible(16, 17));
+        assert!(!java::runtime_compatible(21, 17), "older runtime can never load newer classes");
+    }
+
+    #[test]
+    fn heap_flags_are_replaced_in_front() {
+        let mut args = strings(&["-Xms4096M", "-XX:+UseG1GC", "-Xmx8192M"]);
+        replace_heap_flags(&mut args, 256, 2048);
+        assert_eq!(args, strings(&["-Xms256M", "-Xmx2048M", "-XX:+UseG1GC"]));
+    }
+
+    #[test]
+    fn ascii_natives_dir_is_unchanged() {
+        let mut notes = Vec::new();
+        let dir = PathBuf::from("C:/games/.minecraft/versions/1.20.1/natives");
+        assert_eq!(ascii_safe_natives_dir(&dir, "1.20.1", &mut notes), dir);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn argfile_encoding_ascii_roundtrip() {
+        let text = "-cp\nC:\\games\\a.jar\n";
+        assert_eq!(encode_argfile(text).as_deref(), Some(text.as_bytes()));
     }
 }

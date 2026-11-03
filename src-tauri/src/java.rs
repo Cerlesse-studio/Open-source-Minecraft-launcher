@@ -1,8 +1,18 @@
+use std::time::SystemTime;
+
+static PROBED_JAVA_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (SystemTime, JavaInstall)>>,
+> = std::sync::OnceLock::new();
+
+fn probe_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (SystemTime, JavaInstall)>> {
+    PROBED_JAVA_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,13 +23,32 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static JAVA_CACHE: Mutex<Option<(Instant, PathBuf, Vec<JavaInstall>)>> = Mutex::new(None);
 
-#[derive(Debug, Clone, Serialize)]
+/// Result of probing whether a Java binary accepts a set of tuning flags.
+/// Vendor JVMs (OpenJ9, some embedded runtimes) reject HotSpot-only options and
+/// exit before Minecraft starts, so the launcher must ask instead of assuming.
+static JVM_FLAG_SUPPORT: std::sync::OnceLock<
+    Mutex<std::collections::HashMap<(PathBuf, String), bool>>,
+> = std::sync::OnceLock::new();
+
+fn jvm_flag_cache() -> &'static Mutex<std::collections::HashMap<(PathBuf, String), bool>> {
+    JVM_FLAG_SUPPORT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Installing the same runtime twice at once used to let one task delete the
+/// extraction directory while the other was still writing into it, leaving a
+/// half-populated JRE that later launches treated as valid. Serialise runtime
+/// provisioning; the download is rare enough that the extra wait is invisible.
+static JAVA_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JavaInstall {
     pub path: String,
     pub major: u32,
     pub version: String,
     pub source: String,
+    #[serde(default)]
+    pub is_64bit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,14 +86,18 @@ struct AdoptiumVersion {
 }
 
 fn java_exe() -> &'static str {
-    if cfg!(windows) {
-        "java.exe"
-    } else {
-        "java"
-    }
+    if cfg!(windows) { "java.exe" } else { "java" }
+}
+
+pub fn clean_java_env(cmd: &mut Command) {
+    cmd.env_remove("_JAVA_OPTIONS");
+    cmd.env_remove("JAVA_TOOL_OPTIONS");
+    cmd.env_remove("JAVA_OPTIONS");
+    cmd.env_remove("IBM_JAVA_OPTIONS");
 }
 
 fn no_window(cmd: &mut Command) {
+    clean_java_env(cmd);
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -75,7 +108,18 @@ fn no_window(cmd: &mut Command) {
     }
 }
 
-fn probe_java(path: &Path, source: &str) -> Option<JavaInstall> {
+pub fn probe_java(path: &Path, source: &str) -> Option<JavaInstall> {
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    if let Ok(guard) = probe_cache().lock() {
+        if let Some((cached_mtime, install)) = guard.get(path) {
+            if *cached_mtime == mtime {
+                let mut res = install.clone();
+                res.source = source.to_string();
+                return Some(res);
+            }
+        }
+    }
+
     let mut cmd = Command::new(path);
     cmd.arg("-version");
     no_window(&mut cmd);
@@ -99,12 +143,34 @@ fn probe_java(path: &Path, source: &str) -> Option<JavaInstall> {
     } else {
         first.parse().ok()?
     };
-    Some(JavaInstall {
+
+    let lower_text = text.to_ascii_lowercase();
+    let path_lower = path.to_string_lossy().to_ascii_lowercase();
+    let is_x86_dir = path_lower.contains("program files (x86)") || path_lower.contains("syswow64");
+    let is_64bit = if lower_text.contains("64-bit")
+        || lower_text.contains("x86_64")
+        || lower_text.contains("amd64")
+        || lower_text.contains("aarch64")
+        || lower_text.contains("arm64")
+    {
+        true
+    } else if is_x86_dir || lower_text.contains("client vm") || lower_text.contains("32-bit") {
+        false
+    } else {
+        !cfg!(windows) && cfg!(target_pointer_width = "64")
+    };
+
+    let install = JavaInstall {
         path: path.to_string_lossy().to_string(),
         major,
         version,
         source: source.to_string(),
-    })
+        is_64bit,
+    };
+    if let Ok(mut guard) = probe_cache().lock() {
+        guard.insert(path.to_path_buf(), (mtime, install.clone()));
+    }
+    Some(install)
 }
 
 fn add_candidate(list: &mut Vec<(PathBuf, &'static str)>, path: PathBuf, source: &'static str) {
@@ -265,15 +331,39 @@ fn candidate_paths(root: &Path) -> Vec<(PathBuf, &'static str)> {
         // macOS Homebrew OpenJDK paths
         for brew_base in ["/opt/homebrew/opt", "/usr/local/opt"] {
             let base = Path::new(brew_base);
-            for name in ["openjdk", "openjdk@17", "openjdk@21", "openjdk@11", "openjdk@8"] {
-                add_candidate(&mut list, base.join(name).join("bin").join(java_exe()), "系统安装");
-                add_candidate(&mut list, base.join(name).join("libexec").join("openjdk.jdk").join("Contents").join("Home").join("bin").join(java_exe()), "系统安装");
+            for name in [
+                "openjdk",
+                "openjdk@17",
+                "openjdk@21",
+                "openjdk@11",
+                "openjdk@8",
+            ] {
+                add_candidate(
+                    &mut list,
+                    base.join(name).join("bin").join(java_exe()),
+                    "系统安装",
+                );
+                add_candidate(
+                    &mut list,
+                    base.join(name)
+                        .join("libexec")
+                        .join("openjdk.jdk")
+                        .join("Contents")
+                        .join("Home")
+                        .join("bin")
+                        .join(java_exe()),
+                    "系统安装",
+                );
             }
         }
 
         // Additional Linux paths
         add_unix_candidates(&mut list, Path::new("/usr/lib64/jvm"), "系统安装");
-        add_candidate(&mut list, PathBuf::from("/etc/alternatives/java"), "系统安装");
+        add_candidate(
+            &mut list,
+            PathBuf::from("/etc/alternatives/java"),
+            "系统安装",
+        );
     }
 
     list
@@ -306,7 +396,7 @@ pub fn detect_java_installations(root: &Path) -> Vec<JavaInstall> {
 
     if let Ok(guard) = JAVA_CACHE.lock() {
         if let Some((timestamp, ref cached_root, ref cached_installs)) = *guard {
-            if cached_root == &root && timestamp.elapsed() < Duration::from_secs(15) {
+            if cached_root == &root && timestamp.elapsed() < Duration::from_secs(300) {
                 return cached_installs.clone();
             }
         }
@@ -337,13 +427,70 @@ pub fn detect_java_installations(root: &Path) -> Vec<JavaInstall> {
     });
 
     let mut sorted = installs;
-    sorted.sort_by(|a, b| b.major.cmp(&a.major).then_with(|| a.path.cmp(&b.path)));
+    sorted.sort_by(|a, b| {
+        b.is_64bit
+            .cmp(&a.is_64bit)
+            .then_with(|| b.major.cmp(&a.major))
+            .then_with(|| a.path.cmp(&b.path))
+    });
 
     if let Ok(mut guard) = JAVA_CACHE.lock() {
         *guard = Some((Instant::now(), root, sorted.clone()));
     }
 
     sorted
+}
+
+/// Checks the selected Java once per process with the exact flags the launcher
+/// intends to add. A rejected flag set means "launch without tuning" instead of
+/// a hard exit code 1 with no game log.
+pub fn jvm_flags_supported(java: &Path, flags: &[&str]) -> bool {
+    if flags.is_empty() {
+        return true;
+    }
+    let key = std::fs::canonicalize(java).unwrap_or_else(|_| java.to_path_buf());
+    let cache_key = (key, flags.join(" "));
+    if let Ok(cache) = jvm_flag_cache().lock() {
+        if let Some(supported) = cache.get(&cache_key) {
+            return *supported;
+        }
+    }
+
+    let mut command = Command::new(java);
+    clean_java_env(&mut command);
+    command
+        .args(flags)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let supported = match command.spawn() {
+        Ok(mut child) => {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break status.success(),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break false;
+                    }
+                }
+            }
+        }
+        Err(_) => false,
+    };
+
+    if let Ok(mut cache) = jvm_flag_cache().lock() {
+        cache.insert(cache_key, supported);
+    }
+    supported
 }
 
 pub fn find_managed_java(root: &Path, major: u32) -> Option<PathBuf> {
@@ -432,6 +579,31 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `runtime` can run a version whose metadata asks for `required`.
+///
+/// Class files are forward compatible, so a newer Java can always *load* the
+/// game. In practice versions that need Java 16+ (1.17+) run fine on newer
+/// LTS releases, while Java 8 era versions (LWJGL 2, legacy Forge/LaunchWrapper)
+/// break on Java 9+ and must stay on 8.
+pub fn runtime_compatible(required: u32, runtime: u32) -> bool {
+    if runtime == required {
+        return true;
+    }
+    runtime > required && required >= 16
+}
+
+/// Picks the closest compatible installed runtime (lowest newer major first,
+/// 64-bit preferred) when the exact major is unavailable.
+fn compatible_fallback(installs: &[JavaInstall], major: u32) -> Option<PathBuf> {
+    let mut candidates: Vec<&JavaInstall> = installs
+        .iter()
+        .filter(|i| runtime_compatible(major, i.major))
+        .filter(|i| i.is_64bit || !cfg!(target_pointer_width = "64"))
+        .collect();
+    candidates.sort_by(|a, b| a.major.cmp(&b.major));
+    candidates.first().map(|i| PathBuf::from(&i.path))
+}
+
 /// Returns a Java binary matching `major`, downloading a Temurin JRE when needed.
 pub async fn ensure_java(
     root: &Path,
@@ -439,20 +611,41 @@ pub async fn ensure_java(
     preferred: Option<&str>,
     progress: Option<JavaProgressFn>,
 ) -> Result<PathBuf, String> {
+    let emit_note = |detail: String| {
+        if let Some(progress) = &progress {
+            progress(JavaProgress {
+                stage: "prepare".to_string(),
+                done: 0,
+                total: 0,
+                detail,
+            });
+        }
+    };
+
     if let Some(preferred) = preferred.map(str::trim).filter(|p| !p.is_empty()) {
         let path = PathBuf::from(preferred);
-        if !path.is_file() {
-            return Err(format!("指定的 Java 不存在: {}", path.display()));
+        match probe_java(&path, "手动指定") {
+            Some(install) if runtime_compatible(major, install.major) => return Ok(path),
+            Some(install) if install.major < major => {
+                // Guaranteed UnsupportedClassVersionError — never launch it.
+                emit_note(format!(
+                    "指定的 Java {}（{}）低于该版本要求的 Java {major}，已自动改用兼容的 Java",
+                    install.major, install.version
+                ));
+            }
+            Some(install) => {
+                emit_note(format!(
+                    "该版本需要 Java {major}，指定的 Java {} 可能导致旧版本/旧模组加载器崩溃，已自动改用 Java {major}",
+                    install.major
+                ));
+            }
+            None => {
+                emit_note(format!(
+                    "指定的 Java 不存在或无法运行（{}），已自动改用检测到的 Java",
+                    path.display()
+                ));
+            }
         }
-        let install = probe_java(&path, "手动指定")
-            .ok_or_else(|| format!("无法运行指定的 Java: {}", path.display()))?;
-        if install.major != major {
-            return Err(format!(
-                "这个版本需要 Java {major}，但指定的 Java 是 {}（{}）。请在设置中改用自动检测。",
-                install.major, install.version
-            ));
-        }
-        return Ok(path);
     }
 
     if let Some(path) = find_managed_java(root, major) {
@@ -460,8 +653,31 @@ pub async fn ensure_java(
     }
 
     let installs = detect_java_installations(root);
-    if let Some(install) = installs.into_iter().find(|i| i.major == major) {
-        return Ok(PathBuf::from(install.path));
+    // 在 64 位系统环境下，必须优先选择 64 位 Java，避免 32 位内存寻址上限（4G 堆崩溃）
+    if let Some(install) = installs.iter().find(|i| i.major == major && i.is_64bit) {
+        return Ok(PathBuf::from(&install.path));
+    }
+
+    // 若操作系统本身为 32 位，则允许匹配 32 位 Java
+    if !cfg!(target_pointer_width = "64") {
+        if let Some(install) = installs.iter().find(|i| i.major == major) {
+            return Ok(PathBuf::from(&install.path));
+        }
+    }
+
+    let _install_guard = JAVA_INSTALL_LOCK.lock().await;
+    // Another launch may have finished installing this runtime while we waited.
+    if let Some(path) = find_managed_java(root, major) {
+        return Ok(path);
+    }
+    let installs = detect_java_installations(root);
+    if let Some(install) = installs.iter().find(|i| i.major == major && i.is_64bit) {
+        return Ok(PathBuf::from(&install.path));
+    }
+    if !cfg!(target_pointer_width = "64") {
+        if let Some(install) = installs.iter().find(|i| i.major == major) {
+            return Ok(PathBuf::from(&install.path));
+        }
     }
 
     let emit = |stage: &str, done: u64, total: u64, detail: String| {
@@ -475,14 +691,39 @@ pub async fn ensure_java(
         }
     };
 
+    let is_upgrade_from_32bit = installs.iter().any(|i| i.major == major && !i.is_64bit);
+    let prepare_detail = if is_upgrade_from_32bit {
+        format!("系统仅有 32 位 Java {major}（无法分配大内存），正在自动安装官方 64 位运行时")
+    } else {
+        format!("未检测到可用的 Java {major}，准备自动安装")
+    };
+
     emit(
         "prepare",
         0,
         0,
-        format!("未检测到 Java {major}，准备自动安装"),
+        prepare_detail,
     );
 
-    let release = fetch_adoptium_release(major).await?;
+    let release = match fetch_adoptium_release(major).await {
+        Ok(rel) => rel,
+        Err(e) => {
+            // 下载失败或离线时：先用同版本的 32 位 Java，再用兼容的更高版本 Java
+            if let Some(fallback_32) = installs.iter().find(|i| i.major == major) {
+                return Ok(PathBuf::from(&fallback_32.path));
+            }
+            if let Some(path) = compatible_fallback(&installs, major) {
+                emit(
+                    "prepare",
+                    0,
+                    0,
+                    format!("无法下载 Java {major}（{e}），已改用本机兼容的 Java"),
+                );
+                return Ok(path);
+            }
+            return Err(e);
+        }
+    };
     let package = release.binary.package;
     let runtime_dir = root.join("runtime").join(format!("temurin-{major}"));
     let cache_dir = root.join("runtime").join("cache");
@@ -523,22 +764,35 @@ pub async fn ensure_java(
         }
     };
 
-    net::download_file_multithreaded(
+    let download_result = net::download_file_multithreaded(
         &package.link,
         &archive_path,
         None,
         package.size,
-        8,
+        net::download_threads().clamp(2, 32),
         None,
         Some(&mut on_progress),
     )
-    .await?;
+    .await;
+    if let Err(error) = download_result {
+        let _ = std::fs::remove_file(&archive_path);
+        if let Some(path) = compatible_fallback(&installs, major) {
+            emit(
+                "prepare",
+                0,
+                0,
+                format!("Java {major} 下载失败（{error}），已改用本机兼容的 Java"),
+            );
+            return Ok(path);
+        }
+        return Err(error);
+    }
 
     emit("extract", 0, 0, format!("正在解压 Java {display_version}"));
 
     let archive = archive_path.clone();
     let dest = runtime_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    let extract_result = tokio::task::spawn_blocking(move || {
         if dest.exists() {
             let _ = std::fs::remove_dir_all(&dest);
         }
@@ -550,7 +804,24 @@ pub async fn ensure_java(
         }
     })
     .await
-    .map_err(|e| format!("解压任务失败: {e}"))??;
+    .map_err(|e| format!("解压任务失败: {e}"))
+    .and_then(|inner| inner);
+    if let Err(error) = extract_result {
+        // A corrupt archive or half-extracted runtime must not be reused by
+        // the next launch; clear both so it downloads cleanly again.
+        let _ = std::fs::remove_file(&archive_path);
+        let _ = std::fs::remove_dir_all(&runtime_dir);
+        if let Some(path) = compatible_fallback(&installs, major) {
+            emit(
+                "prepare",
+                0,
+                0,
+                format!("Java {major} 解压失败（{error}），已改用本机兼容的 Java"),
+            );
+            return Ok(path);
+        }
+        return Err(error);
+    }
 
     let _ = std::fs::remove_file(&archive_path);
 

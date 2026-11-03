@@ -22,7 +22,6 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
-  Sparkles,
   Star,
   Tag,
   Trash2,
@@ -206,32 +205,6 @@ function LaunchSettingsPanel({
   const [isDeleting, setIsDeleting] = useState(false);
   return (
     <div className="space-y-4">
-      {/* Scope Alert Badge */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
-            <SlidersHorizontal className="size-4" />
-          </div>
-          <div>
-            <p className="text-xs font-semibold text-foreground">
-              当前配置版本：<span className="font-mono text-primary font-bold">{versionId}</span> 专属设置
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
-              此面板内调整的内存、专属 Java、隔离模式及启动参数均仅对本版本生效，独立隔离保存，不会影响其他版本与全局设置。
-            </p>
-          </div>
-        </div>
-        {hasOverride ? (
-          <Badge className="h-5 text-[9.5px] bg-primary/20 text-primary border-primary/30">
-            已启用版本专属配置
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="h-5 text-[9.5px] text-muted-foreground border-border/60">
-            继承启动器默认值
-          </Badge>
-        )}
-      </div>
-
       <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-sm">
         <CardHeader className="border-b border-border/60 px-5 py-4">
           <div className="flex items-center justify-between">
@@ -240,7 +213,7 @@ function LaunchSettingsPanel({
                 <MemoryStick className="size-4" />
               </span>
               <div className="min-w-0">
-                <CardTitle className="text-[13px] font-medium">版本专属最大内存</CardTitle>
+                <CardTitle className="text-[13px] font-medium">版本最大内存</CardTitle>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
                   为当前版本分配独立的运行内存上限
                 </p>
@@ -281,7 +254,7 @@ function LaunchSettingsPanel({
                 <Coffee className="size-4" />
               </span>
               <div className="min-w-0">
-                <CardTitle className="text-[13px] font-medium">版本专属 Java 运行环境</CardTitle>
+                <CardTitle className="text-[13px] font-medium">Java 运行环境</CardTitle>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
                   可针对当前 Minecraft 版本指定专用 Java（如 1.12 需 Java 8，1.20 需 Java 17，1.21+ 需 Java 21）
                 </p>
@@ -352,8 +325,13 @@ function LaunchSettingsPanel({
                         onClick={() => onChange({ javaPath: j.path })}
                       >
                         <div className="flex flex-col min-w-0 pr-2">
-                          <span className="truncate font-medium">
+                          <span className="truncate font-medium flex items-center gap-1.5">
                             Java {j.major} ({j.version || "未知版本"})
+                            {j.is64Bit !== undefined && (
+                              <span className={cn("text-[9px] px-1 rounded", j.is64Bit ? "bg-emerald-500/15 text-emerald-500" : "bg-amber-500/15 text-amber-500")}>
+                                {j.is64Bit ? "64位" : "32位"}
+                              </span>
+                            )}
                           </span>
                           <span className="text-[10px] text-muted-foreground truncate font-mono">
                             {j.path}
@@ -395,7 +373,7 @@ function LaunchSettingsPanel({
             <div className="min-w-0">
               <CardTitle className="text-[13px] font-medium">启动选项与独立隔离</CardTitle>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                设置本版本专属的游戏隔离目录、窗口尺寸及 JVM 附加参数
+                设置本版本的游戏隔离目录、窗口尺寸及 JVM 附加参数
               </p>
             </div>
           </div>
@@ -520,7 +498,7 @@ function LaunchSettingsPanel({
             {/* Custom JVM Arguments */}
             <div className="space-y-1.5 md:col-span-2">
               <Label htmlFor="version-jvm-args" className="text-[11px] font-normal text-muted-foreground">
-                当前版本专属 JVM 附加参数
+                当前版本 JVM 附加参数
               </Label>
               <Input
                 id="version-jvm-args"
@@ -1355,34 +1333,6 @@ function VersionOverviewPanel({
 
   return (
     <div className="space-y-4">
-      {/* Scope Alert Badge */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
-            <LayoutDashboard className="size-4" />
-          </div>
-          <div>
-            <p className="text-xs font-semibold text-foreground">
-              当前配置版本：<span className="font-mono text-primary font-bold">{versionId}</span> 专属档案
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
-              {isBedrock
-                ? "此版本使用基岩版附加包（资源包 / 行为包），不加载 Java 模组。"
-                : "此版本已建立独立启动与模组配置，此处所有修改仅对本版本生效。"}
-            </p>
-          </div>
-        </div>
-        {hasOverride ? (
-          <Badge className="h-5 text-[9.5px] bg-primary/20 text-primary border-primary/30">
-            已启用专属独立配置
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="h-5 text-[9.5px] text-muted-foreground border-border/60">
-            继承全局统一默认
-          </Badge>
-        )}
-      </div>
-
       {/* Version Header Card */}
       <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-sm">
         <CardContent className="p-5">
@@ -1446,7 +1396,7 @@ function VersionOverviewPanel({
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" className="h-8 gap-1.5 text-xs shadow-2xs" onClick={onLaunch}>
                 <Play className="size-3.5 fill-current" />
-                以专属配置启动
+                启动游戏
               </Button>
               <Button
                 variant="outline"
@@ -1504,7 +1454,7 @@ function VersionOverviewPanel({
                 Java 运行环境
               </span>
               <Badge variant="outline" className="text-[9px] border-primary/30 text-primary">
-                {launchSettings.javaPath ? "专属环境" : "全局默认"}
+                {launchSettings.javaPath ? "独立环境" : "全局默认"}
               </Badge>
             </div>
           </CardHeader>
@@ -1548,15 +1498,15 @@ function VersionOverviewPanel({
       <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-2xs">
         <CardContent className="p-5 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h4 className="text-xs font-semibold text-foreground">需要调整本版本的专属参数？</h4>
+            <h4 className="text-xs font-semibold text-foreground">需要调整本版本的配置参数？</h4>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
-              可随时进入专属启动设置或模组管理面板对本版本进行单独定制。
+              可随时进入启动设置或模组管理面板对本版本进行单独定制。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={onGoToLaunch}>
               <Wrench className="size-3.5" />
-              调整专属启动设置
+              调整启动设置
             </Button>
             {isModded || isBedrock ? (
               <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs text-primary border-primary/30" onClick={onGoToMods}>
@@ -1640,8 +1590,8 @@ export function VersionSettingsView({
   return (
     <div className="space-y-5">
       <PageHeader
-        title="版本专属设置"
-        description={`当前正在单独配置已选定版本：${selectedVersion}（设置将独立保存于本版本，不影响全局与其他版本）`}
+        title="版本设置"
+        description={`当前正在配置已选定版本：${selectedVersion}（设置将独立保存于本版本，不影响全局设置）`}
         actions={
           <div className="flex items-center gap-3">
             <span className="hidden items-center gap-1.5 text-[10.5px] text-muted-foreground sm:flex">
@@ -1893,28 +1843,6 @@ export function VersionSettingsView({
               </div>
             ) : section === "personalize" ? (
               <div className="space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
-                      <Sparkles className="size-4" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-foreground">
-                        当前配置版本：<span className="font-mono text-primary font-bold">{selectedVersion}</span> 个性化设置
-                      </p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        定制该版本的专属图标、归属分类、显示别名、详细备注及快捷收藏状态。
-                      </p>
-                    </div>
-                  </div>
-                  {launchSettings.favorite ? (
-                    <Badge className="h-5 text-[9.5px] bg-amber-500/20 text-amber-500 border-amber-500/30 gap-1">
-                      <Star className="size-3 fill-current" />
-                      已加入收藏夹
-                    </Badge>
-                  ) : null}
-                </div>
-
                 <PersonalizationCard
                   versionId={selectedVersion}
                   settings={launchSettings}

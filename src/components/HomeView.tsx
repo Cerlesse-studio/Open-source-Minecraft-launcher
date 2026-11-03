@@ -37,6 +37,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, progressPercent } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import {
   channelLabel,
   getPatchNotes,
@@ -190,15 +191,16 @@ function HomePageContextMenu({
   onOpenSettings,
   onNotify,
 }: HomePageMenuProps) {
+  const { t } = useI18n();
   const isCustom = mode === "local" || mode === "online";
   return (
     <ContextMenuContent className="w-60">
       <ContextMenuLabel className="text-[10.5px] font-normal text-muted-foreground">
-        {mode === "preset" ? "更新新闻" : "自定义主页"}
+        {mode === "preset" ? t("更新新闻") : t("自定义主页")}
       </ContextMenuLabel>
       <ContextMenuItem disabled={loading} className="gap-2.5 text-[12.5px]" onSelect={onRefresh}>
         <RefreshCw className="size-3.5" />
-        {mode === "preset" ? "刷新更新新闻" : "刷新主页"}
+        {mode === "preset" ? t("刷新更新新闻") : t("刷新主页")}
       </ContextMenuItem>
       {mode === "preset" ? (
         <ContextMenuItem
@@ -207,7 +209,7 @@ function HomePageContextMenu({
           onSelect={() => copyText(activeTitle ?? "", activeTitle ?? "", onNotify)}
         >
           <Copy className="size-3.5" />
-          复制当前更新标题
+          {t("复制当前更新标题")}
         </ContextMenuItem>
       ) : null}
 
@@ -219,7 +221,7 @@ function HomePageContextMenu({
             onSelect={() => copyText(source, source, onNotify)}
           >
             <Copy className="size-3.5" />
-            {mode === "local" ? "复制主页文件路径" : "复制主页地址"}
+            {mode === "local" ? t("复制主页文件路径") : t("复制主页地址")}
           </ContextMenuItem>
           {mode === "local" ? (
             <ContextMenuItem
@@ -236,7 +238,7 @@ function HomePageContextMenu({
               }}
             >
               <FolderOpen className="size-3.5" />
-              打开文件所在文件夹
+              {t("打开文件所在文件夹")}
             </ContextMenuItem>
           ) : (
             <ContextMenuItem
@@ -244,7 +246,7 @@ function HomePageContextMenu({
               onSelect={() => void openExternalUrl(source)}
             >
               <ExternalLink className="size-3.5" />
-              在浏览器中打开
+              {t("在浏览器中打开")}
             </ContextMenuItem>
           )}
         </>
@@ -254,7 +256,7 @@ function HomePageContextMenu({
       <ContextMenuSub>
         <ContextMenuSubTrigger className="gap-2.5 text-[12.5px]">
           <LayoutTemplate className="size-3.5" />
-          主页内容
+          {t("主页内容")}
         </ContextMenuSubTrigger>
         <ContextMenuSubContent className="w-56">
           {HOME_PAGE_CHOICES.map((choice) => (
@@ -265,8 +267,8 @@ function HomePageContextMenu({
               onSelect={() => onChangeMode(choice.id)}
             >
               <span className="flex min-w-0 flex-col">
-                <span className="truncate">{choice.label}</span>
-                <span className="text-[10px] text-muted-foreground">{choice.hint}</span>
+                <span className="truncate">{t(choice.label)}</span>
+                <span className="text-[10px] text-muted-foreground">{t(choice.hint)}</span>
               </span>
             </ContextMenuCheckboxItem>
           ))}
@@ -274,7 +276,7 @@ function HomePageContextMenu({
       </ContextMenuSub>
       <ContextMenuItem className="gap-2.5 text-[12.5px]" onSelect={() => onOpenSettings?.()}>
         <SlidersHorizontal className="size-3.5" />
-        主页设置…
+        {t("主页设置…")}
       </ContextMenuItem>
     </ContextMenuContent>
   );
@@ -314,10 +316,11 @@ function LaunchContextMenu({
   onOpenSettings,
   onNotify,
 }: LaunchMenuProps) {
+  const { t } = useI18n();
   return (
     <ContextMenuContent className="w-60">
       <ContextMenuLabel className="text-[10.5px] font-normal text-muted-foreground">
-        启动
+        {t("启动")}
       </ContextMenuLabel>
       <ContextMenuItem
         disabled={busy}
@@ -329,7 +332,7 @@ function LaunchContextMenu({
       </ContextMenuItem>
       <ContextMenuItem className="gap-2.5 text-[12.5px]" onSelect={onOpenVersionSelect}>
         <Layers3 className="size-3.5" />
-        版本选择
+        {t("版本选择")}
       </ContextMenuItem>
       {installed ? (
         <ContextMenuItem
@@ -337,25 +340,25 @@ function LaunchContextMenu({
           onSelect={onOpenVersionSettings}
         >
           <SlidersHorizontal className="size-3.5" />
-          版本设置
+          {t("版本设置")}
         </ContextMenuItem>
       ) : null}
 
       <ContextMenuSeparator />
       <ContextMenuLabel className="text-[10.5px] font-normal text-muted-foreground">
-        玩家档案
+        {t("玩家档案")}
       </ContextMenuLabel>
       <ContextMenuItem
         className="gap-2.5 text-[12.5px]"
         onSelect={() => onOpenAccount?.()}
       >
         <UserRound className="size-3.5" />
-        {signedIn ? "账户信息…" : "登录微软账户…"}
+        {signedIn ? t("账户信息…") : t("登录微软账户…")}
       </ContextMenuItem>
       {isOffline ? (
         <ContextMenuItem className="gap-2.5 text-[12.5px]" onSelect={onUploadSkin}>
           <Camera className="size-3.5" />
-          上传离线皮肤…
+          {t("上传离线皮肤…")}
         </ContextMenuItem>
       ) : null}
       <ContextMenuItem
@@ -363,13 +366,13 @@ function LaunchContextMenu({
         onSelect={() => copyText(playerLabel, playerLabel, onNotify)}
       >
         <Copy className="size-3.5" />
-        复制玩家名
+        {t("复制玩家名")}
       </ContextMenuItem>
 
       <ContextMenuSeparator />
       <ContextMenuItem className="gap-2.5 text-[12.5px]" onSelect={() => onOpenSettings?.()}>
         <SlidersHorizontal className="size-3.5" />
-        启动器设置…
+        {t("启动器设置…")}
       </ContextMenuItem>
     </ContextMenuContent>
   );
@@ -475,6 +478,7 @@ export function HomeView({
   onSelectOffline,
   onSelectMicrosoft,
 }: HomeViewProps) {
+  const { t, language } = useI18n();
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
   const [bedrockLaunching, setBedrockLaunching] = useState(false);
   const [news, setNews] = useState<PatchNote[]>([]);
@@ -503,7 +507,7 @@ export function HomeView({
     homeMode === "local" ? settings?.homePageLocalPath : settings?.homePageUrl
   )?.trim();
   const homeUpdatedLabel = homeUpdatedAt
-    ? new Date(homeUpdatedAt).toLocaleTimeString("zh-CN", {
+    ? new Date(homeUpdatedAt).toLocaleTimeString(language === "en-US" ? "en-US" : "zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
       })
@@ -855,43 +859,43 @@ export function HomeView({
         ? "online"
         : "warn";
   const statusLabel = isRunning
-    ? "游戏运行中"
+    ? t("游戏运行中")
     : isLaunching || bedrockLaunching
-      ? activeProgress?.detail || runtime.detail || "正在检查运行环境…"
+      ? activeProgress?.detail || runtime.detail || t("正在检查运行环境…")
       : isBedrock
         ? isBedrockInstalled
-          ? settings?.statusText?.trim() || "基岩版已就绪，随时出发"
-          : "尚未下载安装此基岩版本"
+          ? settings?.statusText?.trim() || t("基岩版已就绪，随时出发")
+          : t("尚未下载安装此基岩版本")
         : isInstalled
-          ? settings?.statusText?.trim() || "准备就绪，随时出发"
+          ? settings?.statusText?.trim() || t("准备就绪，随时出发")
           : selectedVersion
-            ? "此版本尚未安装"
-            : "还没有可启动的版本";
+            ? t("此版本尚未安装")
+            : t("还没有可启动的版本");
   const launchLabel = isRunning
     ? isBedrock
-      ? "终止基岩版"
-      : "结束游戏"
+      ? t("终止基岩版")
+      : t("结束游戏")
     : isLaunching || bedrockLaunching
-      ? "正在启动…"
+      ? t("正在启动…")
       : isBedrock
         ? isBedrockInstalled
-          ? settings?.launchButtonText?.trim() || "启动基岩版"
-          : "下载基岩版"
+          ? settings?.launchButtonText?.trim() || t("启动基岩版")
+          : t("下载基岩版")
         : isInstalled
-          ? settings?.launchButtonText?.trim() || "启动游戏"
-          : "下载游戏";
+          ? settings?.launchButtonText?.trim() || t("启动游戏")
+          : t("下载游戏");
 
   /** Label of the big button; the right-click menu reuses it. */
   const primaryLabel = isRunning
     ? isBedrock
-      ? "终止基岩版"
-      : "停止运行"
+      ? t("终止基岩版")
+      : t("停止运行")
     : isLaunching || bedrockLaunching
-      ? "正在启动…"
+      ? t("正在启动…")
       : isBedrock
         ? isBedrockInstalled
-          ? settings?.launchButtonText?.trim() || "启动基岩版"
-          : "获取并下载基岩版"
+          ? settings?.launchButtonText?.trim() || t("启动基岩版")
+          : t("获取并下载基岩版")
         : launchLabel;
 
   /** The big button and the launch menu run the same action. */
@@ -915,7 +919,7 @@ export function HomeView({
         {/* 自定义主页：空白 / 本地 HTML / 联网 HTML，占据新闻面板的位置 */}
         {homeMode !== "preset" ? (
           <section
-            aria-label="自定义主页"
+            aria-label={t("自定义主页")}
             className="flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[900px]:min-h-0"
             onContextMenu={(event) => {
               event.preventDefault();
@@ -928,9 +932,9 @@ export function HomeView({
                   <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
                     <SquareDashed className="size-4 text-muted-foreground" />
                   </div>
-                  <h2 className="mt-4 text-[15px] font-medium">空白主页</h2>
+                  <h2 className="mt-4 text-[15px] font-medium">{t("空白主页")}</h2>
                   <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
-                    主页内容已清空，右侧启动面板不受影响。
+                    {t("主页内容已清空，右侧启动面板不受影响。")}
                   </p>
                   {onOpenSettings ? (
                     <Button
@@ -940,7 +944,7 @@ export function HomeView({
                       onClick={onOpenSettings}
                     >
                       <SlidersHorizontal className="size-3.5" />
-                      自定义主页
+                      {t("自定义主页")}
                     </Button>
                   ) : null}
                 </div>
@@ -959,14 +963,14 @@ export function HomeView({
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2">
                         <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
-                          {homeMode === "local" ? "本地自定义主页" : "在线自定义主页"}
+                          {homeMode === "local" ? t("本地自定义主页") : t("在线自定义主页")}
                         </h1>
                         {homeCompat ? (
                           <span
                             className="shrink-0 rounded border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-medium text-primary"
-                            title="已按 PCL2 主页（XAML）兼容模式渲染"
+                            title={t("PCL 兼容")}
                           >
-                            PCL 兼容
+                            {t("PCL 兼容")}
                           </span>
                         ) : null}
                         {homeCompat && homeWarnings.length > 0 ? (
@@ -974,7 +978,7 @@ export function HomeView({
                             className="shrink-0 cursor-help rounded border border-gold/30 bg-gold/10 px-1.5 py-0.5 text-[9.5px] text-gold"
                             title={homeWarnings.join("\n")}
                           >
-                            {homeWarnings.length} 项未兼容
+                            {t("{count} 项未兼容", { count: homeWarnings.length })}
                           </span>
                         ) : null}
                       </div>
@@ -982,7 +986,7 @@ export function HomeView({
                         className="mt-0.5 truncate text-[10.5px] text-muted-foreground"
                         title={homeSource || undefined}
                       >
-                        {homeSource || "尚未设置主页来源"}
+                        {homeSource || t("尚未设置主页来源")}
                       </p>
                     </div>
                   </div>
@@ -993,12 +997,12 @@ export function HomeView({
                         animated={homeLoading}
                       />
                       {homeError
-                        ? "同步失败"
+                        ? t("同步失败")
                         : homeLoading
-                          ? "正在加载"
+                          ? t("正在加载")
                           : homeUpdatedLabel
-                            ? `已更新 ${homeUpdatedLabel}`
-                            : "等待加载"}
+                            ? t("已更新 {time}", { time: homeUpdatedLabel })
+                            : t("等待加载")}
                     </span>
                     <Button
                       variant="ghost"
@@ -1006,8 +1010,8 @@ export function HomeView({
                       className="size-7 text-muted-foreground hover:text-foreground"
                       onClick={() => void loadCustomHome()}
                       disabled={homeLoading}
-                      aria-label="刷新自定义主页"
-                      title="刷新自定义主页"
+                      aria-label={t("刷新自定义主页")}
+                      title={t("刷新自定义主页")}
                     >
                       <RefreshCw className={cn("size-3.5", homeLoading && "animate-spin")} />
                     </Button>
@@ -1019,7 +1023,7 @@ export function HomeView({
                     <div className="grid h-full place-items-center">
                       <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
                         <LoaderCircle className="size-3.5 animate-spin" />
-                        正在加载自定义主页…
+                        {t("正在加载自定义主页…")}
                       </div>
                     </div>
                   ) : homeError && !homeHtml ? (
@@ -1028,11 +1032,11 @@ export function HomeView({
                         <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-gold/25 bg-gold/10">
                           <AlertTriangle className="size-4 text-gold" />
                         </div>
-                        <h2 className="mt-4 text-[15px] font-medium">主页加载失败</h2>
+                        <h2 className="mt-4 text-[15px] font-medium">{t("主页加载失败")}</h2>
                         <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
                           {homeMode === "local"
-                            ? "无法读取该 HTML 文件，请检查路径是否存在。"
-                            : "无法获取该地址，请检查网络与链接是否可访问。"}
+                            ? t("无法读取该 HTML 文件，请检查路径是否存在。")
+                            : t("无法获取该地址，请检查网络与链接是否可访问。")}
                         </p>
                         <p
                           className="mt-2 break-words font-mono text-[10px] text-muted-foreground/60"
@@ -1047,7 +1051,7 @@ export function HomeView({
                           onClick={() => void loadCustomHome()}
                         >
                           <RefreshCw className="size-3.5" />
-                          重新加载
+                          {t("重新加载")}
                         </Button>
                       </div>
                     </div>
@@ -1057,7 +1061,9 @@ export function HomeView({
                         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-gold/25 bg-gold/10 px-4 py-1.5 text-[10.5px] text-gold">
                           <AlertTriangle className="size-3.5 shrink-0" />
                           <span className="truncate">
-                            刷新失败，正在显示上一次成功加载的内容：{homeError}
+                            {t("刷新失败，正在显示上一次成功加载的内容：{error}", {
+                              error: homeError,
+                            })}
                           </span>
                         </div>
                       ) : null}
@@ -1075,8 +1081,8 @@ export function HomeView({
                       <div className="max-w-sm">
                         <p className="text-[12.5px] text-muted-foreground">
                           {homeMode === "local"
-                            ? "尚未选择本地 HTML 文件"
-                            : "尚未填写在线主页地址"}
+                            ? t("尚未选择本地 HTML 文件")
+                            : t("尚未填写在线主页地址")}
                         </p>
                         {onOpenSettings ? (
                           <Button
@@ -1086,7 +1092,7 @@ export function HomeView({
                             onClick={onOpenSettings}
                           >
                             <SlidersHorizontal className="size-3.5" />
-                            打开主页设置
+                            {t("打开主页设置")}
                           </Button>
                         ) : null}
                       </div>
@@ -1099,7 +1105,7 @@ export function HomeView({
         ) : null}
 
         <section
-          aria-label="我的世界更新新闻"
+          aria-label={t("我的世界更新新闻")}
           className={cn(
             "flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[900px]:min-h-0",
             homeMode !== "preset" && "hidden",
@@ -1116,17 +1122,17 @@ export function HomeView({
               </div>
               <div className="min-w-0">
                 <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
-                  我的世界更新新闻
+                  {t("我的世界更新新闻")}
                 </h1>
                 <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
-                  Mojang 官方 Java 版更新日志
+                  {t("Mojang 官方 Java 版更新日志")}
                 </p>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
               <span className="hidden items-center gap-1.5 text-[10px] text-muted-foreground min-[1160px]:flex">
                 <StatusDot tone={newsError ? "warn" : "online"} />
-                {newsError ? "同步失败" : "官方同步"}
+                {newsError ? t("同步失败") : t("官方同步")}
               </span>
               <Button
                 variant="ghost"
@@ -1134,8 +1140,8 @@ export function HomeView({
                 className="size-7 text-muted-foreground hover:text-foreground"
                 onClick={() => void loadNews(true)}
                 disabled={newsLoading}
-                aria-label="刷新更新新闻"
-                title="刷新更新新闻"
+                aria-label={t("刷新更新新闻")}
+                title={t("刷新更新新闻")}
               >
                 <RefreshCw className={cn("size-3.5", newsLoading && "animate-spin")} />
               </Button>
@@ -1154,9 +1160,9 @@ export function HomeView({
                   <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-gold/25 bg-gold/10">
                     <AlertTriangle className="size-4 text-gold" />
                   </div>
-                  <h2 className="mt-4 text-[15px] font-medium">更新新闻暂时不可用</h2>
+                  <h2 className="mt-4 text-[15px] font-medium">{t("更新新闻暂时不可用")}</h2>
                   <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
-                    无法连接 Mojang 更新服务。检查网络后重试，不影响启动游戏。
+                    {t("无法连接 Mojang 更新服务。检查网络后重试，不影响启动游戏。")}
                   </p>
                   <p
                     className="mt-2 break-words font-mono text-[10px] text-muted-foreground/60"
@@ -1171,7 +1177,7 @@ export function HomeView({
                     onClick={() => void loadNews(true)}
                   >
                     <RefreshCw className="size-3.5" />
-                    重新加载
+                    {t("重新加载")}
                   </Button>
                 </div>
               </div>
@@ -1186,7 +1192,7 @@ export function HomeView({
                         <TypeBadge
                           type={activeNews.type}
                           tone={isRelease(activeNews) ? "grass" : "gold"}
-                          label={channelLabel(activeNews)}
+                          label={t(channelLabel(activeNews))}
                         />
                         <span className="font-mono text-[10px] text-white/70">
                           {activeNews.version}
@@ -1196,7 +1202,10 @@ export function HomeView({
                           dateTime={activeNews.date || undefined}
                           className="text-[10.5px] text-white/60"
                         >
-                          {formatDate(activeNews.date)}
+                          {formatDate(
+                            activeNews.date,
+                            language === "en-US" ? "en-US" : "zh-CN",
+                          )}
                         </time>
                         <span className="ml-auto hidden text-[10px] text-white/45 sm:inline">
                           Java Edition
@@ -1225,10 +1234,10 @@ export function HomeView({
                 <div className="p-2">
                   <div className="flex items-center justify-between gap-3 px-3 pb-1.5 pt-2">
                     <h2 className="text-[11px] font-medium text-muted-foreground">
-                      最近更新
+                      {t("最近更新")}
                     </h2>
                     <span className="font-mono text-[10px] text-muted-foreground/60">
-                      {news.length} 条
+                      {t("{count} 条", { count: news.length })}
                     </span>
                   </div>
                   <div className="flex flex-col">
@@ -1260,9 +1269,12 @@ export function HomeView({
                               {note.title}
                             </p>
                             <p className="mt-0.5 text-[10px] text-muted-foreground">
-                              {channelLabel(note)}
+                              {t(channelLabel(note))}
                               <span className="mx-1.5 text-border">/</span>
-                              {formatDate(note.date)}
+                              {formatDate(
+                                note.date,
+                                language === "en-US" ? "en-US" : "zh-CN",
+                              )}
                             </p>
                           </div>
                           {active ? (
@@ -1276,14 +1288,14 @@ export function HomeView({
                     })}
                   </div>
                   <p className="px-3 pb-1 pt-2.5 text-[9.5px] text-muted-foreground/60">
-                    来自 Mojang 官方更新日志，保留英文原文。
+                    {t("来自 Mojang 官方更新日志，保留英文原文。")}
                   </p>
                 </div>
               </>
             ) : (
               <div className="grid min-h-[420px] place-items-center px-8 text-center">
                 <div>
-                  <p className="text-[13px] text-muted-foreground">暂无更新新闻</p>
+                  <p className="text-[13px] text-muted-foreground">{t("暂无更新新闻")}</p>
                   <Button
                     variant="outline"
                     size="sm"
@@ -1291,7 +1303,7 @@ export function HomeView({
                     onClick={() => void loadNews(true)}
                   >
                     <RefreshCw className="size-3.5" />
-                    重新加载
+                    {t("重新加载")}
                   </Button>
                 </div>
               </div>
@@ -1336,8 +1348,8 @@ export function HomeView({
               )}
               title={
                 isOffline
-                  ? "点击上传自定义皮肤 (PNG)"
-                  : "在线账户暂不支持本地皮肤上传"
+                  ? t("点击上传自定义皮肤 (PNG)")
+                  : t("在线账户暂不支持本地皮肤上传")
               }
             >
               <Avatar
@@ -1364,7 +1376,7 @@ export function HomeView({
                 skinUrl={account?.skinUrl}
               />
               <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
-                {isOffline ? "离线档案" : "在线档案"}
+                {isOffline ? t("离线档案") : t("在线档案")}
               </span>
 
               {isOffline ? (
@@ -1373,10 +1385,10 @@ export function HomeView({
                     <Camera className="size-5" />
                   </div>
                   <span className="text-[12px] font-medium text-white shadow-sm">
-                    点击上传皮肤
+                    {t("点击上传皮肤")}
                   </span>
                   <span className="text-[9.5px] text-white/70">
-                    支持 64×64 PNG
+                    {t("支持 64×64 PNG")}
                   </span>
                 </div>
               ) : null}
@@ -1393,22 +1405,24 @@ export function HomeView({
                   onNotify?.("info", "已恢复默认皮肤", "离线皮肤已重置为默认随机。");
                 }}
                 className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                title="恢复为默认随机皮肤"
+                title={t("恢复为默认随机皮肤")}
               >
                 <RotateCcw className="size-3" />
-                <span>恢复默认皮肤</span>
+                <span>{t("恢复默认皮肤")}</span>
               </button>
             ) : null}
 
             <div className="mt-3.5 min-w-0">
               <p className="truncate text-[19px] font-semibold leading-tight tracking-[-0.01em]">
-                {account?.signedIn ? account.name : playerName.trim() || "未命名玩家"}
+                {account?.signedIn ? account.name : playerName.trim() || t("未命名玩家")}
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
                 <span className="size-1.5 rounded-[1px] bg-primary/80" />
                 {account?.signedIn
-                  ? `正版账户 · Java 与基岩版共用 · XUID ${account.xuid || "—"}`
-                  : settings?.customSlogan?.trim() || "本地玩家档案 · Java 与基岩版混用共存"}
+                  ? t("正版账户 · Java 与基岩版共用 · XUID {xuid}", {
+                      xuid: account.xuid || "—",
+                    })
+                  : settings?.customSlogan?.trim() || t("本地玩家档案 · Java 与基岩版混用共存")}
               </p>
             </div>
           </div>
@@ -1447,11 +1461,11 @@ export function HomeView({
                 >
                   <span className="flex items-center gap-2 text-[12px] text-muted-foreground">
                     <LogIn className="size-3.5" />
-                    登录方式
+                    {t("登录方式")}
                   </span>
                   <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-foreground">
                     <span className="truncate">
-                      {account?.signedIn ? account.name : "离线账户"}
+                      {account?.signedIn ? account.name : t("离线账户")}
                     </span>
                     <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
                   </span>
@@ -1463,7 +1477,7 @@ export function HomeView({
                 className="w-[var(--radix-dropdown-menu-trigger-width)]"
               >
                 <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
-                  选择登录方式
+                  {t("选择登录方式")}
                 </DropdownMenuLabel>
                 <DropdownMenuItem className="gap-2.5" onSelect={() => onSelectOffline?.()}>
                   {account?.signedIn ? (
@@ -1471,9 +1485,9 @@ export function HomeView({
                   ) : (
                     <Check className="size-3.5 text-primary" />
                   )}
-                  离线账户
+                  {t("离线账户")}
                   <span className="ml-auto text-[9px] text-muted-foreground/70">
-                    {account?.signedIn ? "切换" : "当前"}
+                    {account?.signedIn ? t("切换") : t("当前")}
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
@@ -1490,7 +1504,7 @@ export function HomeView({
                     <span className="size-3.5 rounded-full border border-muted-foreground/40" />
                   )}
                   <span className="min-w-0 flex-1 truncate">
-                    {storedAccount?.signedIn ? storedAccount.name : "微软账户"}
+                    {storedAccount?.signedIn ? storedAccount.name : t("微软账户")}
                   </span>
                   {storedAccount?.signedIn ? (
                     <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -1514,12 +1528,12 @@ export function HomeView({
                             : "border-border/80 text-muted-foreground/70",
                         )}
                       >
-                        基岩版
+                        {t("基岩版")}
                       </Badge>
                     </span>
                   ) : (
                     <span className="ml-auto text-[9px] text-muted-foreground/70">
-                      点击登录
+                      {t("点击登录")}
                     </span>
                   )}
                 </DropdownMenuItem>
@@ -1529,7 +1543,7 @@ export function HomeView({
             {/* Player name input */}
             <div className="space-y-1.5">
               <label className="sr-only" htmlFor="home-player-name">
-                名称
+                {t("名称")}
               </label>
               <div className="relative">
                 <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1539,13 +1553,13 @@ export function HomeView({
                   onChange={(event) =>
                     account?.signedIn ? undefined : onPlayerNameChange(event.target.value.slice(0, 16))
                   }
-                  placeholder={account?.signedIn ? "正版账户名称" : "名称"}
+                  placeholder={account?.signedIn ? t("正版账户名称") : t("名称")}
                   maxLength={16}
                   autoComplete="off"
                   spellCheck={false}
                   disabled={Boolean(account?.signedIn)}
                   readOnly={Boolean(account?.signedIn)}
-                  title={account?.signedIn ? "使用正版账户时不可自定义角色名称" : undefined}
+                  title={account?.signedIn ? t("使用正版账户时不可自定义角色名称") : undefined}
                   aria-invalid={!account?.signedIn && nameInvalid}
                   aria-describedby={!account?.signedIn && nameInvalid ? "home-name-error" : undefined}
                   className="h-11 rounded-lg border-border/80 bg-background/35 pl-9 pr-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-70"
@@ -1553,7 +1567,7 @@ export function HomeView({
               </div>
               {!account?.signedIn && nameInvalid ? (
                 <p id="home-name-error" className="px-0.5 text-[10px] text-destructive">
-                  使用 1–16 位字母、数字或下划线
+                  {t("使用 1–16 位字母、数字或下划线")}
                 </p>
               ) : null}
             </div>
@@ -1619,7 +1633,7 @@ export function HomeView({
                 onClick={onOpenVersionSelect}
               >
                 <Layers3 className="size-3.5 text-muted-foreground" />
-                版本选择
+                {t("版本选择")}
               </Button>
 
               {effectiveInstalled ? (
@@ -1629,16 +1643,16 @@ export function HomeView({
                   onClick={onOpenVersionSettings}
                 >
                   <SlidersHorizontal className="size-3.5 text-muted-foreground" />
-                  版本设置
+                  {t("版本设置")}
                 </Button>
               ) : null}
             </div>
 
             {/* Unified Stats Footer */}
             <div className="mt-2 rounded-lg border border-border/60 bg-background/30 p-2.5 text-[11px] text-muted-foreground flex items-center justify-between">
-              <span>Java 版本: <strong className="text-foreground">{installed.length}</strong></span>
-              <span>基岩版: <strong className="text-foreground">{bedrockStatus?.uwpInstalled ? "UWP 已就绪" : `${bedrockStatus?.installedVersions.length ?? 0} 个核心`}</strong></span>
-              <span>附加包: <strong className="text-foreground">{(bedrockStatus?.resourcePacksCount ?? 0) + (bedrockStatus?.behaviorPacksCount ?? 0)}</strong></span>
+              <span>{t("Java 版本:")} <strong className="text-foreground">{installed.length}</strong></span>
+              <span>{t("基岩版:")} <strong className="text-foreground">{bedrockStatus?.uwpInstalled ? t("UWP 已就绪") : t("{count} 个核心", { count: bedrockStatus?.installedVersions.length ?? 0 })}</strong></span>
+              <span>{t("附加包:")} <strong className="text-foreground">{(bedrockStatus?.resourcePacksCount ?? 0) + (bedrockStatus?.behaviorPacksCount ?? 0)}</strong></span>
             </div>
           </div>
         </aside>

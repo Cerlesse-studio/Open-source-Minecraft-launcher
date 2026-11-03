@@ -155,6 +155,10 @@
 
 .light {
   color-scheme: light;
+  --primary: #377f0a;
+  --primary-rgb: 55, 127, 10;
+  --primary-foreground: #ffffff;
+  --primary-fg-rgb: 255, 255, 255;
   --background-solid: #f6f8f5;
   --background-rgb: 246, 248, 245;
   --foreground: #151e16;
@@ -169,28 +173,30 @@
   --secondary-rgb: 238, 243, 237;
   --secondary-foreground: #1f2a21;
   --secondary-fg-rgb: 31, 42, 33;
-  --muted-solid: #eef3ed;
-  --muted-rgb: 238, 243, 237;
-  --muted-foreground: #5a6e5e;
-  --muted-fg-rgb: 90, 110, 94;
-  --accent-solid: #e2ede1;
-  --accent-rgb: 226, 237, 225;
+  --muted-solid: #eaf0e8;
+  --muted-rgb: 234, 240, 232;
+  --muted-foreground: #4a5c4e;
+  --muted-fg-rgb: 74, 92, 78;
+  --accent-solid: #dfebe0;
+  --accent-rgb: 223, 235, 224;
   --accent-foreground: #151e16;
   --accent-fg-rgb: 21, 30, 22;
   --destructive: #e05243;
   --destructive-foreground: #ffffff;
   --success: #059669;
-  --border: #d4e0d3;
-  --border-rgb: 212, 224, 211;
-  --input: #d4e0d3;
-  --input-rgb: 212, 224, 211;
-  --sidebar-solid: #f0f5ee;
-  --sidebar-rgb: 240, 245, 238;
+  --border: #c8d7c7;
+  --border-rgb: 200, 215, 199;
+  --input: #c8d7c7;
+  --input-rgb: 200, 215, 199;
+  --sidebar-solid: #eff4ed;
+  --sidebar-rgb: 239, 244, 237;
   --sidebar-foreground: #151e16;
-  --sidebar-accent-solid: #e4eee2;
-  --sidebar-accent-rgb: 228, 238, 226;
+  --sidebar-accent-solid: #dbe8db;
+  --sidebar-accent-rgb: 219, 232, 219;
   --sidebar-accent-foreground: #151e16;
-  --sidebar-border: #d4e0d3;
+  --sidebar-border: #c8d7c7;
+  --ring: #377f0a;
+  --ring-rgb: 55, 127, 10;
 }
 
 .reduce-motion,
@@ -200,6 +206,34 @@
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
+}
+
+/* Page transitions: a short, single enter on each view. The final keyframe
+   leaves `transform` at `none`, so a finished page never keeps a containing
+   block around its `position: fixed` dialogs. */
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.view-enter {
+  animation: view-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.reduce-motion .view-enter {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter {
+    animation: none !important;
+  }
 }
 
 @theme inline {
@@ -382,7 +416,46 @@
 
 [data-desktop-drag-region] { -webkit-app-region: drag; }
 
-/* 针对 Electron 22 (Chromium 108) 的 group-hover 图标高亮与半透明增强保底 */
+/* 针对 Electron 22 (Chromium 108) 的全套半透明组件与高亮保底映射，杜绝纯色回退与文字遮挡 */
+.bg-primary\/5 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.05) !important; }
+.bg-primary\/10 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.1) !important; }
+.bg-primary\/15 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.15) !important; }
+.bg-primary\/20 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.2) !important; }
+.bg-primary\/25 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.25) !important; }
+.bg-primary\/30 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important; }
+.bg-primary\/40 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.4) !important; }
+
+/* 细粒度任意值透明度保底 */
+.bg-primary\/\[0\.02\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.02) !important; }
+.bg-primary\/\[0\.03\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.03) !important; }
+.bg-primary\/\[0\.035\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.035) !important; }
+.bg-primary\/\[0\.04\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.04) !important; }
+.bg-primary\/\[0\.045\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.045) !important; }
+.bg-primary\/\[0\.05\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.05) !important; }
+.bg-primary\/\[0\.055\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.055) !important; }
+.bg-primary\/\[0\.06\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.06) !important; }
+.bg-primary\/\[0\.07\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.07) !important; }
+
+.border-primary\/20 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.2) !important; }
+.border-primary\/25 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.25) !important; }
+.border-primary\/30 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important; }
+.border-primary\/35 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.35) !important; }
+.border-primary\/40 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.4) !important; }
+.border-primary\/45 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.45) !important; }
+.border-primary\/50 { border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.5) !important; }
+
+.ring-primary\/30 { --tw-ring-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important; }
+.ring-primary\/40 { --tw-ring-color: rgba(var(--primary-rgb, 155, 221, 107), 0.4) !important; }
+.ring-primary\/50 { --tw-ring-color: rgba(var(--primary-rgb, 155, 221, 107), 0.5) !important; }
+
+.text-primary { color: var(--primary) !important; }
+
+/* 悬停与组合选择器高亮状态 */
+.hover\:bg-primary\/5:hover { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.05) !important; }
+.hover\:bg-primary\/10:hover { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.1) !important; }
+.hover\:bg-primary\/15:hover { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.15) !important; }
+.hover\:bg-primary\/20:hover { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.2) !important; }
+
 .group:hover .group-hover\:bg-primary\/10 {
   background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.1) !important;
 }
@@ -392,6 +465,32 @@
 .group:hover .group-hover\:border-primary\/30 {
   border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important;
 }
+.group:hover .group-hover\:border-primary\/45 {
+  border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.45) !important;
+}
 .group:hover .group-hover\:text-primary {
   color: var(--primary) !important;
+}
+
+/* 浅色模式专属对比度与高亮强化 */
+.light .text-primary {
+  color: var(--primary) !important;
+  font-weight: 500;
+}
+.light .border-primary {
+  border-color: var(--primary) !important;
+}
+.light .border-primary\/40,
+.light .border-primary\/50 {
+  border-color: rgba(var(--primary-rgb), 0.65) !important;
+}
+.light .bg-primary\/10 {
+  background-color: rgba(var(--primary-rgb), 0.14) !important;
+}
+.light .bg-primary\/15 {
+  background-color: rgba(var(--primary-rgb), 0.20) !important;
+}
+.light .bg-primary\/\[0\.04\],
+.light .bg-primary\/\[0\.035\] {
+  background-color: rgba(var(--primary-rgb), 0.08) !important;
 }

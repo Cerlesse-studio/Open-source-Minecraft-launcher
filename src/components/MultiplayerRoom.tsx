@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
+  Eye,
+  EyeOff,
   Link2,
   LoaderCircle,
   Network,
+  Play,
   Plus,
   Radio,
   RefreshCw,
+  Server,
   Trash2,
   Users,
   WifiOff,
@@ -16,11 +21,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getMultiplayerPeers } from "../lib/backend";
 import {
+  DEFAULT_HOST_PORT,
+  DEFAULT_PUBLIC_SERVER,
   createOverlayIpv4,
   isOverlayIpv4,
+  isPureP2p,
 } from "../lib/multiplayer";
 import type {
-  LocalIpv6Address,
+  InstalledVersion,
   MinecraftHostStatus,
   MultiplayerConfig,
   MultiplayerHost,
@@ -28,8 +36,8 @@ import type {
   MultiplayerStatus,
   RoomResources,
 } from "../lib/types";
-import { MultiplayerFirewallNotice } from "./MultiplayerFirewall";
 import { HostPermissionPanel } from "./MultiplayerHostPanels";
+import { MultiplayerP2pPanel } from "./MultiplayerP2pPanel";
 import { RoomResourcesPanel } from "./MultiplayerRoomResources";
 import {
   CopyButton,
@@ -38,13 +46,13 @@ import {
   RoomLogPanel,
   type Notify,
 } from "./MultiplayerShared";
-import { StatusDot } from "./ui";
+import { Avatar, StatusDot } from "./ui";
 
 interface MultiplayerRoomProps {
   gameRoot: string;
+  installedVersions: InstalledVersion[];
+  onRefreshInstalled?: () => Promise<unknown> | void;
   config: MultiplayerConfig;
-  publicAddress: string;
-  addresses: LocalIpv6Address[];
   status: MultiplayerStatus | null;
   busy: "start" | "stop" | "join" | null;
   hosts: MultiplayerHost[];
@@ -54,11 +62,20 @@ interface MultiplayerRoomProps {
   resources: RoomResources | null;
   resourcesLoading: boolean;
   resourcesError: string | null;
+  p2pLinked?: boolean;
+  gameRunning?: boolean;
+  autoLanPort?: number | null;
+  autoRefresh?: boolean;
+  onToggleAutoRefresh?: () => void;
+  onRefreshAll?: () => void;
+  refreshingAll?: boolean;
+  refreshTick?: number;
+  onLaunchVersion?: (versionId: string) => void;
   onRefreshResources: () => void;
-  onChangePublicAddress: (value: string) => void;
   onChangePort: (port: number) => void;
   onResume: () => void;
   onApplyConfig: (patch: Partial<MultiplayerConfig>) => void;
+  onAddPeer: (peer: string) => Promise<void>;
   onAddHost: (address: string) => boolean;
   onRemoveHost: (entry: MultiplayerHost) => void;
   onToggleBridge: (entry: MultiplayerHost) => void;
@@ -68,7 +85,7 @@ interface MultiplayerRoomProps {
 }
 
 /**
- * 在线成员：地址来自 EasyTier 自己的 peer 列表，名字显示对方电脑的主机名。
+ * 在线成员：展示当前接入同一 EasyTier 虚拟局域网的设备。
  */
 function RoomMembersPanel({
   gameRoot,
@@ -76,12 +93,14 @@ function RoomMembersPanel({
   isGuest,
   hostIpv4,
   className,
+  refreshTick,
 }: {
   gameRoot: string;
   running: boolean;
   isGuest: boolean;
   hostIpv4?: string;
   className?: string;
+  refreshTick?: number;
 }) {
   const [peers, setPeers] = useState<MultiplayerPeer[]>([]);
   const [loading, setLoading] = useState(false);
@@ -110,12 +129,13 @@ function RoomMembersPanel({
       }
     };
     void load(false);
-    const timer = window.setInterval(() => void load(true), 5000);
+    // 实时刷新成员状态：每 2.5 秒更新一次网络对等节点
+    const timer = window.setInterval(() => void load(true), 2500);
     return () => {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [gameRoot, running, tick]);
+  }, [gameRoot, running, tick, refreshTick]);
 
   return (
     <Panel
@@ -166,11 +186,6 @@ function RoomMembersPanel({
                   ? "暂时读不到成员列表"
                   : "还没有其他设备加入"}
           </p>
-          {running && !error && !loading ? (
-            <p className="max-w-[260px] text-[9.5px] leading-4 text-muted-foreground/60">
-              把分享码发给好友，连上后会显示名字和虚拟 IP。
-            </p>
-          ) : null}
           {running && error ? (
             <p
               title={error}
@@ -181,11 +196,6 @@ function RoomMembersPanel({
           ) : null}
         </div>
       )}
-      {peers.length > 0 ? (
-        <p className="mt-2 border-t border-border/40 pt-2 text-[9.5px] text-muted-foreground/60">
-          来自 EasyTier 虚拟网络 · 每 5 秒自动刷新
-        </p>
-      ) : null}
     </Panel>
   );
 }
@@ -205,13 +215,13 @@ function RoomMemberRow({
     <div className="flex items-center gap-2.5 rounded-lg border border-border/60 bg-background/40 px-2.5 py-2">
       <span
         className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-full border text-[10px] font-medium",
+          "flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border",
           peer.isSelf
-            ? "border-primary/30 bg-primary/10 text-primary"
-            : "border-border/60 bg-muted/25 text-muted-foreground",
+            ? "border-primary/35 bg-primary/10"
+            : "border-border/60 bg-muted/25",
         )}
       >
-        {name.slice(0, 1).toUpperCase()}
+        <Avatar name={name} size={28} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -248,9 +258,9 @@ function RoomMemberRow({
 
 export function MultiplayerRoom({
   gameRoot,
+  installedVersions,
+  onRefreshInstalled,
   config,
-  publicAddress,
-  addresses,
   status,
   busy,
   hosts,
@@ -260,11 +270,20 @@ export function MultiplayerRoom({
   resources,
   resourcesLoading,
   resourcesError,
+  p2pLinked,
+  gameRunning,
+  autoLanPort,
+  autoRefresh = true,
+  onToggleAutoRefresh,
+  onRefreshAll,
+  refreshingAll = false,
+  refreshTick = 0,
+  onLaunchVersion,
   onRefreshResources,
-  onChangePublicAddress,
   onChangePort,
   onResume,
   onApplyConfig,
+  onAddPeer,
   onAddHost,
   onRemoveHost,
   onToggleBridge,
@@ -272,26 +291,21 @@ export function MultiplayerRoom({
   onPingAll,
   onNotify,
 }: MultiplayerRoomProps) {
-  const isGuest = config.peers.length > 0;
+  const isGuest = config.role === "guest";
   const running = Boolean(status?.running);
   const hostOverlay = isGuest
     ? config.hostIpv4 || config.overlayIpv4
     : config.overlayIpv4;
-  const peer = config.peers[0] ?? "";
   const mainHost =
     hosts.find((entry) => entry.host === hostOverlay && entry.port === config.hostPort) ??
     hosts[0] ??
     null;
   const bridgeAddress = mainHost?.bridgePort ? `127.0.0.1:${mainHost.bridgePort}` : "";
-  // 内核以无 TUN 方式运行：房主的虚拟地址在本机没有路由，游戏直接连它也
-  // 连不上。访客要进游戏，得先由启动器在本机开好代理端口。
-  const connectAddress = isGuest
-    ? bridgeAddress || "先在下方启用局域网显示"
-    : `${hostOverlay}:${config.hostPort}`;
 
   const [portDraft, setPortDraft] = useState(String(config.hostPort));
   const [overlayDraft, setOverlayDraft] = useState(config.overlayIpv4);
   const [addAddress, setAddAddress] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     setPortDraft(String(config.hostPort));
@@ -315,17 +329,18 @@ export function MultiplayerRoom({
     if (onAddHost(addAddress)) setAddAddress("");
   };
 
+  const activeServer =
+    config.publicServer ||
+    (config.relayNodes && config.relayNodes.length > 0
+      ? config.relayNodes[0]
+      : DEFAULT_PUBLIC_SERVER);
+
   return (
     <div className="space-y-4">
       {status && !running ? (
         <section className="flex flex-wrap items-center gap-3 rounded-xl border border-gold/25 bg-gold/[0.06] px-4 py-2.5">
           <WifiOff className="size-4 shrink-0 text-gold" />
-          <div className="min-w-0 flex-1">
-            <p className="text-[12px] font-medium">网络已断开</p>
-            <p className="text-[10.5px] text-muted-foreground">
-              房间记录还在，用原来的密码接回去。
-            </p>
-          </div>
+          <p className="min-w-0 flex-1 text-[12px] font-medium">网络已断开</p>
           <Button
             size="sm"
             className="h-7 shrink-0 gap-1.5 text-[11px]"
@@ -346,7 +361,7 @@ export function MultiplayerRoom({
         <header className="flex flex-wrap items-center gap-2 border-b border-border/60 px-4 py-2.5">
           <StatusDot tone={running ? "online" : "muted"} animated={busy === "start"} />
           <span className="text-[12px] font-medium">
-            {running ? "已连接" : "未连接"}
+            {running ? "EasyTier 网络已连接" : "未连接"}
           </span>
           <Badge
             variant="outline"
@@ -354,36 +369,145 @@ export function MultiplayerRoom({
           >
             {isGuest ? "访客" : "房主"}
           </Badge>
-          <span className="ml-auto text-[10px] text-muted-foreground">IPv6 直连</span>
+
+          {/* 实时刷新控制器 */}
+          {running ? (
+            <div className="flex items-center gap-1.5 ml-2">
+              <button
+                type="button"
+                onClick={onToggleAutoRefresh}
+                title={autoRefresh ? "自动实时刷新中，点击可暂停" : "自动实时刷新已暂停，点击恢复"}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9.5px] transition-colors cursor-pointer select-none",
+                  autoRefresh
+                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
+                    : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/70",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block size-1.5 rounded-full",
+                    autoRefresh ? "bg-emerald-400 animate-pulse" : "bg-muted-foreground",
+                  )}
+                />
+                <span>{autoRefresh ? "实时刷新中" : "已暂停刷新"}</span>
+              </button>
+
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="size-6 text-muted-foreground hover:text-foreground"
+                title="立即刷新房间所有状态与成员"
+                disabled={refreshingAll || pinging}
+                onClick={onRefreshAll}
+              >
+                <RefreshCw
+                  className={cn(
+                    "size-3",
+                    (refreshingAll || pinging) && "animate-spin text-primary",
+                  )}
+                />
+              </Button>
+            </div>
+          ) : null}
+
+          <Badge
+            variant="outline"
+            className="ml-auto h-4 px-1.5 text-[9px] font-normal border-primary/30 bg-primary/[0.06] text-primary"
+          >
+            {isPureP2p(config) ? "纯 IPv6 P2P · 无中继" : "P2P 直连 + 公益中继兜底"}
+          </Badge>
         </header>
 
-        <div className="grid gap-4 p-4 min-[980px]:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
-          <div className="min-w-0 rounded-lg border border-primary/20 bg-primary/[0.055] px-3.5 py-3">
-            <div className="flex items-center gap-2">
-              <span className="text-[10.5px] text-muted-foreground">
-                {isGuest ? "直接连接地址" : "好友连接地址"}
-              </span>
-              <span className="ml-auto text-[9.5px] text-muted-foreground/60">
-                {isGuest ? "房主的世界" : "局域网端口已映射"}
-              </span>
+        <div className="grid gap-4 p-4 min-[980px]:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+          {/* 左侧：游戏端入口与联机说明 */}
+          {isGuest ? (
+            <div className="min-w-0 space-y-3 rounded-lg border border-border/80 bg-card/60 px-3.5 py-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-foreground">游戏内连接入口</span>
+                {bridgeAddress ? (
+                  <Badge variant="outline" className="h-4 px-1.5 text-[9px] border-primary/30 text-primary">
+                    本地通道已就绪
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="h-4 px-1.5 text-[9px] text-muted-foreground">
+                    正在协商通道...
+                  </Badge>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                <code className="min-w-0 break-all font-mono text-[22px] leading-7 font-bold tracking-[-0.02em] text-foreground">
+                  {bridgeAddress || "127.0.0.1:..."}
+                </code>
+                {bridgeAddress ? (
+                  <CopyButton value={bridgeAddress} label="复制地址" onNotify={onNotify} />
+                ) : null}
+              </div>
+              <div className="rounded border border-primary/15 bg-primary/5 p-2.5 text-[10.5px] leading-relaxed text-muted-foreground">
+                <p className="font-medium text-foreground">连接方式：</p>
+                <ol className="mt-1 list-decimal list-inside space-y-0.5 text-[10px]">
+                  <li>启动相同版本的 Minecraft 游戏；</li>
+                  <li>进入【多人游戏】，稍等片刻通常可直接在【局域网世界】列表中看到房主世界；</li>
+                  <li>如局域网列表中未出现，点击【直接连接】并输入上方通道地址加入即可。</li>
+                </ol>
+              </div>
             </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-              <code className="min-w-0 break-all font-mono text-[21px] leading-7 tracking-[-0.02em] text-foreground">
-                {connectAddress}
-              </code>
-              {!isGuest || bridgeAddress ? (
-                <CopyButton value={connectAddress} label="复制地址" onNotify={onNotify} />
-              ) : null}
-            </div>
-            <p className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
-              {isGuest
-                ? "游戏 → 多人游戏 → 直接连接，粘贴本机代理地址；也可以用下方的局域网显示。"
-                : "好友导入分享码后，用启动器替他们开好的本机地址进入这个世界。"}
-            </p>
+          ) : (
+            <div className="min-w-0 space-y-3 rounded-lg border border-border/80 bg-card/60 px-3.5 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-foreground">房主联机世界</span>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "h-4 px-1.5 text-[9px]",
+                      autoLanPort || config.hostPort !== DEFAULT_HOST_PORT
+                        ? "border-primary/40 bg-primary/10 text-primary"
+                        : "border-gold/40 bg-gold/10 text-gold",
+                    )}
+                  >
+                    {autoLanPort
+                      ? `局域网端口已同步: ${config.hostPort}`
+                      : config.hostPort !== DEFAULT_HOST_PORT
+                        ? `局域网端口: ${config.hostPort}`
+                        : "等待游戏开放局域网"}
+                  </Badge>
+                </div>
+                {onLaunchVersion && config.hostVersion && !gameRunning ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-6 gap-1 px-2 text-[10px]"
+                    onClick={() => onLaunchVersion(config.hostVersion)}
+                  >
+                    <Play className="size-2.5 fill-current" />
+                    启动游戏 ({config.hostVersion})
+                  </Button>
+                ) : null}
+              </div>
 
-            {!isGuest ? (
-              <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-primary/15 pt-2.5">
-                <span className="text-[10.5px] text-muted-foreground">局域网端口</span>
+              {/* 关键防错提醒框 */}
+              <div className="rounded-lg border border-amber-500/35 bg-amber-500/[0.08] p-3 text-[10.5px] leading-relaxed text-amber-200/90 shadow-sm">
+                <div className="flex items-center gap-1.5 font-semibold text-amber-300">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  <span>联机正确操作（避免 Connection refused 错误）：</span>
+                </div>
+                <ol className="mt-1.5 list-decimal list-inside space-y-1 text-[10px] text-amber-100/80">
+                  <li>在启动器中启动游戏，点击<strong>【单人游戏】</strong>进入你的存档世界；</li>
+                  <li>在游戏内按 <kbd className="rounded border border-amber-500/30 bg-amber-500/20 px-1 font-mono text-[9px] text-amber-200">ESC</kbd> 键，点击<strong>【对局域网开放】</strong>开启；</li>
+                  <li>
+                    {isPureP2p(config)
+                      ? "把分享码发给访客；访客把回执码发回后，在下方「纯 IPv6 P2P」面板登记即可建立直连。"
+                      : "启动器会自动读取端口并同步，好友输入右侧房间信息即可加入！"}
+                  </li>
+                </ol>
+                <div className="mt-2 rounded border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-[9.5px] text-amber-200">
+                  ❗ <strong>特别注意：</strong>房主已经在单人游戏中，<strong>切勿在【多人游戏】中尝试连接自己</strong>，否则必然提示 Connection refused！
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-primary/15 pt-2.5">
+                <span className="text-[10px] text-muted-foreground">局域网端口</span>
                 <Input
                   value={portDraft}
                   inputMode="numeric"
@@ -393,164 +517,138 @@ export function MultiplayerRoom({
                   onKeyDown={(event) => {
                     if (event.key === "Enter") commitPort();
                   }}
-                  className="h-7 w-20 font-mono text-[11px]"
+                  className="h-6 w-20 font-mono text-[10.5px]"
                 />
                 <Button
                   variant={portDirty ? "default" : "ghost"}
                   size="xs"
-                  className="h-7 px-2 text-[10.5px]"
+                  className="h-6 px-2 text-[10px]"
                   disabled={!portDirty}
                   onClick={commitPort}
                 >
                   更新
                 </Button>
-                <span className="text-[9.5px] text-muted-foreground/60">
-                  换端口后把新分享码再发一次
-                </span>
+                {autoLanPort ? (
+                  <span className="text-[9px] text-primary">已自动从游戏日志检测</span>
+                ) : (
+                  <span className="text-[9px] text-muted-foreground">游戏内开放局域网后会自动读取</span>
+                )}
               </div>
-            ) : null}
+            </div>
+          )}
 
-            {!isGuest ? (
-              <div className="mt-2 border-t border-primary/15 pt-2">
-                <MultiplayerFirewallNotice
-                  gameRoot={gameRoot}
-                  listenPort={config.listenPort}
-                  hostPort={config.hostPort}
-                  overlayIpv4={config.overlayIpv4}
-                  publicAddress={publicAddress}
-                />
+          {/* 右侧：Astral 风格房间信息卡片 */}
+          <div className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border/60 bg-background/40 p-3">
+            <div>
+              <div className="flex items-center justify-between">
+                <FieldLabel>房间名称</FieldLabel>
+                <CopyButton value={config.networkName} label="复制" onNotify={onNotify} />
               </div>
-            ) : null}
-          </div>
+              <div className="mt-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5 font-mono text-[11px] font-medium text-foreground">
+                {config.networkName}
+              </div>
+            </div>
 
-          <div className="flex min-w-0 flex-col gap-2">
-            {isGuest ? (
-              <>
-                <FieldLabel>房主入口</FieldLabel>
-                <div className="flex items-center gap-1.5">
-                  <code className="min-w-0 flex-1 truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[10px]">
-                    {peer || "分享码里没有入口地址"}
-                  </code>
-                  <CopyButton value={peer} onNotify={onNotify} />
+            <div>
+              <div className="flex items-center justify-between">
+                <FieldLabel>房间密码</FieldLabel>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="size-5 text-muted-foreground"
+                    title={showPassword ? "隐藏密码" : "显示密码"}
+                    onClick={() => setShowPassword((v) => !v)}
+                  >
+                    {showPassword ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                  </Button>
+                  <CopyButton value={config.networkSecret} label="复制" onNotify={onNotify} />
                 </div>
+              </div>
+              <div className="mt-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5 font-mono text-[11px] text-foreground">
+                {showPassword ? config.networkSecret : "••••••••••••"}
+              </div>
+            </div>
 
-                <div className="rounded-md border border-border/50 bg-background/40 px-2.5 py-2">
-                  <div className="flex items-center gap-2">
-                    <Radio className="size-3 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 text-[10.5px]">
-                      {mainHost?.bridgePort
-                        ? "世界已显示在局域网列表"
-                        : "在多人游戏列表里显示这个世界"}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      className={cn(
-                        "h-6 shrink-0 px-1.5 text-[10px]",
-                        mainHost?.bridgePort &&
-                          "border-primary/40 bg-primary/10 text-primary",
-                      )}
-                      disabled={!running || !mainHost}
-                      onClick={() => {
-                        if (mainHost) onToggleBridge(mainHost);
-                      }}
-                    >
-                      {mainHost?.bridgePort ? "停止显示" : "显示"}
-                    </Button>
-                  </div>
-                  {mainHost?.bridgePort ? (
-                    <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/40 pt-1.5">
-                      <code className="font-mono text-[9.5px] text-muted-foreground">
-                        127.0.0.1:{mainHost.bridgePort}
-                      </code>
-                      <CopyButton
-                        value={`127.0.0.1:${mainHost.bridgePort}`}
-                        onNotify={onNotify}
-                        className="ml-auto"
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <FieldLabel>分享码</FieldLabel>
-                  <CopyButton
-                    value={shareCode}
-                    label="复制分享码"
-                    onNotify={onNotify}
-                    className="ml-auto"
-                  />
-                </div>
-                <p
-                  title={shareCode}
-                  className="truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[9.5px] text-muted-foreground"
-                >
-                  {shareCode}
-                </p>
-                <p className="text-[9.5px] leading-4 text-muted-foreground/70">
-                  实际连接只走房主的公网 IPv6；网络标识由启动器自动生成，不需要填写。
-                </p>
-                {!publicAddress.trim() ? (
-                  <p className="text-[9.5px] leading-4 text-gold/80">
-                    填上对外入口，访客才能直连进来。
-                  </p>
-                ) : null}
-
-                <details className="group mt-auto border-t border-border/40 pt-2">
-                  <summary className="cursor-pointer list-none text-[10px] text-muted-foreground transition-colors hover:text-foreground">
-                    对外入口 ·{" "}
-                    <span className="font-mono text-[9.5px]">
-                      {publicAddress.trim() || "未填写"}
-                    </span>
-                  </summary>
-                  <div className="mt-1.5 space-y-1.5">
-                    <Input
-                      value={publicAddress}
-                      onChange={(event) => onChangePublicAddress(event.target.value)}
-                      placeholder="tcp://[240e:…]:11010"
-                      className="h-7 font-mono text-[10px]"
+            <div className="border-t border-border/40 pt-2">
+              {isGuest ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <FieldLabel>
+                      {isPureP2p(config) ? "房主 IPv6 入口" : "公益协助节点"}
+                    </FieldLabel>
+                    <CopyButton
+                      value={isPureP2p(config) ? config.hostEntry : activeServer}
+                      label="复制"
+                      onNotify={onNotify}
                     />
-                    <div className="flex flex-wrap gap-1">
-                      {addresses.map((entry) => (
-                        <button
-                          key={`${entry.address}-${entry.interface}`}
-                          type="button"
-                          disabled={!entry.global}
-                          title={entry.global ? undefined : "不是公网地址，访客连不上"}
-                          onClick={() =>
-                            onChangePublicAddress(
-                              `tcp://[${entry.address}]:${config.listenPort}`,
-                            )
-                          }
-                          className={cn(
-                            "flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9px] transition-colors",
-                            entry.global && !entry.temporary
-                              ? "border-primary/25 bg-primary/[0.06] hover:border-primary/50"
-                              : "border-border/60 bg-muted/20 text-muted-foreground hover:border-border",
-                            !entry.global && "cursor-not-allowed opacity-45",
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              "size-1 rounded-full",
-                              entry.global && !entry.temporary
-                                ? "bg-primary"
-                                : "bg-muted-foreground/50",
-                            )}
-                          />
-                          {entry.address}
-                        </button>
-                      ))}
-                    </div>
                   </div>
-                </details>
-              </>
-            )}
+                  <p
+                    title={isPureP2p(config) ? config.hostEntry : activeServer}
+                    className="mt-1 truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[9.5px] text-muted-foreground"
+                  >
+                    {isPureP2p(config) ? config.hostEntry : activeServer}
+                  </p>
+                  <p className="mt-1 text-[9px] text-muted-foreground/80">
+                    {isPureP2p(config)
+                      ? "这是房主的直连入口；你的回执码在下方「纯 IPv6 P2P」面板。"
+                      : "双方通过这个共享节点建立虚拟局域网。"}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <FieldLabel>一键分享码</FieldLabel>
+                    <CopyButton value={shareCode} label="复制分享码" onNotify={onNotify} />
+                  </div>
+                  <p
+                    title={shareCode}
+                    className="mt-1 truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[9.5px] text-muted-foreground"
+                  >
+                    {shareCode}
+                  </p>
+                  <p className="mt-1 text-[9px] text-muted-foreground/80">
+                    {isPureP2p(config)
+                      ? "分享码只包含房主 IPv6 入口；访客加入后把回执码发给你，在下方 P2P 面板登记。"
+                      : "好友可在加入界面直接粘贴分享码，或输入房间名与密码快速加入。"}
+                  </p>
+                </>
+              )}
+            </div>
+
+            <div className="mt-auto border-t border-border/40 pt-2">
+              {isPureP2p(config) ? (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <Network className="size-3 text-primary" />
+                  <span>连接模式：</span>
+                  <span className="font-mono text-[9px] text-primary">
+                    纯 IPv6 P2P · 无中继
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <Server className="size-3 text-primary" />
+                  <span>公益协助节点：</span>
+                  <span className="font-mono text-[9px] text-foreground truncate max-w-[170px]" title={activeServer}>
+                    {activeServer}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>
+
+      <MultiplayerP2pPanel
+        gameRoot={gameRoot}
+        config={config}
+        status={status}
+        running={running}
+        isGuest={isGuest}
+        linked={Boolean(p2pLinked)}
+        onAddPeer={onAddPeer}
+        onNotify={onNotify}
+      />
 
       <RoomResourcesPanel
         resources={resources}
@@ -558,7 +656,14 @@ export function MultiplayerRoom({
         error={resourcesError}
         running={running}
         isGuest={isGuest}
+        gameRoot={gameRoot}
+        installedVersions={installedVersions}
+        hostAddress={config.hostIpv4}
+        resourcePort={config.resourcePort}
+        resourceToken={config.resourceToken}
         onRefresh={onRefreshResources}
+        onRefreshInstalled={onRefreshInstalled}
+        onNotify={onNotify}
       />
 
       {isGuest ? (
@@ -618,12 +723,22 @@ export function MultiplayerRoom({
                           {entry.label}
                         </span>
                         {entry.status?.ok ? (
-                          <Badge
-                            variant="outline"
-                            className="h-4 shrink-0 border-primary/25 bg-primary/[0.07] px-1 font-mono text-[9px] text-primary"
-                          >
-                            {entry.status.version}
-                          </Badge>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Badge
+                              variant="outline"
+                              className="h-4 border-primary/25 bg-primary/[0.07] px-1 font-mono text-[9px] text-primary"
+                            >
+                              {entry.status.version}
+                            </Badge>
+                            {entry.status.latencyMs > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className="h-4 border-emerald-500/25 bg-emerald-500/[0.07] px-1 font-mono text-[9px] text-emerald-400"
+                              >
+                                {entry.status.latencyMs}ms
+                              </Badge>
+                            ) : null}
+                          </div>
                         ) : null}
                         <Button
                           variant="ghost"
@@ -683,7 +798,7 @@ export function MultiplayerRoom({
           </Panel>
 
           <Panel
-            title="我的网络"
+            title="我的虚拟网络"
             icon={<Link2 className="size-3.5 text-muted-foreground" />}
             action={
               <Badge
@@ -735,9 +850,6 @@ export function MultiplayerRoom({
                     应用
                   </Button>
                 </div>
-                <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground/70">
-                  改地址会重启网络并重新连上房主。
-                </p>
               </div>
             </div>
           </Panel>
@@ -748,12 +860,9 @@ export function MultiplayerRoom({
             gameRoot={gameRoot}
             running={running}
             isGuest={false}
+            refreshTick={refreshTick}
           />
-          <HostPermissionPanel
-            config={config}
-            running={running}
-            onChangeConfig={onApplyConfig}
-          />
+          <HostPermissionPanel config={config} onChangeConfig={onApplyConfig} />
         </div>
       )}
 
@@ -763,6 +872,7 @@ export function MultiplayerRoom({
           running={running}
           isGuest
           hostIpv4={config.hostIpv4}
+          refreshTick={refreshTick}
         />
       ) : null}
 

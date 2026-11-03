@@ -33,8 +33,14 @@ import {
   demoDeleteBedrockPack,
   demoImportBedrockPackFile,
   demoEmit,
+  demoCheckAppUpdate,
 } from "./demo";
 import type {
+  AppUpdateAsset,
+  AppUpdateDownloadResult,
+  AppUpdateInfo,
+  AppUpdateInstallResult,
+  AppUpdateProgress,
   ExtensionItem,
   BedrockContentItem,
   BedrockFullDependencyReport,
@@ -48,6 +54,7 @@ import type {
   ContentProjectType,
   ContentVersionItem,
   DownloadContentRequest,
+  ContentDownloadProgress,
   DownloadContentResult,
   DownloadSourceId,
   DownloadSourceProbe,
@@ -71,11 +78,13 @@ import type {
   MsDeviceCode,
   MsLoginPoll,
   MultiplayerConfig,
+  MultiplayerEndpointProbe,
   MultiplayerFirewallStatus,
   MultiplayerInstallState,
   MultiplayerLogPayload,
   MultiplayerPeer,
   MultiplayerStatus,
+  RoomCloneResult,
   RoomResources,
   RoomResourcesInfo,
   SearchContentResult,
@@ -95,6 +104,9 @@ export interface LauncherEventMap {
   "multiplayer:status": MultiplayerStatus;
   "multiplayer:log": MultiplayerLogPayload;
   "multiplayer:install": MultiplayerInstallState;
+  "multiplayer:clone": { stage: string; done: number; total: number; current: string };
+  "content:progress": ContentDownloadProgress;
+  "update:progress": AppUpdateProgress;
 }
 
 export async function subscribe<K extends keyof LauncherEventMap>(
@@ -308,6 +320,26 @@ export async function stopGame(): Promise<void> {
     return;
   }
   await invoke("stop_game");
+}
+
+export async function checkAppUpdate(): Promise<AppUpdateInfo> {
+  if (!isDesktop) return demoCheckAppUpdate();
+  return invoke<AppUpdateInfo>("check_app_update");
+}
+
+export async function downloadAppUpdate(
+  asset: AppUpdateAsset,
+  force = false,
+): Promise<AppUpdateDownloadResult> {
+  if (!isDesktop) throw new Error("浏览器预览模式无法下载桌面更新包。");
+  return invoke<AppUpdateDownloadResult>("download_app_update", { asset, force });
+}
+
+export async function installAppUpdate(
+  filePath: string,
+): Promise<AppUpdateInstallResult> {
+  if (!isDesktop) throw new Error("浏览器预览模式无法安装桌面更新包。");
+  return invoke<AppUpdateInstallResult>("install_app_update", { path: filePath });
 }
 
 export async function openFolderPath(path: string): Promise<void> {
@@ -992,6 +1024,10 @@ let demoMultiplayerStatus: MultiplayerStatus = {
   overlayIpv4: null,
   pid: null,
   corePath: null,
+  relay: false,
+  p2pOnly: true,
+  allowPublicStun: false,
+  listenPort: 11010,
 };
 const demoLanBridges = new Map<number, LanBridgeInfo>();
 let demoBridgePort = 25570;
@@ -1002,35 +1038,61 @@ let demoRoomVersion = "1.21.8";
 
 /** 预览环境的房间资源快照：形状与房主后端返回的一致。 */
 function demoRoomResources(versionId: string): RoomResources {
-  const item = (name: string, size: number, enabled = true) => ({
-    name,
-    fileName: name,
-    enabled,
-    size,
-  });
+  let nextId = 0;
+  const item = (
+    name: string,
+    size: number,
+    enabled = true,
+    folder = "mods",
+    fileName = name,
+  ) => {
+    nextId += 1;
+    const path = `versions/${versionId || demoRoomVersion}/${folder}/${fileName}`;
+    return {
+      name,
+      fileName,
+      enabled,
+      size,
+      fileId: `f${nextId}`,
+      relativePath: path,
+    };
+  };
+  const version = versionId || demoRoomVersion;
   return {
-    versionId: versionId || demoRoomVersion,
+    versionId: version,
     mods: [
-      item("Fabric API", 2_214_912),
-      item("Sodium", 1_842_176),
-      item("Lithium", 684_032),
-      item("Iris Shaders", 1_261_568),
-      item("Just Enough Items", 3_108_864),
-      item("Create", 8_912_896),
-      item("AppleSkin", 148_480),
-      item("Old Combat Tweak", 92_160, false),
+      item("Fabric API", 2_214_912, true, "mods", "fabric-api.jar"),
+      item("Sodium", 1_842_176, true, "mods", "sodium.jar"),
+      item("Lithium", 684_032, true, "mods", "lithium.jar"),
+      item("Iris Shaders", 1_261_568, true, "mods", "iris.jar"),
+      item("Just Enough Items", 3_108_864, true, "mods", "jei.jar"),
+      item("Create", 8_912_896, true, "mods", "create.jar"),
+      item("AppleSkin", 148_480, true, "mods", "appleskin.jar"),
+      item("Old Combat Tweak", 92_160, false, "mods", "old-combat.jar.disabled"),
     ],
     shaders: [
-      item("Complementary Reimagined", 12_582_912),
-      item("BSL Shaders", 9_437_184),
-      item("MakeUp Ultra Fast", 4_194_304),
-      item("Sildur's Basic", 2_097_152, false),
+      item("Complementary Reimagined", 12_582_912, true, "shaderpacks", "Complementary.zip"),
+      item("BSL Shaders", 9_437_184, true, "shaderpacks", "BSL.zip"),
+      item("MakeUp Ultra Fast", 4_194_304, true, "shaderpacks", "MakeUp.zip"),
+      item("Sildur's Basic", 2_097_152, false, "shaderpacks", "Sildur.zip.disabled"),
     ],
     resourcePacks: [
-      item("Faithful 32x", 27_262_976),
-      item("Fresh Animations", 18_874_368),
-      item("Stay True", 6_291_456, false),
+      item("Faithful 32x", 27_262_976, true, "resourcepacks", "Faithful.zip"),
+      item("Fresh Animations", 18_874_368, true, "resourcepacks", "Fresh.zip"),
+      item("Stay True", 6_291_456, false, "resourcepacks", "StayTrue.zip.disabled"),
     ],
+    datapacks: [
+      item("Vanilla Tweaks", 1_248_256, true, "datapacks", "VanillaTweaks.zip"),
+      item("Terralith Data", 3_884_032, true, "datapacks", "Terralith.zip"),
+    ],
+    version: {
+      mcVersion: version.replace(/[-_]?(fabric|forge|neoforge|quilt).*$/i, "") || version,
+      versionType: "release",
+      loader: /fabric/i.test(version) ? "fabric" : "",
+      loaderVersion: /fabric/i.test(version) ? "0.16.5" : "",
+      optifineVersion: "",
+      fabricApiVersion: "",
+    },
     updatedAt: Date.now(),
   };
 }
@@ -1064,6 +1126,15 @@ export async function getMultiplayerStatus(root?: string): Promise<MultiplayerSt
 export async function getMultiplayerPeers(root?: string): Promise<MultiplayerPeer[]> {
   if (!isDesktop) return demoMultiplayerPeers.map((peer) => ({ ...peer }));
   return invoke<MultiplayerPeer[]>("get_multiplayer_peers", { root: root ?? "" });
+}
+
+/** 纯 P2P 房主登记访客入口；不重启内核，不打断已有成员。 */
+export async function addMultiplayerPeer(root: string, peer: string): Promise<string> {
+  if (!isDesktop) {
+    await demoWait(220);
+    return `已登记 ${peer}`;
+  }
+  return invoke<string>("add_multiplayer_peer", { root, peer });
 }
 
 export async function getMultiplayerFirewallStatus(
@@ -1171,13 +1242,17 @@ export async function startMultiplayer(
       networkName: config.networkName,
       overlayIpv4: config.overlayIpv4,
       pid: 4212,
+      relay: config.relay,
+      p2pOnly: config.p2pOnly && !config.relay,
+      allowPublicStun: config.allowPublicStun,
+      listenPort: config.listenPort,
     };
     demoEmit("multiplayer:log", {
       stream: "cobble",
       line: `启动 EasyTier（模拟）· 虚拟地址 ${config.overlayIpv4}`,
     });
     demoMultiplayerPeers =
-      config.peers.length > 0
+      config.role === "guest"
         ? [
             {
               hostname: "Cobble-Guest",
@@ -1250,17 +1325,76 @@ export async function startRoomResources(
   });
 }
 
+/** 访客一键下载房主的模组、光影和数据包，写回本机对应实例。 */
+export async function cloneRoomResources(
+  root: string,
+  host: string,
+  port: number,
+  token: string,
+  includeMods: boolean,
+  includeShaders: boolean,
+  includeDatapacks: boolean,
+): Promise<RoomCloneResult> {
+  if (!isDesktop) {
+    const resources = demoRoomResources(demoRoomVersion);
+    const files = [
+      ...(includeMods ? resources.mods : []),
+      ...(includeShaders ? resources.shaders : []),
+      ...(includeDatapacks ? resources.datapacks : []),
+    ];
+    demoEmit("multiplayer:clone", {
+      stage: "start",
+      done: 0,
+      total: files.length,
+      current: "",
+    });
+    for (let index = 0; index < files.length; index += 1) {
+      await demoWait(120);
+      demoEmit("multiplayer:clone", {
+        stage: "download",
+        done: index,
+        total: files.length,
+        current: files[index].name,
+      });
+    }
+    demoEmit("multiplayer:clone", {
+      stage: "done",
+      done: files.length,
+      total: files.length,
+      current: "",
+    });
+    return {
+      versionId: resources.versionId,
+      downloaded: files.length,
+      skipped: 0,
+      failed: 0,
+      files: files.map((file) => file.relativePath || file.fileName),
+      failures: [],
+    };
+  }
+  return invoke<RoomCloneResult>("clone_room_resources", {
+    root,
+    host,
+    port,
+    token,
+    includeMods,
+    includeShaders,
+    includeDatapacks,
+  });
+}
+
 /** 访客通过虚拟网络读取房主的资源清单。 */
 export async function fetchRoomResources(
   host: string,
   port: number,
   token: string,
+  timeoutMs?: number,
 ): Promise<RoomResources> {
   if (!isDesktop) {
     await demoWait(420);
     return demoRoomResources(demoRoomVersion);
   }
-  return invoke<RoomResources>("fetch_room_resources", { host, port, token });
+  return invoke<RoomResources>("fetch_room_resources", { host, port, token, timeoutMs });
 }
 
 export async function stopMultiplayer(root?: string): Promise<MultiplayerStatus> {
@@ -1271,6 +1405,10 @@ export async function stopMultiplayer(root?: string): Promise<MultiplayerStatus>
       networkName: null,
       overlayIpv4: null,
       pid: null,
+      relay: false,
+      p2pOnly: false,
+      allowPublicStun: false,
+      listenPort: null,
     };
     demoLanBridges.clear();
     demoMultiplayerPeers = [];
@@ -1299,6 +1437,28 @@ export async function probeMultiplayerEndpoint(peer: string): Promise<boolean | 
     return peer.trim() ? true : null;
   }
   return invoke<boolean | null>("probe_multiplayer_endpoint", { peer });
+}
+
+/** 对一个 EasyTier 入口做延迟预检；UDP 类节点会返回 reachable=null。 */
+export async function probeMultiplayerLatency(
+  peer: string,
+): Promise<MultiplayerEndpointProbe> {
+  if (!isDesktop) {
+    await demoWait(260);
+    const protocol = peer.includes("://") ? peer.split("://")[0].toLowerCase() : "tcp";
+    const canProbe = ["tcp", "ws", "wss"].includes(protocol);
+    const seed = [...peer].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    return {
+      peer,
+      protocol,
+      reachable: canProbe ? true : null,
+      latencyMs: canProbe ? 12 + (seed % 48) : null,
+      detail: canProbe
+        ? "TCP 握手成功（预览模拟）"
+        : `${protocol} 节点无法用 TCP 预检延迟；开房后从成员列表读取。`,
+    };
+  }
+  return invoke<MultiplayerEndpointProbe>("probe_multiplayer_latency", { peer });
 }
 
 /** 读取本次启动的 Minecraft 日志里「对局域网开放」的端口。 */
@@ -1411,6 +1571,24 @@ export async function executeExtensionRust(
   return invoke<any>("execute_extension_rust", { id, fnName, payload, root });
 }
 
+
+export async function configureDeveloperOptions(options: {
+  devToolsEnabled: boolean;
+  backendConsoleEnabled: boolean;
+  openConsole?: boolean;
+}): Promise<import("./types").DeveloperOptionsState | null> {
+  if (!isDesktop) return null;
+  return invoke<import("./types").DeveloperOptionsState>("configure_developer_options", options);
+}
+
+export async function getDeveloperOptions(): Promise<import("./types").DeveloperOptionsState | null> {
+  if (!isDesktop) return null;
+  try {
+    return await invoke<import("./types").DeveloperOptionsState>("get_developer_options");
+  } catch {
+    return null;
+  }
+}
 
 export async function getElectronChromiumProfile(): Promise<import("./types").ElectronChromiumProfile | null> {
   if (!isDesktop) return null;

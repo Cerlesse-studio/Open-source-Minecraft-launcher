@@ -10,19 +10,22 @@
 //! 游戏本身仍然走 EasyTier 的虚拟网卡；这里的代理只是为了让 Minecraft
 //! 的局域网发现机制能看见对方的世界。
 
+use crate::bridge::{AppHandle, State};
 use crate::net;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::bridge::{AppHandle, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::process::{Child, Command};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -47,6 +50,11 @@ struct RuntimeInfo {
     /// 仅本机的 SOCKS5 端口。内核以无 TUN 方式运行时，本机没有虚拟网卡，
     /// 访问房间里的虚拟地址只能走这个内核自带的代理入口。
     socks_port: Option<u16>,
+    /// 启动时选择的连接策略，用于诊断页展示“事实”而不是猜界面状态。
+    relay: bool,
+    p2p_only: bool,
+    allow_public_stun: bool,
+    listen_port: Option<u16>,
 }
 
 struct LanBridge {
@@ -63,8 +71,16 @@ struct RoomResourceServer {
     version_id: String,
     secret: String,
     token: String,
-    manifest: Arc<Mutex<String>>,
+    snapshot: Arc<Mutex<RoomResourceSnapshot>>,
     task: tokio::task::JoinHandle<()>,
+}
+
+/// `manifest` 给访客看，`files` 只在本机把随机的 `fileId` 映射到真实
+/// 路径。访客永远拿不到房主磁盘路径，也不能借清单拼接任意文件。
+#[derive(Default)]
+struct RoomResourceSnapshot {
+    manifest: String,
+    files: HashMap<String, PathBuf>,
 }
 
 /// EasyTier 子进程、网络状态、安装任务和局域网桥接的生命周期都放在这里。
@@ -93,6 +109,14 @@ pub struct MultiplayerStatus {
     overlay_ipv4: Option<String>,
     pid: Option<u32>,
     core_path: Option<String>,
+    /// 当前内核是否启用共享节点中继。
+    relay: bool,
+    /// 当前内核是否启用 `--p2p-only`。
+    p2p_only: bool,
+    /// 当前内核是否允许公共 STUN；默认 false。
+    allow_public_stun: bool,
+    /// EasyTier 监听的本地端口（UDP/TCP）。
+    listen_port: Option<u16>,
 }
 
 #[derive(Serialize, Clone)]
@@ -133,8 +157,19 @@ pub struct MultiplayerConfig {
     network_name: String,
     network_secret: String,
     overlay_ipv4: String,
-    /// 形如 `tcp://[240e:...]:11010`，通常是好友（或本机）的公网地址。
+    /// 形如 `tcp://[240e:...]:11010`，通常是好友（或本机）的公网地址；
+    /// 中继模式下则是共享节点地址。
     peers: Vec<String>,
+    /// 共享节点中继：两边都只建立出站连接，不监听任何本机入站端口。
+    #[serde(default)]
+    relay: bool,
+    /// 直连模式只允许 P2P 链路，禁止任何中继转发。
+    #[serde(default)]
+    p2p_only: bool,
+    /// 是否允许 EasyTier 使用内置的公共 STUN 服务器。
+    /// 默认关闭：分享码/回执码里已经有双方地址，不需要再联系第三方。
+    #[serde(default)]
+    allow_public_stun: bool,
     #[serde(default)]
     listen_port: Option<u16>,
     /// 房主给访客设的总带宽上限（字节/秒），`None` / 0 表示不限。
@@ -198,7 +233,9 @@ pub struct MultiplayerFirewallStatus {
     detail: String,
 }
 
-/// 房间资源列表里的一项。只含展示需要的字段，不含本机路径。
+/// 房间资源列表里的一项。只含展示和克隆需要的字段，不含本机路径。
+/// `fileId` 由房主生成，访客凭它下载；`relativePath` 是相对游戏根目录的
+/// 逻辑路径，用于把数据包放回对应的存档目录。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomResourceItem {
@@ -206,9 +243,31 @@ pub struct RoomResourceItem {
     file_name: String,
     enabled: bool,
     size: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    file_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    relative_path: String,
 }
 
-/// 房主选中版本的模组、光影包、资源包快照。
+/// 房主当前版本的加载器信息，访客据此安装一模一样的实例。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomVersionInfo {
+    #[serde(default)]
+    mc_version: String,
+    #[serde(default)]
+    version_type: String,
+    #[serde(default)]
+    loader: String,
+    #[serde(default)]
+    loader_version: String,
+    #[serde(default)]
+    optifine_version: String,
+    #[serde(default)]
+    fabric_api_version: String,
+}
+
+/// 房主选中版本的模组、光影包、资源包和数据包快照。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomResources {
@@ -216,6 +275,10 @@ pub struct RoomResources {
     mods: Vec<RoomResourceItem>,
     shaders: Vec<RoomResourceItem>,
     resource_packs: Vec<RoomResourceItem>,
+    #[serde(default)]
+    datapacks: Vec<RoomResourceItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<RoomVersionInfo>,
     updated_at: u64,
     /// 房主的局域网端口。只输 IPv6 加入的访客靠它认出要连哪个端口；
     /// 旧版本不认这个字段，反序列化时按 `None` 处理。
@@ -229,6 +292,26 @@ pub struct RoomResourcesInfo {
     port: u16,
     token: String,
     resources: RoomResources,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomCloneResult {
+    version_id: String,
+    downloaded: usize,
+    skipped: usize,
+    failed: usize,
+    files: Vec<String>,
+    failures: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomCloneProgress {
+    stage: String,
+    done: usize,
+    total: usize,
+    current: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,12 +412,21 @@ fn bundled_kernel_dir(app: &AppHandle) -> Option<PathBuf> {
 fn bundled_kernel_zip(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(dir) = app.path().resource_dir() {
-        candidates.push(dir.join("resources").join("easytier").join("easytier-bundle.zip"));
+        candidates.push(
+            dir.join("resources")
+                .join("easytier")
+                .join("easytier-bundle.zip"),
+        );
         candidates.push(dir.join("easytier").join("easytier-bundle.zip"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("resources").join("easytier").join("easytier-bundle.zip"));
+            candidates.push(
+                parent
+                    .join("resources")
+                    .join("easytier")
+                    .join("easytier-bundle.zip"),
+            );
             candidates.push(parent.join("easytier").join("easytier-bundle.zip"));
         }
     }
@@ -427,6 +519,10 @@ fn status_of(root: &Path, state: &MultiplayerState) -> MultiplayerStatus {
         overlay_ipv4: runtime.overlay_ipv4,
         pid: runtime.pid,
         core_path: installed.then(|| core.display().to_string()),
+        relay: runtime.relay,
+        p2p_only: runtime.p2p_only,
+        allow_public_stun: runtime.allow_public_stun,
+        listen_port: runtime.listen_port,
     }
 }
 
@@ -738,7 +834,7 @@ pub async fn install_easytier(
         "https://github.com/EasyTier/EasyTier/releases/download/{EASYTIER_VERSION}/{asset}"
     );
     let zip_path = kernel_zip(&root_path);
-    let threads = net::download_threads().clamp(1, 16);
+    let threads = net::download_threads().clamp(1, 64);
     // 有 `.part` 就接着下：换线路、重启启动器都不会从 0 开始。
     let resumed = partial_progress(&root_path).unwrap_or(0);
 
@@ -967,8 +1063,11 @@ fn stop_bridges(state: &MultiplayerState) {
     }
 }
 
-/// 结束内核进程并清空运行状态。事件由调用方补发（这里拿不到 root）。
-fn stop_node(state: &MultiplayerState) {
+/// 摘掉当前内核并清空所有运行状态，返回需要结束的子进程。
+///
+/// 这里只做同步的“摘除”，真正的 kill/wait 交给调用方：`stop_node` 要等
+/// 进程退出，而应用退出时只来得及发一个终止信号。
+fn take_node(state: &MultiplayerState) -> Option<Child> {
     let _gate = state
         .resources_gate
         .lock()
@@ -981,25 +1080,54 @@ fn stop_node(state: &MultiplayerState) {
     {
         monitor.abort();
     }
-    if let Some(mut child) = state
+    let child = state
         .child
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
-    {
-        let _ = child.start_kill();
-    }
+        .take();
     *state
         .runtime
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = RuntimeInfo::default();
     stop_resources(state);
     stop_bridges(state);
+    child
+}
+
+/// 结束内核进程并等它真正退出。
+///
+/// 只调用 `start_kill()` 时，旧 EasyTier 可能还在退出过程中占着监听端口和
+/// 虚拟 IP；紧接着重新开房/重新加入，新内核会撞上旧实例而启动失败。
+async fn stop_node(state: &MultiplayerState) -> bool {
+    let had_node = if let Some(mut child) = take_node(state) {
+        let _ = child.kill().await;
+        true
+    } else {
+        false
+    };
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "easytier-core.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+    had_node
 }
 
 /// 应用退出时调用：不要让 EasyTier 内核在后台变成孤儿进程。
+/// 退出流程不能 await，发终止信号后由 `kill_on_drop` 兜底。
 pub fn shutdown(state: &MultiplayerState) {
-    stop_node(state);
+    if let Some(mut child) = take_node(state) {
+        let _ = child.start_kill();
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "easytier-core.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
 }
 
 fn normalize_peer(peer: &str) -> Result<String, String> {
@@ -1032,8 +1160,9 @@ fn normalize_peer(peer: &str) -> Result<String, String> {
         }
     };
     let host = host.trim_matches(|c| c == '[' || c == ']');
+    // IPv6 直连优先 UDP：双方同时发包时更容易建立状态防火墙的回程。
     if host.contains(':') {
-        Ok(format!("tcp://[{host}]:{port}"))
+        Ok(format!("udp://[{host}]:{port}"))
     } else {
         Ok(format!("tcp://{host}:{port}"))
     }
@@ -1068,8 +1197,33 @@ fn core_args(
         "true".to_string(),
         "--socks5".to_string(),
         socks_port.to_string(),
-        "--listeners".to_string(),
-        listeners.to_string(),
+    ];
+    if config.relay {
+        // 中继模式完全不开放本机入站端口：不碰 Windows 防火墙，也不碰路由器。
+        // 共享节点负责牵线和转发，仍可通过 `--socks5` 访问房主的本机服务。
+        args.push("--no-listener".to_string());
+    } else {
+        args.push("--listeners".to_string());
+        args.push(listeners.to_string());
+    }
+    if config.p2p_only && !config.relay {
+        // 双方已经通过分享码/回执码交换了候选地址；这里强制只走直连，
+        // 任何情况下都不把房间流量交给中继。
+        args.push("--p2p-only".to_string());
+        args.push("true".to_string());
+        args.push("--need-p2p".to_string());
+        args.push("true".to_string());
+    }
+    if !config.allow_public_stun {
+        // EasyTier 默认会向 stun.easytier.cn / stun-v6.easytier.cn 等公共
+        // STUN 服务查询映射。直连只需要双方交换过的地址，这里把两个列表
+        // 都显式清空，避免“看起来是直连、实际仍在联系第三方”的情况。
+        args.push("--stun-servers".to_string());
+        args.push(String::new());
+        args.push("--stun-servers-v6".to_string());
+        args.push(String::new());
+    }
+    args.extend([
         // 只监听本机回环：房间成员列表靠它读取，同时不把管理接口
         // 暴露给局域网或虚拟网络里的其他人。
         "--rpc-portal".to_string(),
@@ -1078,7 +1232,7 @@ fn core_args(
         "info".to_string(),
         "--multi-thread".to_string(),
         "--latency-first".to_string(),
-    ];
+    ]);
     if let Some(limit) = recv_bps_limit(config) {
         args.push("--instance-recv-bps-limit".to_string());
         args.push(limit.to_string());
@@ -1140,6 +1294,23 @@ pub async fn start_multiplayer(
     overlay
         .parse::<std::net::Ipv4Addr>()
         .map_err(|_| format!("虚拟 IPv4 地址无效: {overlay}"))?;
+    // 纯 P2P 是互斥模式：只要出现共享节点，就不再是「无中继」，
+    // 直接拒绝而不是悄悄回退，避免用户以为流量只走了直连。
+    if config.p2p_only && config.relay {
+        return Err("纯 P2P 模式不能同时启用共享节点中继".to_string());
+    }
+    if config.p2p_only && !has_ipv6_binding() {
+        return Err("当前系统无法监听 IPv6，不能启动纯 P2P 房间".to_string());
+    }
+    if config.p2p_only {
+        let addresses = get_local_ipv6_addresses().await;
+        if !addresses.iter().any(|address| address.global) {
+            return Err(
+                "没有检测到公网 IPv6 地址；请确认宽带/路由器已启用 IPv6，或改回公益节点模式"
+                    .to_string(),
+            );
+        }
+    }
     let listen_port = config.listen_port.unwrap_or(DEFAULT_LISTEN_PORT).max(1);
     let rpc_port = free_local_port();
     // 内核自带的 SOCKS5 入口。两个端口都取自系统临时分配，撞车时再换一个。
@@ -1148,25 +1319,44 @@ pub async fn start_multiplayer(
         socks_port = free_local_port();
     }
 
-    // 房主不填任何对等节点，只负责监听并等待访客直连；
-    // 访客则只把房主的 IPv6 入口放进 peers。
-    let peers = config
+    // 纯 P2P 房主一开始没有任何 seed 节点，等访客通过回执码把自己的 IPv6
+    // 入口交给房主后再运行时登记；绝不能回落成公益节点。
+    let mut peers = config
         .peers
         .iter()
         .filter(|peer| !peer.trim().is_empty())
         .map(|peer| normalize_peer(peer))
         .collect::<Result<Vec<_>, _>>()?;
-
-    let mut listeners = format!("tcp://[::]:{listen_port},udp://[::]:{listen_port}");
-    if !has_ipv6_binding() {
-        listeners = format!("tcp://0.0.0.0:{listen_port},udp://0.0.0.0:{listen_port}");
+    if peers.is_empty() && !config.p2p_only {
+        peers.push("tcp://public.easytier.cn:11010".to_string());
+    }
+    if config.p2p_only {
+        // 纯 P2P 只能出现显式 IPv6 入口。旧配置、手改的 localStorage 或
+        // 误粘贴的共享节点都在这里拒绝，避免“无中继”实际连上了第三方。
+        if let Some(peer) = peers
+            .iter()
+            .find(|peer| !peer.starts_with("udp://[") && !peer.starts_with("tcp://["))
+        {
+            return Err(format!(
+                "纯 P2P 只接受 IPv6 直连入口，不能使用共享节点：{peer}"
+            ));
+        }
     }
 
-    stop_node(&state);
+    let mut listeners = format!("tcp://0.0.0.0:{listen_port},udp://0.0.0.0:{listen_port}");
+    if config.p2p_only || has_ipv6_binding() {
+        listeners = format!("tcp://[::]:{listen_port},udp://[::]:{listen_port}");
+    }
+
+    // 重新开房前必须等旧内核完全退出：残留的监听端口和虚拟 IP 会让
+    // 新实例一启动就被网络判定为重复节点。
+    if stop_node(&state).await {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
     emit_log(
         &app,
         "cobble",
-        format!("启动 EasyTier（{EASYTIER_VERSION}）…"),
+        format!("启动 EasyTier（{EASYTIER_VERSION}）组网内核…"),
     );
 
     let mut command = Command::new(&core);
@@ -1180,14 +1370,22 @@ pub async fn start_multiplayer(
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    emit_log(&app, "cobble", format!("监听 {listeners}"));
-    if !peers.is_empty() {
-        emit_log(
-            &app,
-            "cobble",
-            format!("初始对等节点: {}", peers.join(", ")),
-        );
-    }
+    emit_log(
+        &app,
+        "cobble",
+        if config.p2p_only {
+            format!(
+                "房间组网网络：{}，纯 IPv6 P2P（无中继），监听 UDP/TCP {}。等待对方回执码后建立直连。",
+                name, listen_port
+            )
+        } else {
+            format!(
+                "房间组网网络：{}，连接公共服务器：{}",
+                name,
+                peers.join(", ")
+            )
+        },
+    );
 
     let mut child = command
         .spawn()
@@ -1209,6 +1407,10 @@ pub async fn start_multiplayer(
         pid,
         rpc_port: Some(rpc_port),
         socks_port: Some(socks_port),
+        relay: config.relay,
+        p2p_only: config.p2p_only && !config.relay,
+        allow_public_stun: config.allow_public_stun,
+        listen_port: Some(listen_port),
     };
     *state
         .child
@@ -1322,12 +1524,16 @@ pub async fn start_multiplayer(
     Ok(status)
 }
 
-pub fn stop_multiplayer(
+pub async fn stop_multiplayer(
     app: AppHandle,
     root: String,
     state: State<'_, MultiplayerState>,
 ) -> MultiplayerStatus {
-    stop_node(&state);
+    if stop_node(&state).await {
+        // 给共享节点一点时间处理旧连接的关闭，避免同一账号/虚拟 IP 的
+        // 旧会话仍挂在节点上，导致刚退出就重新加入失败。
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
     emit_log(&app, "cobble", "已断开联机网络");
     let status = status_of(&PathBuf::from(&root), &state);
     let _ = app.emit("multiplayer:status", status.clone());
@@ -1395,6 +1601,37 @@ fn sort_resource_items(items: &mut [RoomResourceItem]) {
     items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 }
 
+/// 游戏根目录下的逻辑路径，统一用 `/`，不把绝对路径发给访客。
+fn room_relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .map(|value| {
+            value
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
+fn room_resource_item(
+    name: String,
+    file_name: String,
+    enabled: bool,
+    size: u64,
+    relative_path: String,
+) -> RoomResourceItem {
+    RoomResourceItem {
+        name,
+        file_name,
+        enabled,
+        size,
+        file_id: String::new(),
+        relative_path,
+    }
+}
+
 fn scan_room_mods(root: &Path, version_id: &str) -> Vec<RoomResourceItem> {
     let dir = crate::minecraft::resolve_java_mods_dir(root, version_id);
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1415,12 +1652,14 @@ fn scan_room_mods(root: &Path, version_id: &str) -> Vec<RoomResourceItem> {
             continue;
         }
         let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-        items.push(RoomResourceItem {
-            name: strip_suffix_ci(base, ".jar").to_string(),
+        let relative_path = room_relative_path(root, &path);
+        items.push(room_resource_item(
+            strip_suffix_ci(base, ".jar").to_string(),
             file_name,
             enabled,
             size,
-        });
+            relative_path,
+        ));
     }
     sort_resource_items(&mut items);
     items
@@ -1449,7 +1688,7 @@ fn room_dir_size(dir: &Path, depth: u8) -> u64 {
         .sum()
 }
 
-fn scan_room_shaders(game_dir: &Path) -> Vec<RoomResourceItem> {
+fn scan_room_shaders(root: &Path, game_dir: &Path) -> Vec<RoomResourceItem> {
     let dir = game_dir.join("shaderpacks");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
@@ -1471,12 +1710,14 @@ fn scan_room_shaders(game_dir: &Path) -> Vec<RoomResourceItem> {
         } else {
             entry.metadata().map(|meta| meta.len()).unwrap_or(0)
         };
-        items.push(RoomResourceItem {
-            name: strip_suffix_ci(base, ".zip").to_string(),
+        let relative_path = room_relative_path(root, &path);
+        items.push(room_resource_item(
+            strip_suffix_ci(base, ".zip").to_string(),
             file_name,
             enabled,
             size,
-        });
+            relative_path,
+        ));
     }
     sort_resource_items(&mut items);
     items
@@ -1489,37 +1730,142 @@ fn scan_room_resource_packs(
 ) -> Vec<RoomResourceItem> {
     crate::minecraft::get_java_resource_packs(root, version_id, isolation)
         .into_iter()
-        .map(|pack| RoomResourceItem {
-            name: pack.name,
-            file_name: pack.file_name,
-            enabled: pack.enabled,
-            size: pack.size,
+        .map(|pack| {
+            let relative_path = room_relative_path(root, Path::new(&pack.path));
+            room_resource_item(
+                pack.name,
+                pack.file_name,
+                pack.enabled,
+                pack.size,
+                relative_path,
+            )
         })
         .collect()
 }
 
-fn scan_room_resources(
+/// 数据包既可能被下载到实例的 `datapacks`，也可能被玩家放进某个存档的
+/// `saves/<world>/datapacks`。两处都扫描，并用根目录相对路径保证克隆时
+/// 能落回原位置。
+fn scan_room_datapacks(root: &Path, version_id: &str, isolation: Option<&str>) -> Vec<RoomResourceItem> {
+    let game_dir = crate::minecraft::resolve_java_game_dir(root, version_id, isolation);
+    let mut dirs: Vec<(PathBuf, Option<String>)> = vec![(game_dir.join("datapacks"), None)];
+    if let Ok(entries) = std::fs::read_dir(game_dir.join("saves")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let world = entry.file_name().to_string_lossy().to_string();
+            if world.starts_with('.') {
+                continue;
+            }
+            dirs.push((path.join("datapacks"), Some(world)));
+        }
+    }
+
+    let mut items = Vec::new();
+    for (dir, world) in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            let (base, enabled) = split_disabled(&file_name);
+            if !base.to_lowercase().ends_with(".zip") {
+                continue;
+            }
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let relative_path = room_relative_path(root, &path);
+            if relative_path.is_empty() {
+                continue;
+            }
+            let stem = strip_suffix_ci(base, ".zip").to_string();
+            let name = match &world {
+                Some(world) => format!("{world}/{stem}"),
+                None => stem,
+            };
+            items.push(room_resource_item(
+                name,
+                relative_path.clone(),
+                enabled,
+                size,
+                relative_path,
+            ));
+        }
+    }
+    sort_resource_items(&mut items);
+    items
+}
+
+fn room_version_info(root: &Path, version_id: &str) -> RoomVersionInfo {
+    crate::minecraft::list_installed(root)
+        .ok()
+        .and_then(|versions| versions.into_iter().find(|item| item.id == version_id))
+        .map(|item| RoomVersionInfo {
+            mc_version: item.mc_version.unwrap_or_default(),
+            version_type: item.version_type,
+            loader: item.loader.unwrap_or_default(),
+            loader_version: item.loader_version.unwrap_or_default(),
+            optifine_version: item.optifine_version.unwrap_or_default(),
+            fabric_api_version: item.fabric_api_version.unwrap_or_default(),
+        })
+        .unwrap_or_default()
+}
+
+/// 给可下载的文件分配随机 ID，并生成 `fileId -> 真实路径` 映射。
+/// 目录型光影包没有单个文件可传，保持 `fileId` 为空，由界面提示。
+fn attach_room_file_ids(
     root: &Path,
-    version_id: &str,
-    isolation: Option<&str>,
-) -> RoomResources {
+    resources: &mut RoomResources,
+) -> HashMap<String, PathBuf> {
+    let mut files = HashMap::new();
+    let mut next_id = 0usize;
+    for item in resources
+        .mods
+        .iter_mut()
+        .chain(resources.shaders.iter_mut())
+        .chain(resources.datapacks.iter_mut())
+    {
+        if item.relative_path.is_empty() {
+            continue;
+        }
+        let path = root.join(&item.relative_path);
+        if !path.is_file() {
+            item.file_id.clear();
+            continue;
+        }
+        next_id += 1;
+        let file_id = format!("f{next_id}");
+        item.file_id = file_id.clone();
+        files.insert(file_id, path);
+    }
+    files
+}
+
+fn scan_room_resources(root: &Path, version_id: &str, isolation: Option<&str>) -> RoomResources {
+    let root = net::absolute_path(root);
+    let root = root.as_path();
     let game_dir = crate::minecraft::resolve_java_game_dir(root, version_id, isolation);
     RoomResources {
         version_id: version_id.to_string(),
         mods: scan_room_mods(root, version_id),
-        shaders: scan_room_shaders(&game_dir),
+        shaders: scan_room_shaders(root, &game_dir),
         resource_packs: scan_room_resource_packs(root, version_id, isolation),
+        datapacks: scan_room_datapacks(root, version_id, isolation),
+        version: Some(room_version_info(root, version_id)),
         updated_at: now_millis(),
         host_port: None,
     }
 }
 
-async fn write_room_response(
-    socket: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &str,
-) {
+async fn write_room_response(socket: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -1528,11 +1874,36 @@ async fn write_room_response(
     let _ = socket.shutdown().await;
 }
 
-/// 只接受 `GET /room.json?key=<token>`，其余请求一律 403/404。
+async fn write_room_file(socket: &mut TcpStream, path: &Path) {
+    let Ok(metadata) = tokio::fs::metadata(path).await else {
+        write_room_response(socket, "404 Not Found", "text/plain", "file not found").await;
+        return;
+    };
+    if !metadata.is_file() {
+        write_room_response(socket, "404 Not Found", "text/plain", "file not found").await;
+        return;
+    }
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        write_room_response(socket, "404 Not Found", "text/plain", "file not found").await;
+        return;
+    };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        metadata.len()
+    );
+    if socket.write_all(header.as_bytes()).await.is_err() {
+        return;
+    }
+    let _ = tokio::io::copy(&mut file, socket).await;
+    let _ = socket.shutdown().await;
+}
+
+/// 只接受 `GET /room.json?key=<token>` 和 `GET /file?key=<token>&id=<fileId>`，
+/// 其余请求一律 403/404。文件只能通过房主生成的随机 ID 取，不能传路径。
 async fn serve_room_resources(
     listener: TcpListener,
     token: String,
-    manifest: Arc<Mutex<String>>,
+    snapshot: Arc<Mutex<RoomResourceSnapshot>>,
 ) {
     loop {
         let (mut socket, _) = match listener.accept().await {
@@ -1540,7 +1911,7 @@ async fn serve_room_resources(
             Err(_) => break,
         };
         let token = token.clone();
-        let manifest = manifest.clone();
+        let snapshot = snapshot.clone();
         tokio::spawn(async move {
             let mut request = Vec::new();
             let mut chunk = [0u8; 1024];
@@ -1558,41 +1929,73 @@ async fn serve_room_resources(
                 }
             }
 
-            let head = String::from_utf8_lossy(&request);
-            let line = head.lines().next().unwrap_or("");
-            let mut parts = line.split_whitespace();
+            let head_raw = String::from_utf8_lossy(&request);
+            let head = head_raw.lines().next().unwrap_or("");
+            let mut parts = head.split_whitespace();
             let method = parts.next().unwrap_or("");
-            let path = parts.next().unwrap_or("");
+            let target = parts.next().unwrap_or("");
             if method != "GET" {
-                write_room_response(&mut socket, "405 Method Not Allowed", "text/plain", "method")
-                    .await;
+                write_room_response(
+                    &mut socket,
+                    "405 Method Not Allowed",
+                    "text/plain",
+                    "method",
+                )
+                .await;
                 return;
             }
-            let Some(query) = path.strip_prefix("/room.json?") else {
-                write_room_response(&mut socket, "404 Not Found", "text/plain", "not found")
-                    .await;
+            let (path_only, query) = target.split_once('?').unwrap_or((target, ""));
+            if path_only != "/room.json" && path_only != "/file" {
+                write_room_response(&mut socket, "404 Not Found", "text/plain", "not found").await;
                 return;
-            };
-            let authorized = query.split('&').any(|pair| {
+            }
+            let mut file_id = "";
+            let mut authorized = false;
+            for pair in query.split('&') {
                 let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                key == "key" && value == token
-            });
+                if key == "key" && value == token {
+                    authorized = true;
+                } else if key == "id" {
+                    file_id = value;
+                }
+            }
             if !authorized {
-                write_room_response(&mut socket, "403 Forbidden", "text/plain", "forbidden")
-                    .await;
+                write_room_response(&mut socket, "403 Forbidden", "text/plain", "forbidden").await;
                 return;
             }
-            let body = manifest
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            write_room_response(
-                &mut socket,
-                "200 OK",
-                "application/json; charset=utf-8",
-                &body,
-            )
-            .await;
+
+            let (manifest_body, file_path) = {
+                let snapshot = snapshot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if path_only == "/room.json" {
+                    (Some(snapshot.manifest.clone()), None)
+                } else {
+                    let path = if file_id.is_empty() {
+                        None
+                    } else {
+                        snapshot.files.get(file_id).cloned()
+                    };
+                    (None, path)
+                }
+            };
+            if let Some(body) = manifest_body {
+                write_room_response(
+                    &mut socket,
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    &body,
+                )
+                .await;
+                return;
+            }
+            match file_path {
+                Some(path) => write_room_file(&mut socket, &path).await,
+                None => {
+                    write_room_response(&mut socket, "404 Not Found", "text/plain", "not found")
+                        .await
+                }
+            }
         });
     }
 }
@@ -1609,7 +2012,7 @@ pub async fn start_room_resources(
     host_port: Option<u16>,
     state: State<'_, MultiplayerState>,
 ) -> Result<RoomResourcesInfo, String> {
-    let root_path = PathBuf::from(&root);
+    let root_path = net::absolute_path(&PathBuf::from(&root));
     let version_id = version_id.trim().to_string();
     if !safe_version_id(&version_id) {
         return Err("房间版本无效".to_string());
@@ -1635,6 +2038,8 @@ pub async fn start_room_resources(
     .map_err(|error| format!("读取房间资源失败: {error}"))?;
     // 只输 IPv6 的访客不知道局域网端口，靠清单里的这一项认出来。
     resources.host_port = host_port.filter(|port| *port > 0);
+    // 清单只带随机 fileId，真实路径留在本机的映射表里。
+    let files = attach_room_file_ids(&root_path, &mut resources);
     let manifest_text = serde_json::to_string(&resources)
         .map_err(|error| format!("生成房间资源清单失败: {error}"))?;
 
@@ -1655,9 +2060,13 @@ pub async fn start_room_resources(
         if let Some(server) = guard.as_ref() {
             if server.version_id == version_id && server.secret == secret && server.token == token {
                 *server
-                    .manifest
+                    .snapshot
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = manifest_text;
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    RoomResourceSnapshot {
+                        manifest: manifest_text,
+                        files: files.clone(),
+                    };
                 return Ok(RoomResourcesInfo {
                     port: server.port,
                     token: server.token.clone(),
@@ -1673,20 +2082,23 @@ pub async fn start_room_resources(
     let requested_port = port.unwrap_or(0);
     let listener = match TcpListener::bind(("0.0.0.0", requested_port)).await {
         Ok(listener) => listener,
-        Err(error) if requested_port != 0 => {
-            TcpListener::bind(("0.0.0.0", 0)).await.map_err(|fallback| {
+        Err(error) if requested_port != 0 => TcpListener::bind(("0.0.0.0", 0)).await.map_err(
+            |fallback| {
                 format!(
                     "无法启动房间资源列表（端口 {requested_port}: {error}；随机端口: {fallback}）"
                 )
-            })?
-        }
+            },
+        )?,
         Err(error) => return Err(format!("无法启动房间资源列表: {error}")),
     };
     let actual_port = listener
         .local_addr()
         .map_err(|error| format!("无法读取房间资源端口: {error}"))?
         .port();
-    let manifest = Arc::new(Mutex::new(manifest_text));
+    let snapshot = Arc::new(Mutex::new(RoomResourceSnapshot {
+        manifest: manifest_text,
+        files,
+    }));
     // bind 期间房间可能被关掉；在同一个 gate 里做最后一次检查并登记服务，
     // stop_node / 内核退出监测会等待这里完成，然后立刻把它停掉。
     let _gate = state
@@ -1699,14 +2111,14 @@ pub async fn start_room_resources(
     let task = tokio::spawn(serve_room_resources(
         listener,
         token.clone(),
-        manifest.clone(),
+        snapshot.clone(),
     ));
     let server = RoomResourceServer {
         port: actual_port,
         version_id,
         secret,
         token: token.clone(),
-        manifest,
+        snapshot,
         task,
     };
     if let Some(previous) = state
@@ -1731,11 +2143,12 @@ pub async fn fetch_room_resources(
     host: String,
     port: u16,
     token: String,
+    timeout_ms: Option<u64>,
     state: State<'_, MultiplayerState>,
 ) -> Result<RoomResources, String> {
     let socks = runtime_socks_port(&state)
         .ok_or_else(|| "联机网络还没启动，先加入房间再读取资源列表".to_string())?;
-    fetch_room_resources_inner(host, port, token, socks).await
+    fetch_room_resources_inner(host, port, token, socks, timeout_ms).await
 }
 
 async fn fetch_room_resources_inner(
@@ -1743,8 +2156,11 @@ async fn fetch_room_resources_inner(
     port: u16,
     token: String,
     socks: u16,
+    timeout_ms: Option<u64>,
 ) -> Result<RoomResources, String> {
-    let host = host.trim().trim_matches(|character| character == '[' || character == ']');
+    let host = host
+        .trim()
+        .trim_matches(|character| character == '[' || character == ']');
     if host.is_empty()
         || host.contains('/')
         || host.contains('\\')
@@ -1762,7 +2178,6 @@ async fn fetch_room_resources_inner(
     if !valid_resource_token(token) {
         return Err("分享码里的房间资源密钥无效".to_string());
     }
-    let mut stream = dial_room(socks, &host, port).await?;
     let host_header = if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
@@ -1771,17 +2186,33 @@ async fn fetch_room_resources_inner(
     let request = format!(
         "GET /room.json?key={token} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|error| format!("请求房间资源列表失败：{error}"))?;
 
-    let mut raw = Vec::new();
-    match tokio::time::timeout(Duration::from_secs(8), stream.read_to_end(&mut raw)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => return Err(format!("读取房间资源列表失败：{error}")),
-        Err(_) => return Err("读取房间资源列表超时".to_string()),
-    }
+    // Bound the whole exchange, not just the read. When the host has already
+    // left, `dial_room` can wait for the OS TCP timeout (tens of seconds)
+    // before we ever reach the read step; a room health check must fail fast.
+    let exchange = async {
+        let mut stream = dial_room(socks, &host, port).await?;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|error| format!("请求房间资源列表失败：{error}"))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .await
+            .map_err(|error| format!("读取房间资源列表失败：{error}"))?;
+        Ok::<Vec<u8>, String>(raw)
+    };
+
+    // Health checks pass a shorter timeout so a closed room is noticed in a
+    // few seconds; a normal resource load keeps the roomier default for slow
+    // P2P links.
+    let exchange_timeout = Duration::from_millis(timeout_ms.unwrap_or(8_000).clamp(800, 30_000));
+    let raw = match tokio::time::timeout(exchange_timeout, exchange).await {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err("连接房主资源服务超时".to_string()),
+    };
     let text = String::from_utf8_lossy(&raw);
     let (head, body) = text
         .split_once("\r\n\r\n")
@@ -1798,6 +2229,234 @@ async fn fetch_room_resources_inner(
     }
     serde_json::from_str::<RoomResources>(body)
         .map_err(|error| format!("房间资源列表格式不对: {error}"))
+}
+
+fn valid_room_file_id(value: &str) -> bool {
+    (2..=32).contains(&value.len())
+        && value.starts_with('f')
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// 访客收到的相对路径来自房主，不能直接 join。只允许资源实际所在的几个
+/// 顶层目录，并拒绝 `..`、盘符和绝对路径。
+fn safe_room_download_path(value: &str) -> Option<PathBuf> {
+    let value = value.trim().replace('\\', "/");
+    if value.is_empty() || value.len() > 512 || value.starts_with('/') || value.contains(':') {
+        return None;
+    }
+    let mut parts = value.split('/');
+    let first = parts.next()?;
+    if !matches!(
+        first,
+        "versions" | "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "saves"
+    ) {
+        return None;
+    }
+    let mut path = PathBuf::from(first);
+    for part in parts {
+        if part.is_empty() || part == "." || part == ".." || part.contains('\0') {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
+}
+
+async fn fetch_room_file_inner(
+    host: String,
+    port: u16,
+    token: String,
+    file_id: String,
+    socks: u16,
+) -> Result<Vec<u8>, String> {
+    let host = host
+        .trim()
+        .trim_matches(|character| character == '[' || character == ']');
+    if host.is_empty()
+        || host.contains('/')
+        || host.contains('\\')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains('@')
+        || host.chars().any(char::is_whitespace)
+    {
+        return Err("房主的虚拟地址无效".to_string());
+    }
+    if port == 0 {
+        return Err("房主没有开启房间资源服务".to_string());
+    }
+    let token = token.trim();
+    if !valid_resource_token(token) {
+        return Err("分享码里的房间资源密钥无效".to_string());
+    }
+    if !valid_room_file_id(&file_id) {
+        return Err("房主给出的文件编号无效".to_string());
+    }
+    let host_header = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let request = format!(
+        "GET /file?key={token}&id={file_id} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/octet-stream\r\nConnection: close\r\n\r\n"
+    );
+
+    let exchange = async {
+        let mut stream = dial_room(socks, &host, port).await?;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|error| format!("请求房间文件失败：{error}"))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .await
+            .map_err(|error| format!("读取房间文件失败：{error}"))?;
+        Ok::<Vec<u8>, String>(raw)
+    };
+
+    let raw = match tokio::time::timeout(Duration::from_secs(120), exchange).await {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err("下载房间文件超时".to_string()),
+    };
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "房主的文件响应不完整".to_string())?;
+    let head = String::from_utf8_lossy(&raw[..header_end]);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    match status {
+        "200" => Ok(raw[header_end + 4..].to_vec()),
+        "403" => Err("房间资源密钥已失效，让房主重新发码".to_string()),
+        "404" => Err("房主已经移动或删除了该文件".to_string()),
+        other => Err(format!("房主拒绝下载该文件（HTTP {other}）")),
+    }
+}
+
+/// 访客一键克隆房主的模组、光影和数据包。版本本体由前端先调用
+/// `install_version` 安装成同一个实例名，这里只负责把文件按原相对路径
+/// 写回去。返回逐文件结果，单个文件失败不会中断其余文件。
+pub async fn clone_room_resources(
+    app: AppHandle,
+    root: String,
+    host: String,
+    port: u16,
+    token: String,
+    include_mods: bool,
+    include_shaders: bool,
+    include_datapacks: bool,
+    state: State<'_, MultiplayerState>,
+) -> Result<RoomCloneResult, String> {
+    let socks = runtime_socks_port(&state)
+        .ok_or_else(|| "联机网络还没启动，先加入房间再克隆资源".to_string())?;
+    let resources = fetch_room_resources_inner(
+        host.clone(),
+        port,
+        token.clone(),
+        socks,
+        Some(20_000),
+    )
+    .await?;
+
+    let mut items = Vec::new();
+    if include_mods {
+        items.extend(resources.mods.iter().cloned());
+    }
+    if include_shaders {
+        items.extend(resources.shaders.iter().cloned());
+    }
+    if include_datapacks {
+        items.extend(resources.datapacks.iter().cloned());
+    }
+
+    let root = net::absolute_path(Path::new(&root));
+    let total = items.len();
+    let mut result = RoomCloneResult {
+        version_id: resources.version_id.clone(),
+        ..RoomCloneResult::default()
+    };
+    let _ = app.emit(
+        "multiplayer:clone",
+        RoomCloneProgress {
+            stage: "start".to_string(),
+            done: 0,
+            total,
+            current: String::new(),
+        },
+    );
+
+    for (index, item) in items.iter().enumerate() {
+        let Some(relative) = safe_room_download_path(&item.relative_path) else {
+            result.failed += 1;
+            result.failures.push(format!("{}: 路径不安全", item.name));
+            continue;
+        };
+        if item.file_id.is_empty() {
+            result.skipped += 1;
+            continue;
+        }
+        let _ = app.emit(
+            "multiplayer:clone",
+            RoomCloneProgress {
+                stage: "download".to_string(),
+                done: index,
+                total,
+                current: item.name.clone(),
+            },
+        );
+        let bytes = match fetch_room_file_inner(
+            host.clone(),
+            port,
+            token.clone(),
+            item.file_id.clone(),
+            socks,
+        )
+        .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                result.failed += 1;
+                result.failures.push(format!("{}: {error}", item.name));
+                continue;
+            }
+        };
+        let destination = root.join(&relative);
+        if let Some(parent) = destination.parent() {
+            if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                result.failed += 1;
+                result.failures.push(format!(
+                    "{}: 无法创建目录（{error}）",
+                    item.name
+                ));
+                continue;
+            }
+        }
+        if let Err(error) = tokio::fs::write(&destination, &bytes).await {
+            result.failed += 1;
+            result
+                .failures
+                .push(format!("{}: 写入失败（{error}）", item.name));
+            continue;
+        }
+        result.downloaded += 1;
+        result.files.push(relative.to_string_lossy().replace('\\', "/"));
+    }
+
+    let _ = app.emit(
+        "multiplayer:clone",
+        RoomCloneProgress {
+            stage: "done".to_string(),
+            done: total,
+            total,
+            current: String::new(),
+        },
+    );
+    Ok(result)
 }
 
 /// 有 IPv6 协议栈时才监听 `[::]`（Windows 默认双栈，同时接受 IPv4）。
@@ -2163,6 +2822,77 @@ pub async fn get_multiplayer_peers(
     Ok(peers)
 }
 
+/// 房主在房间运行中登记访客入口。
+///
+/// 纯 P2P 没有信令服务器，房主只能从访客发来的回执码里拿到对方的 IPv6
+/// 地址，然后通过本机 RPC 让内核主动发起打洞。这里不重启内核，避免把已经
+/// 连上的其他访客一起踢下线。
+pub async fn add_multiplayer_peer(
+    root: String,
+    peer: String,
+    state: State<'_, MultiplayerState>,
+) -> Result<String, String> {
+    let normalized = normalize_peer(&peer)?;
+    if !normalized.starts_with("udp://[") && !normalized.starts_with("tcp://[") {
+        return Err("纯 P2P 只接受访客的 IPv6 入口".to_string());
+    }
+    let root_path = PathBuf::from(&root);
+    let (running, rpc_port) = {
+        let runtime = state
+            .runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let running = runtime.pid.is_some()
+            && state
+                .child
+                .lock()
+                .map(|child| child.is_some())
+                .unwrap_or(false);
+        (running, runtime.rpc_port)
+    };
+    if !running {
+        return Err("联机网络还没启动，先创建或加入房间".to_string());
+    }
+    let Some(port) = rpc_port else {
+        return Err("内核没有开放本机 RPC 端口".to_string());
+    };
+    let cli = cli_binary(&root_path);
+    if !cli.is_file() {
+        return Err("当前内核没有附带 easytier-cli，请重新下载内核".to_string());
+    }
+
+    let mut command = Command::new(&cli);
+    command
+        .current_dir(easytier_dir(&root_path))
+        .arg("-p")
+        .arg(format!("127.0.0.1:{port}"))
+        .arg("connector")
+        .arg("add")
+        .arg(&normalized)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = tokio::time::timeout(Duration::from_secs(8), command.output())
+        .await
+        .map_err(|_| "登记访客入口超时".to_string())?
+        .map_err(|error| format!("无法运行 easytier-cli: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("easytier-cli 退出码 {:?}", output.status.code())
+        } else {
+            detail.to_string()
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Windows 防火墙
 // ---------------------------------------------------------------------------
@@ -2271,7 +3001,13 @@ if ($ok) { 'ready' } else { 'missing' }
 }
 
 #[cfg(windows)]
-fn firewall_setup_script(core: &Path, launcher: &Path, listen_port: u16, host_port: u16, overlay: &str) -> String {
+fn firewall_setup_script(
+    core: &Path,
+    launcher: &Path,
+    listen_port: u16,
+    host_port: u16,
+    overlay: &str,
+) -> String {
     let mut script = firewall_variables(core, launcher, listen_port, host_port, overlay);
     script.push_str("$ErrorActionPreference = 'Stop'\n");
     script.push_str(
@@ -2785,10 +3521,15 @@ async fn ping_server(
 /// 从 `tcp://[240e::1]:11010` 这类入口里取出主机和端口。
 fn endpoint_host_port(peer: &str) -> Result<(String, u16), String> {
     let normalized = normalize_peer(peer)?;
-    let rest = normalized
+    let (scheme, rest) = normalized
         .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(normalized.as_str());
+        .map(|(s, r)| (s.to_ascii_lowercase(), r))
+        .unwrap_or_else(|| ("tcp".to_string(), normalized.as_str()));
+    let default_port = match scheme.as_str() {
+        "wss" => 443,
+        "ws" => 80,
+        _ => DEFAULT_LISTEN_PORT,
+    };
     let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let (host, port) = if let Some(rest) = rest.strip_prefix('[') {
         let Some((host, tail)) = rest.split_once(']') else {
@@ -2797,13 +3538,13 @@ fn endpoint_host_port(peer: &str) -> Result<(String, u16), String> {
         let port = tail
             .strip_prefix(':')
             .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_LISTEN_PORT);
+            .unwrap_or(default_port);
         (host.to_string(), port)
     } else if let Some((host, port)) = rest.rsplit_once(':') {
-        let port = port.parse::<u16>().unwrap_or(DEFAULT_LISTEN_PORT);
+        let port = port.parse::<u16>().unwrap_or(default_port);
         (host.to_string(), port)
     } else {
-        (rest.to_string(), DEFAULT_LISTEN_PORT)
+        (rest.to_string(), default_port)
     };
     if host.is_empty() {
         return Err("连接地址为空".to_string());
@@ -2816,6 +3557,83 @@ fn endpoint_host_port(peer: &str) -> Result<(String, u16), String> {
 /// 房主关房后，访客本机的 EasyTier 可能要几次 ping 超时才会把对方
 /// 从成员列表里删掉（可能长达几分钟），但房主的监听端口会立刻消失。
 /// 这个检查只做一次 TCP 连接，用来判断房间是否还真的开着。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiplayerEndpointProbe {
+    peer: String,
+    protocol: String,
+    /// `true` / `false` for TCP-like probes; `null` when the protocol
+    /// cannot be preflighted without starting EasyTier.
+    reachable: Option<bool>,
+    latency_ms: Option<u64>,
+    detail: String,
+}
+
+/// 共享节点延迟预检。
+///
+/// 只对能建立 TCP 的入口测一次握手 RTT：`tcp://`、`ws://`、`wss://`。
+/// `udp://`、`quic://`、`wg://` 没有可用的应用层回显，不能靠 TCP 握手
+/// 冒充延迟；这些节点留给开房后的 EasyTier 成员列表实测。
+pub async fn probe_multiplayer_latency(peer: String) -> MultiplayerEndpointProbe {
+    let normalized = normalize_peer(peer.trim()).unwrap_or_else(|_| peer.trim().to_string());
+    let protocol = normalized
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_else(|| "tcp".to_string());
+    if !matches!(protocol.as_str(), "tcp" | "ws" | "wss") {
+        return MultiplayerEndpointProbe {
+            peer: normalized,
+            protocol: protocol.clone(),
+            reachable: None,
+            latency_ms: None,
+            detail: format!(
+                "{protocol} 节点无法用 TCP 预检延迟；开房后会从 EasyTier 成员列表读取实测值。"
+            ),
+        };
+    }
+    let (host, port) = match endpoint_host_port(&normalized) {
+        Ok(value) => value,
+        Err(error) => {
+            return MultiplayerEndpointProbe {
+                peer: normalized,
+                protocol,
+                reachable: Some(false),
+                latency_ms: None,
+                detail: error,
+            };
+        }
+    };
+    let started = Instant::now();
+    match tokio::time::timeout(
+        Duration::from_secs(3),
+        TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    {
+        Ok(Ok(_)) => MultiplayerEndpointProbe {
+            peer: normalized,
+            protocol,
+            reachable: Some(true),
+            latency_ms: Some(started.elapsed().as_millis() as u64),
+            detail: format!("TCP 握手成功：{host}:{port}"),
+        },
+        Ok(Err(error)) => MultiplayerEndpointProbe {
+            peer: normalized,
+            protocol,
+            reachable: Some(false),
+            latency_ms: None,
+            detail: format!("连接 {host}:{port} 失败：{error}"),
+        },
+        Err(_) => MultiplayerEndpointProbe {
+            peer: normalized,
+            protocol,
+            reachable: Some(false),
+            latency_ms: None,
+            detail: format!("连接 {host}:{port} 超时（3 秒）"),
+        },
+    }
+}
+
 pub async fn probe_multiplayer_endpoint(peer: String) -> Option<bool> {
     let scheme = peer
         .trim()
@@ -2840,13 +3658,29 @@ pub async fn probe_multiplayer_endpoint(peer: String) -> Option<bool> {
 /// 所以最后一条公告就是当前这一局的端口；看到 `Stopping server`
 /// 说明局域网已经关了。
 fn lan_port_from_log(text: &str) -> Option<u16> {
+    let markers = [
+        "started serving on",
+        "local game hosted on port",
+        "local game hosted on",
+        "hosted on port",
+        "hosting on port",
+        "open to lan",
+        "本地游戏已在端口",
+        "游戏已在端口",
+        "局域网游戏已在端口",
+        "本地游戏已开启，端口",
+        "本地游戏已开启, 端口",
+    ];
     for line in text.lines().rev() {
         let lower = line.to_ascii_lowercase();
-        if lower.contains("stopping server") {
+        if lower.contains("stopping server")
+            || line.contains("关闭服务端")
+            || line.contains("停止服务端")
+        {
             return None;
         }
-        for marker in ["started serving on", "local game hosted on port"] {
-            let Some(index) = lower.find(marker) else {
+        for marker in markers {
+            let Some(index) = line.to_lowercase().find(marker) else {
                 continue;
             };
             let mut tail = line[index + marker.len()..].trim_start();
@@ -2857,7 +3691,9 @@ fn lan_port_from_log(text: &str) -> Option<u16> {
             {
                 tail = &tail[4..];
             }
-            let tail = tail.trim_start_matches(|value: char| value == ':' || value.is_whitespace());
+            let tail = tail.trim_start_matches(|value: char| {
+                value == ':' || value == '：' || value.is_whitespace()
+            });
             let digits: String = tail
                 .chars()
                 .take_while(|value| value.is_ascii_digit())
@@ -2889,7 +3725,7 @@ fn read_lan_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
 ///
 /// 版本隔离会改变游戏目录：`all` 在 `versions/<id>/logs`，`none` 在
 /// 根目录的 `logs`，`modded` 则只有模组版本才隔离。直接复用启动时的
-/// 目录解析，避免读错日志。
+/// 目录解析，并增加备选路径探测，避免读错日志。
 pub async fn read_minecraft_lan_port(
     root: String,
     version_id: String,
@@ -2898,13 +3734,31 @@ pub async fn read_minecraft_lan_port(
     if root.trim().is_empty() || version_id.trim().is_empty() {
         return None;
     }
-    let game_dir = crate::minecraft::resolve_java_game_dir(
-        Path::new(&root),
-        version_id.trim(),
-        isolation.as_deref(),
-    );
-    let text = read_lan_log_tail(&game_dir.join("logs").join("latest.log"), 1024 * 1024)?;
-    lan_port_from_log(&text)
+    let root_path = Path::new(&root);
+    let game_dir =
+        crate::minecraft::resolve_java_game_dir(root_path, version_id.trim(), isolation.as_deref());
+    let mut candidate_paths = vec![game_dir.join("logs").join("latest.log")];
+    if isolation.as_deref() != Some("none") {
+        candidate_paths.push(
+            root_path
+                .join("versions")
+                .join(version_id.trim())
+                .join("logs")
+                .join("latest.log"),
+        );
+    }
+    if isolation.as_deref() != Some("all") {
+        candidate_paths.push(root_path.join("logs").join("latest.log"));
+    }
+    candidate_paths.dedup();
+    for path in candidate_paths {
+        if let Some(text) = read_lan_log_tail(&path, 1024 * 1024) {
+            if let Some(port) = lan_port_from_log(&text) {
+                return Some(port);
+            }
+        }
+    }
+    None
 }
 
 pub async fn probe_minecraft_host(
@@ -2939,6 +3793,89 @@ fn sanitize_lan_text(text: &str) -> String {
         .filter(|ch| !ch.is_control())
         .take(120)
         .collect()
+}
+
+/// 本机代理端口只由远端地址决定，不随重连变化。
+///
+/// 之前每次 `bind(127.0.0.1:0)` 都会拿到新端口，退出房间再进来时
+/// Minecraft 里保存的旧 `127.0.0.1:端口` 就指向一个不存在的监听器，
+/// 表现为 `Connection refused`。固定端口后同一台房主始终用同一个地址。
+fn lan_bridge_port(host: &str) -> u16 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in host.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    40_000 + (hash % 8_000) as u16
+}
+
+async fn bind_lan_bridge_listener(preferred: u16) -> Result<(TcpListener, u16), String> {
+    let mut last_error = String::new();
+    // 上一次桥接被 abort 时，监听 socket 可能还没完全释放；短暂重试固定
+    // 端口，避免一次快速重连就换成另一个地址。
+    for attempt in 0..8 {
+        match TcpListener::bind(("127.0.0.1", preferred)).await {
+            Ok(listener) => {
+                let port = listener
+                    .local_addr()
+                    .map_err(|error| format!("无法读取代理端口: {error}"))?
+                    .port();
+                return Ok((listener, port));
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < 7 {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                }
+            }
+        }
+    }
+    // 固定端口被其他程序长期占用时退回系统临时端口，至少不阻断联机。
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|fallback| format!("无法在本机打开代理端口（{last_error}；{fallback}）"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("无法读取代理端口: {error}"))?
+        .port();
+    Ok((listener, port))
+}
+
+fn spawn_lan_bridge_acceptor(
+    listener: TcpListener,
+    app: AppHandle,
+    host: String,
+    port: u16,
+    socks: u16,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            // 单次 accept 失败（例如连接在握手前被对端取消）不代表代理该
+            // 退出：以前这里直接 break，监听器已经关了但界面仍显示端口
+            // 可用，游戏重连时就会得到 Connection refused。
+            let (inbound, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
+            let host = host.clone();
+            let app = app.clone();
+            tokio::spawn(async move {
+                let connect = dial_room(socks, &host, port);
+                let Ok(Ok(mut outbound)) =
+                    tokio::time::timeout(Duration::from_secs(15), connect).await
+                else {
+                    emit_log(&app, "proxy", format!("连接 {host}:{port} 失败"));
+                    return;
+                };
+                let mut inbound = inbound;
+                let _ = outbound.set_nodelay(true);
+                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+            });
+        }
+    })
 }
 
 pub async fn start_lan_bridge(
@@ -2979,37 +3916,26 @@ pub async fn start_lan_bridge(
         });
     }
 
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|error| format!("无法在本机打开代理端口: {error}"))?;
-    let local_port = listener
-        .local_addr()
-        .map_err(|error| format!("无法读取代理端口: {error}"))?
-        .port();
-
-    let proxy_app = app.clone();
-    let proxy_host = target_host.clone();
-    let accept_task = tokio::spawn(async move {
-        loop {
-            let Ok((inbound, _)) = listener.accept().await else {
-                break;
-            };
-            let host = proxy_host.clone();
-            let app = proxy_app.clone();
-            tokio::spawn(async move {
-                let connect = dial_room(socks, &host, port);
-                let Ok(Ok(mut outbound)) =
-                    tokio::time::timeout(Duration::from_secs(8), connect).await
-                else {
-                    emit_log(&app, "proxy", format!("连接 {host}:{port} 失败"));
-                    return;
-                };
-                let mut inbound = inbound;
-                let _ = outbound.set_nodelay(true);
-                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
-            });
-        }
-    });
+    let preferred_port = lan_bridge_port(&target_host);
+    let (listener, local_port) = bind_lan_bridge_listener(preferred_port).await?;
+    let mut tasks = vec![spawn_lan_bridge_acceptor(
+        listener,
+        app.clone(),
+        target_host.clone(),
+        port,
+        socks,
+    )];
+    // Windows 上 `localhost` 可能先解析到 ::1；只监听 IPv4 时游戏会直接
+    // 得到 Connection refused。IPv6 回环可用就一并监听同一个端口。
+    if let Ok(listener6) = TcpListener::bind(("::1", local_port)).await {
+        tasks.push(spawn_lan_bridge_acceptor(
+            listener6,
+            app.clone(),
+            target_host.clone(),
+            port,
+            socks,
+        ));
+    }
 
     let label = motd
         .as_deref()
@@ -3040,7 +3966,10 @@ pub async fn start_lan_bridge(
             host: target_host.clone(),
             port,
             local_port,
-            tasks: vec![accept_task, announce_task],
+            tasks: {
+                tasks.push(announce_task);
+                tasks
+            },
         });
 
     emit_log(
@@ -3150,13 +4079,14 @@ mod tests {
             normalize_peer("tcp://[240e:3b5::20]:11010").unwrap(),
             "tcp://[240e:3b5::20]:11010"
         );
+        // 裸 IPv6 不带协议时按 UDP 处理：双向直连优先 UDP。
         assert_eq!(
             normalize_peer("[240e:3b5::20]:11223").unwrap(),
-            "tcp://[240e:3b5::20]:11223"
+            "udp://[240e:3b5::20]:11223"
         );
         assert_eq!(
             normalize_peer("240e:3b5::20").unwrap(),
-            "tcp://[240e:3b5::20]:11010"
+            "udp://[240e:3b5::20]:11010"
         );
         assert_eq!(
             normalize_peer("public.easytier.cn:11010").unwrap(),
@@ -3204,6 +4134,25 @@ mod tests {
             None,
             "UDP 入口不能拿 TCP 结果下结论"
         );
+    }
+
+    /// 延迟预检只对 TCP 类入口测握手 RTT；UDP 不能伪造延迟。
+    #[tokio::test]
+    async fn latency_probe_measures_tcp_and_rejects_udp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let probe = probe_multiplayer_latency(format!("tcp://127.0.0.1:{port}")).await;
+        assert_eq!(probe.reachable, Some(true));
+        assert!(probe.latency_ms.is_some(), "TCP 握手应给出延迟");
+        accept.await.unwrap();
+
+        let udp = probe_multiplayer_latency("udp://127.0.0.1:11010".to_string()).await;
+        assert_eq!(udp.reachable, None);
+        assert_eq!(udp.latency_ms, None);
+        assert!(udp.detail.contains("无法用 TCP 预检"));
     }
 
     /// 现代/旧版日志各有一种端口公告；关掉局域网后不能再返回旧端口。
@@ -3278,7 +4227,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         assert!(!kernel_dir_ok(&dir));
-        assert_eq!(missing_kernel_files(&dir).len(), REQUIRED_KERNEL_STEMS.len());
+        assert_eq!(
+            missing_kernel_files(&dir).len(),
+            REQUIRED_KERNEL_STEMS.len()
+        );
 
         for stem in REQUIRED_KERNEL_STEMS {
             std::fs::write(dir.join(stem), b"stub").unwrap();
@@ -3331,6 +4283,9 @@ mod tests {
             network_secret: "s3cret-value".to_string(),
             overlay_ipv4: "10.126.126.5".to_string(),
             peers: Vec::new(),
+            relay: false,
+            p2p_only: false,
+            allow_public_stun: false,
             listen_port: Some(11010),
             recv_bps_limit: Some(1_250_000),
         };
@@ -3377,6 +4332,61 @@ mod tests {
                 .expect("要有本机 SOCKS5 入口");
             assert_eq!(args.get(socks + 1).map(String::as_str), Some("15889"));
         }
+
+        // 共享节点模式不能监听任何入站端口，否则又会被要求放行防火墙/路由器。
+        let mut relay = host.clone();
+        relay.relay = true;
+        relay.recv_bps_limit = None;
+        let relay_args = core_args(
+            &relay,
+            "tcp://[::]:11010",
+            &["tcp://relay.example.com:11010".to_string()],
+            15888,
+            15889,
+        );
+        assert!(relay_args.iter().any(|arg| arg == "--no-listener"));
+        assert!(!relay_args.iter().any(|arg| arg == "--listeners"));
+
+        // 零服务器直连：双方交换候选地址后同时发包，只允许 P2P。
+        let mut p2p = host.clone();
+        p2p.p2p_only = true;
+        p2p.peers = vec!["udp://[240e:3b5::20]:11010".to_string()];
+        let p2p_args = core_args(&p2p, "udp://[::]:11010", &p2p.peers, 15888, 15889);
+        assert!(p2p_args.iter().any(|arg| arg == "--p2p-only"));
+        assert!(p2p_args.iter().any(|arg| arg == "--need-p2p"));
+        assert!(!p2p_args.iter().any(|arg| arg == "--no-listener"));
+        assert!(p2p_args.iter().any(|arg| arg == "--peers"));
+
+        // 默认不联系任何公共 STUN：空列表才会真正关掉 EasyTier 的内置默认值。
+        let stun = p2p_args
+            .iter()
+            .position(|arg| arg == "--stun-servers")
+            .expect("默认要显式清空 IPv4 STUN");
+        assert_eq!(p2p_args.get(stun + 1).map(String::as_str), Some(""));
+        let stun6 = p2p_args
+            .iter()
+            .position(|arg| arg == "--stun-servers-v6")
+            .expect("默认要显式清空 IPv6 STUN");
+        assert_eq!(p2p_args.get(stun6 + 1).map(String::as_str), Some(""));
+        assert!(!p2p_args.iter().any(|arg| arg == "--external-node"));
+        assert!(!p2p_args.iter().any(|arg| arg == "-e"));
+
+        // 显式允许时才保留 EasyTier 的默认 STUN 列表。
+        let mut with_stun = p2p.clone();
+        with_stun.allow_public_stun = true;
+        let with_stun_args = core_args(
+            &with_stun,
+            "udp://[::]:11010",
+            &with_stun.peers,
+            15888,
+            15889,
+        );
+        assert!(!with_stun_args.iter().any(|arg| arg == "--stun-servers"));
+        assert!(!with_stun_args.iter().any(|arg| arg == "--stun-servers-v6"));
+        assert_eq!(
+            normalize_peer("[240e:3b5::20]:11010").unwrap(),
+            "udp://[240e:3b5::20]:11010"
+        );
     }
 
     /// 安装包自带的内核能直接展开到游戏目录，不靠网络下载。
@@ -3596,9 +4606,11 @@ mod tests {
         }"#;
         let peers = parse_peer_list(json).unwrap();
         assert_eq!(peers.len(), 2);
-        assert!(peers
-            .iter()
-            .any(|peer| peer.hostname == "cobble-host" && peer.ipv4 == "10.126.126.5"));
+        assert!(
+            peers
+                .iter()
+                .any(|peer| peer.hostname == "cobble-host" && peer.ipv4 == "10.126.126.5")
+        );
         let guest = peers
             .iter()
             .find(|peer| peer.hostname == "MCTier-Studio")
@@ -3623,7 +4635,13 @@ mod tests {
             ));
         let _ = std::fs::remove_dir_all(&root);
         let instance = root.join("versions").join("1.21.1");
-        for dir in ["mods", "shaderpacks", "resourcepacks"] {
+        for dir in [
+            "mods",
+            "shaderpacks",
+            "resourcepacks",
+            "datapacks",
+            "saves/World/datapacks",
+        ] {
             std::fs::create_dir_all(instance.join(dir)).unwrap();
         }
         std::fs::write(instance.join("mods/Sodium.jar"), b"mod").unwrap();
@@ -3632,32 +4650,76 @@ mod tests {
         std::fs::write(instance.join("shaderpacks/BSL.zip"), b"shader").unwrap();
         std::fs::write(instance.join("shaderpacks/Off.zip.disabled"), b"shader").unwrap();
         std::fs::write(instance.join("resourcepacks/Faithful.zip"), b"pack").unwrap();
+        std::fs::write(instance.join("datapacks/Vanilla.zip"), b"data").unwrap();
+        std::fs::write(instance.join("saves/World/datapacks/Loot.zip"), b"data").unwrap();
 
         let resources = scan_room_resources(&root, "1.21.1", Some("all"));
         assert_eq!(resources.version_id, "1.21.1");
         assert_eq!(resources.mods.len(), 2);
-        assert!(resources.mods.iter().any(|item| item.name == "Sodium" && item.enabled));
-        assert!(resources
-            .mods
-            .iter()
-            .any(|item| item.name == "Disabled" && !item.enabled));
+        assert!(
+            resources
+                .mods
+                .iter()
+                .any(|item| item.name == "Sodium" && item.enabled)
+        );
+        assert!(
+            resources
+                .mods
+                .iter()
+                .any(|item| item.name == "Disabled" && !item.enabled)
+        );
         assert_eq!(resources.shaders.len(), 2);
-        assert!(resources.shaders.iter().any(|item| item.name == "BSL" && item.enabled));
+        assert!(
+            resources
+                .shaders
+                .iter()
+                .any(|item| item.name == "BSL" && item.enabled)
+        );
         assert!(resources.shaders.iter().any(|item| !item.enabled));
         assert_eq!(resources.resource_packs.len(), 1);
         assert_eq!(resources.resource_packs[0].file_name, "Faithful.zip");
+        assert_eq!(resources.datapacks.len(), 2);
+        assert!(
+            resources
+                .datapacks
+                .iter()
+                .any(|item| item.name == "World/Loot"
+                    && item.relative_path.ends_with("saves/World/datapacks/Loot.zip"))
+        );
+        assert!(resources.version.is_some());
+
+        let mut resources = resources;
+        let files = attach_room_file_ids(&root, &mut resources);
+        assert_eq!(files.len(), 6);
+        assert!(resources.mods.iter().all(|item| !item.file_id.is_empty()));
+        assert!(resources.datapacks.iter().all(|item| !item.file_id.is_empty()));
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 资源服务只能拿到清单，不能拿任意路径；错误令牌必须是 403。
+    /// 资源服务只能拿到清单和清单里登记的文件；错误令牌必须是 403，
+    /// 文件端点不能靠路径参数读到其他文件。
     #[tokio::test]
     async fn room_resource_server_requires_the_share_token() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("cobble-room-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Sodium.jar");
+        std::fs::write(&file, b"jar-bytes").unwrap();
+        let mut files = HashMap::new();
+        files.insert("f1".to_string(), file);
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let token = "abcdef123456".to_string();
-        let manifest = Arc::new(Mutex::new(r#"{"versionId":"1.21.1"}"#.to_string()));
-        let task = tokio::spawn(serve_room_resources(listener, token.clone(), manifest));
+        let snapshot = Arc::new(Mutex::new(RoomResourceSnapshot {
+            manifest: r#"{"versionId":"1.21.1"}"#.to_string(),
+            files,
+        }));
+        let task = tokio::spawn(serve_room_resources(listener, token.clone(), snapshot));
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(5))
@@ -3679,7 +4741,34 @@ mod tests {
             .unwrap();
         assert_eq!(denied.status().as_u16(), 403);
 
+        let downloaded = client
+            .get(format!("http://127.0.0.1:{port}/file?key={token}&id=f1"))
+            .send()
+            .await
+            .unwrap();
+        assert!(downloaded.status().is_success());
+        assert_eq!(downloaded.bytes().await.unwrap().as_ref(), b"jar-bytes");
+
+        let forbidden = client
+            .get(format!("http://127.0.0.1:{port}/file?key=wrong&id=f1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status().as_u16(), 403);
+
         task.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 访客只能把文件写进资源目录，房主发来的 `../` 或绝对路径必须拒绝。
+    #[test]
+    fn room_download_paths_stay_inside_content_folders() {
+        assert!(safe_room_download_path("versions/1.21.1/mods/Sodium.jar").is_some());
+        assert!(safe_room_download_path("saves/World/datapacks/Loot.zip").is_some());
+        assert!(safe_room_download_path("../../Windows/System32/x.dll").is_none());
+        assert!(safe_room_download_path("versions/../config/x.json").is_none());
+        assert!(safe_room_download_path("C:/Windows/x.dll").is_none());
+        assert!(safe_room_download_path("options.txt").is_none());
     }
 
     /// 访客侧命令能解析房主返回的 JSON，并且令牌不对时不会读到清单。
@@ -3693,23 +4782,26 @@ mod tests {
                 file_name: "Sodium.jar".to_string(),
                 enabled: true,
                 size: 10,
+                file_id: "f1".to_string(),
+                relative_path: "versions/1.21.1/mods/Sodium.jar".to_string(),
             }],
             shaders: Vec::new(),
             resource_packs: Vec::new(),
+            datapacks: Vec::new(),
+            version: None,
             updated_at: 1,
         };
-        let manifest = Arc::new(Mutex::new(serde_json::to_string(&resources).unwrap()));
+        let snapshot = Arc::new(Mutex::new(RoomResourceSnapshot {
+            manifest: serde_json::to_string(&resources).unwrap(),
+            files: HashMap::new(),
+        }));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let token = "abcdef123456".to_string();
-        let task = tokio::spawn(serve_room_resources(
-            listener,
-            token.clone(),
-            manifest,
-        ));
+        let task = tokio::spawn(serve_room_resources(listener, token.clone(), snapshot));
 
         // 本机回环不走代理，所以这里传 0 也能直接连到假房主。
-        let fetched = fetch_room_resources_inner("127.0.0.1".to_string(), port, token, 0)
+        let fetched = fetch_room_resources_inner("127.0.0.1".to_string(), port, token, 0, None)
             .await
             .unwrap();
         assert_eq!(fetched.version_id, "1.21.1");
@@ -3723,6 +4815,7 @@ mod tests {
             port,
             "wrongtoken123".to_string(),
             0,
+            None,
         )
         .await;
         assert!(denied.is_err());

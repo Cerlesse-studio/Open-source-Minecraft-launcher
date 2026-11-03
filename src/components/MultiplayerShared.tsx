@@ -112,9 +112,6 @@ export function RoomLogPanel({ logs }: { logs: string[] }) {
         >
           {logs.length}
         </Badge>
-        <span className="ml-auto text-[9.5px] text-muted-foreground/50 group-open:hidden">
-          排障用
-        </span>
       </summary>
       <div className="max-h-52 space-y-1 overflow-y-auto border-t border-border/50 bg-background/40 px-4 py-2.5 font-mono text-[10px] leading-4">
         {logs.length === 0 ? (

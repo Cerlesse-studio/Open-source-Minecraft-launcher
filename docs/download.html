@@ -193,7 +193,12 @@
             <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
 npm install
-npm run electron:build</code></pre>
+
+# 一键打包单文件免安装版（输出至 release/Open-source-Minecraft-launcher.exe）
+npm run electron:build:portable
+
+# 一键打包安装包版
+npm run electron:build:nsis</code></pre>
           </div>
           <div class="download-actions">
             <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">完整构建文档</a>
@@ -225,7 +230,7 @@ npm run electron:build</code></pre>
           <div class="requirement-card" data-reveal>
             <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-wifi"></use></svg>
             <strong>网络与联机</strong>
-            <span>首次安装版本、依赖与 Java 需要联网；EasyTier 联机需要双方都有公网 IPv6。</span>
+            <span>首次安装版本、依赖与 Java 需要联网；EasyTier 联机默认使用 IPv6 双向直连，需要双方有公网 IPv6，并放行本机 TCP/UDP 11010。</span>
           </div>
         </div>
       </section>
@@ -316,7 +321,7 @@ npm run electron:build</code></pre>
           <h3>产品</h3>
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
-            <a href="index.html#preview">界面预览</a>
+            <a href="index.html#capabilities">功能</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>

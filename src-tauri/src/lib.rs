@@ -1,8 +1,9 @@
-pub mod bridge;
 pub mod auth;
 pub mod bedrock;
 pub mod bedrock_store;
+pub mod bridge;
 pub mod content;
+pub mod extension;
 pub mod java;
 pub mod loaders;
 pub mod mcmod;
@@ -11,20 +12,19 @@ pub mod multiplayer;
 mod net;
 pub mod platform;
 pub mod search_i18n;
-pub mod extension;
 
+use crate::bridge::{AppHandle, State};
 use minecraft::{
     InstallProgress, InstallResult, InstalledVersion, LaunchRequest, LaunchSpec, ProgressFn,
     VersionManifest,
 };
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::bridge::{AppHandle, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -103,6 +103,13 @@ struct GameLogPayload {
 struct GameExitPayload {
     code: Option<i32>,
     version_id: Option<String>,
+    /// Persistent launch log, so an exit before Minecraft's own logging starts
+    /// is still diagnosable after the console has been cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_path: Option<String>,
+    /// Last Java/Minecraft error lines, attached to the exit notification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 fn emit_progress(app: &AppHandle) -> ProgressFn {
@@ -301,9 +308,10 @@ async fn get_content_versions(
 }
 
 async fn download_content_file(
+    app: AppHandle,
     request: content::DownloadContentRequest,
 ) -> Result<content::DownloadContentResult, String> {
-    content::download_content_file(request).await
+    content::download_content_file(Some(&app), request).await
 }
 
 async fn get_version_loaders(mc_version: String) -> Result<loaders::VersionLoadersCatalog, String> {
@@ -465,22 +473,185 @@ impl XmlLogEvent {
     }
 }
 
+const LAUNCH_LOG_TAIL: usize = 240;
+
+/// Writes a launch log next to the game files and keeps a bounded tail for the
+/// exit notification. JVM flag errors happen before Minecraft creates
+/// `logs/latest.log`, so without this file a process that exits with code 1
+/// leaves no trace at all.
+struct LaunchLog {
+    path: Option<PathBuf>,
+    file: Mutex<Option<std::fs::File>>,
+    tail: Mutex<std::collections::VecDeque<String>>,
+}
+
+impl LaunchLog {
+    fn create(root: &std::path::Path, version_id: &str) -> Arc<Self> {
+        let dir = root.join("logs").join("launcher");
+        let _ = std::fs::create_dir_all(&dir);
+        let safe_name: String = version_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let file_name = if safe_name.is_empty() {
+            "unknown".to_string()
+        } else {
+            safe_name
+        };
+        let path = dir.join(format!("{file_name}.log"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .ok();
+        let log = Arc::new(Self {
+            path: file.as_ref().map(|_| path.clone()),
+            file: Mutex::new(file),
+            tail: Mutex::new(std::collections::VecDeque::new()),
+        });
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        log.write(
+            "cobble",
+            &format!("=== 启动 {version_id}（unix {stamp}） ==="),
+        );
+        log
+    }
+
+    fn write(&self, stream: &str, line: &str) {
+        let clipped: String = line.chars().take(4000).collect();
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(file) = guard.as_mut() {
+                let _ = writeln!(file, "[{stream}] {clipped}");
+                // Flush every line: a JVM that aborts on an invalid flag exits
+                // before any buffered writer would normally be dropped.
+                let _ = file.flush();
+            }
+        }
+        if let Ok(mut tail) = self.tail.lock() {
+            tail.push_back(format!("[{stream}] {clipped}"));
+            while tail.len() > LAUNCH_LOG_TAIL {
+                tail.pop_front();
+            }
+        }
+    }
+
+    fn path_string(&self) -> Option<String> {
+        self.path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+
+    fn tail_for_error(&self, limit: usize) -> Option<String> {
+        let tail = self.tail.lock().ok()?;
+        let important: Vec<&String> = tail
+            .iter()
+            .filter(|line| {
+                let lower = line.to_lowercase();
+                lower.contains("error")
+                    || lower.contains("exception")
+                    || lower.contains("caused by")
+                    || lower.contains("could not")
+                    || lower.contains("failed")
+                    || lower.contains("unsupported")
+                    || lower.contains("错误")
+                    || lower.contains("失败")
+                    || line.starts_with("[stderr]")
+            })
+            .collect();
+        let mut chosen: Vec<&str> = if important.is_empty() {
+            tail.iter().rev().take(limit).map(String::as_str).collect()
+        } else {
+            important
+                .iter()
+                .rev()
+                .take(limit)
+                .map(|line| line.as_str())
+                .collect()
+        };
+        chosen.reverse();
+        if chosen.is_empty() {
+            None
+        } else {
+            Some(chosen.join("\n"))
+        }
+    }
+
+    fn diagnose_error(&self) -> Option<String> {
+        let tail = self.tail.lock().ok()?;
+        let all_text = tail.iter().cloned().collect::<Vec<_>>().join("\n");
+        let lower = all_text.to_lowercase();
+
+        let mut diagnosis = Vec::new();
+        if lower.contains("conflicting collector combinations") || lower.contains("multiple garbage collectors selected") {
+            diagnosis.push("【诊断提示】检测到 JVM 参数中配置了多个互斥的垃圾收集器导致 VM 冲突。启动器已提供智能参数仲裁，您也可以检查版本设置中的自定义 JVM 参数，移除多余的 -XX:+Use...GC 选项。".to_string());
+        } else if lower.contains("incompatible minimum and maximum heap sizes") {
+            diagnosis.push("【诊断提示】初始堆内存 (-Xms) 高于最大堆内存 (-Xmx) 导致 JVM 初始化冲突。启动器已开启自动纠错，建议检查自定义参数中是否存在手写的 -Xms 或 -Xmx。".to_string());
+        } else if lower.contains("unrecognized vm option") || (lower.contains("could not create the java virtual machine") && lower.contains("vm option")) {
+            diagnosis.push("【诊断提示】检测到不被当前 Java 版本支持的无效或废弃 VM 选项。建议检查版本设置中的自定义 JVM 参数，移除过时的优化选项。".to_string());
+        } else if lower.contains("the specified size exceeds the maximum representable size")
+            || (lower.contains("could not create the java virtual machine") && lower.contains("-xmx"))
+        {
+            diagnosis.push("【诊断提示】当前使用的是 32 位 Java 运行环境，无法分配大堆内存。建议在设置中切换为“自动检测”，启动器将为您自动下载官方 64 位 Java 运行时。".to_string());
+        } else if lower.contains("could not reserve enough space") {
+            diagnosis.push("【诊断提示】系统可用内存不足，无法预分配 JVM 内存。请关闭其他大型应用，或在版本设置中调小最大内存。".to_string());
+        } else if lower.contains("unsupportedclassversionerror") || lower.contains("has been compiled by a more recent version") {
+            diagnosis.push("【诊断提示】当前 Java 版本过低，无法运行此 Minecraft 版本。请在设置中选择更高版本的 Java（例如 Java 17 或 21）或切换为“自动检测”。".to_string());
+        } else if lower.contains("pixel format not accelerated") || lower.contains("glfw error 65542") || lower.contains("wgl: the driver does not appear to support opengl") {
+            diagnosis.push("【诊断提示】显卡驱动不支持 OpenGL 硬件加速或未安装显卡驱动。请更新显卡驱动程序。".to_string());
+        } else if lower.contains("modresolutionexception") || lower.contains("missingmandatorydependenciesexception") || lower.contains("incompatiblemodsexception") {
+            diagnosis.push("【诊断提示】检测到模组依赖缺失或冲突。请检查模组列表中提示缺失的前置 Mod，确保模组版本与当前游戏版本完全匹配。".to_string());
+        }
+
+        if diagnosis.is_empty() {
+            None
+        } else {
+            Some(diagnosis.join("\n"))
+        }
+    }
+}
+
 fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     app: AppHandle,
     stream: &'static str,
     reader: R,
-) {
+    log: Arc<LaunchLog>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let reader = BufReader::new(reader);
+        let mut reader = BufReader::new(reader);
         let mut xml = XmlLogEvent {
             thread: None,
             level: None,
             message: None,
         };
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            if raw.last() == Some(&b'\n') {
+                raw.pop();
+            }
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
+            }
+            // Decode lossily instead of `lines()`: Java on a non-UTF-8 Windows
+            // console can emit GBK bytes, and `lines()` stops at the first
+            // invalid one, silently cutting off the error that explains a
+            // process that exited with code 1.
+            let line = String::from_utf8_lossy(&raw).into_owned();
             let in_xml_event = xml.thread.is_some() || xml.level.is_some();
             let formatted = if in_xml_event || line.trim_start().starts_with("<log4j:Event") {
                 xml.feed(&line)
@@ -493,6 +664,7 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                 } else {
                     stream
                 };
+                log.write(stream, &line);
                 let _ = app.emit(
                     "game:log",
                     GameLogPayload {
@@ -502,7 +674,7 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                 );
             }
         }
-    });
+    })
 }
 
 async fn launch_game(
@@ -583,7 +755,57 @@ async fn launch_game(
         );
     }
 
+    let launch_log = LaunchLog::create(std::path::Path::new(&request.root), &request.version_id);
+    launch_log.write(
+        "cobble",
+        &format!("Java {}：{}", spec.java_major, spec.java.display()),
+    );
+    launch_log.write("cobble", &format!("工作目录：{}", spec.cwd.display()));
+
+    let java_install = crate::java::probe_java(&spec.java, "运行自检");
+    let is_64bit = java_install.as_ref().map(|i| i.is_64bit).unwrap_or(true);
+    if !is_64bit {
+        let warn_msg = "[提示] 检测到当前 Java 为 32 位版本，启动器已自动将最大堆内存安全限制为 1024M 防止闪退；建议在设置中开启“自动检测”以下载 64 位 Java 运行时。";
+        launch_log.write("cobble", warn_msg);
+        let _ = app.emit(
+            "game:log",
+            GameLogPayload {
+                stream: "cobble".to_string(),
+                line: warn_msg.to_string(),
+            },
+        );
+    }
+
+    // 记录 JVM 参数仲裁与保护信息
+    for note in &spec.notes {
+        launch_log.write("cobble", &format!("[VM 保护] {note}"));
+        let _ = app.emit(
+            "game:log",
+            GameLogPayload {
+                stream: "cobble".to_string(),
+                line: format!("[VM 保护] {note}"),
+            },
+        );
+    }
+
+    // 检查并隔离外部干扰环境变量（_JAVA_OPTIONS / JAVA_TOOL_OPTIONS）
+    let has_java_opts_env = std::env::var("_JAVA_OPTIONS").is_ok()
+        || std::env::var("JAVA_TOOL_OPTIONS").is_ok()
+        || std::env::var("JAVA_OPTIONS").is_ok();
+    if has_java_opts_env {
+        let env_warn = "[安全保护] 检测到系统环境变量中存在 _JAVA_OPTIONS / JAVA_TOOL_OPTIONS，已在游戏进程中自动隔离清除，杜绝外部 VM 参数冲突与强制内存限制。";
+        launch_log.write("cobble", env_warn);
+        let _ = app.emit(
+            "game:log",
+            GameLogPayload {
+                stream: "cobble".to_string(),
+                line: env_warn.to_string(),
+            },
+        );
+    }
+
     let mut command = Command::new(&spec.java);
+    crate::java::clean_java_env(&mut command);
     command
         .args(&spec.args)
         .current_dir(&spec.cwd)
@@ -598,16 +820,23 @@ async fn launch_game(
             Some("above_normal") => 0x0000_8000,
             Some("below_normal") => 0x0000_4000,
             Some("low") => 0x0000_0040,
-            _ => 0x0000_0020, // normal
+            Some("normal") => 0x0000_0020,
+            _ => 0x0000_8000, // above_normal by default for maximized gaming CPU allocation
         };
         command.creation_flags(CREATE_NO_WINDOW | priority_flag);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("无法启动 Java ({}): {e}", spec.java.to_string_lossy()))?;
+    let mut child = command.spawn().map_err(|error| {
+        let message = format!("无法启动 Java ({}): {error}", spec.java.to_string_lossy());
+        launch_log.write("cobble", &message);
+        match launch_log.path_string() {
+            Some(path) => format!("{message}。启动日志：{path}"),
+            None => message,
+        }
+    })?;
 
     let pid = child.id();
+    launch_log.write("cobble", &format!("已创建游戏进程，PID {pid}"));
     state.stopping.store(false, Ordering::Relaxed);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -616,11 +845,22 @@ async fn launch_game(
         .lock()
         .map_err(|_| "游戏进程状态不可用".to_string())? = Some(child);
 
+    let mut readers = Vec::new();
     if let Some(stdout) = stdout {
-        spawn_log_reader(app.clone(), "stdout", stdout);
+        readers.push(spawn_log_reader(
+            app.clone(),
+            "stdout",
+            stdout,
+            launch_log.clone(),
+        ));
     }
     if let Some(stderr) = stderr {
-        spawn_log_reader(app.clone(), "stderr", stderr);
+        readers.push(spawn_log_reader(
+            app.clone(),
+            "stderr",
+            stderr,
+            launch_log.clone(),
+        ));
     }
 
     let _ = app.emit(
@@ -647,57 +887,90 @@ async fn launch_game(
     let stopping = state.stopping.clone();
     let app_handle = app.clone();
     let version_id = request.version_id.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(400));
-        let mut slot = match child_slot.lock() {
-            Ok(slot) => slot,
-            Err(_) => break,
-        };
-        let Some(child) = slot.as_mut() else {
-            break;
-        };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                *slot = None;
-                drop(slot);
-                let requested_stop = stopping.swap(false, Ordering::Relaxed);
-                let code = if requested_stop {
-                    Some(0)
-                } else {
-                    status.code()
-                };
-                let _ = app_handle.emit(
-                    "game:exit",
-                    GameExitPayload {
-                        code,
-                        version_id: Some(version_id.clone()),
-                    },
-                );
-                let message = match code {
-                    Some(0) => "游戏进程已结束".to_string(),
-                    Some(code) => format!("游戏进程已退出（代码 {code}）"),
-                    None => "游戏进程已结束".to_string(),
-                };
-                let _ = app_handle.emit(
-                    "game:log",
-                    GameLogPayload {
-                        stream: "cobble".to_string(),
-                        line: message,
-                    },
-                );
-                let _ = app_handle.emit(
-                    "game:status",
-                    GameStatus {
-                        state: "idle".to_string(),
-                        detail: None,
-                        pid: None,
-                        version_id: Some(version_id.clone()),
-                    },
-                );
+    let mut readers = Some(readers);
+    let watcher_log = launch_log.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(400));
+            let mut slot = match child_slot.lock() {
+                Ok(slot) => slot,
+                Err(_) => break,
+            };
+            let Some(child) = slot.as_mut() else {
                 break;
+            };
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    *slot = None;
+                    drop(slot);
+                    // Drain both pipes before reporting the exit; otherwise the
+                    // toast can race ahead of the JVM's actual error message.
+                    if let Some(handles) = readers.take() {
+                        for handle in handles {
+                            let _ = handle.join();
+                        }
+                    }
+                    let requested_stop = stopping.swap(false, Ordering::Relaxed);
+                    let code = if requested_stop {
+                        Some(0)
+                    } else {
+                        status.code()
+                    };
+                    let detail = if code == Some(0) {
+                        None
+                    } else {
+                        let error_lines = watcher_log.tail_for_error(12);
+                        let diagnosis = watcher_log.diagnose_error();
+                        match (diagnosis, error_lines) {
+                            (Some(diag), Some(lines)) => {
+                                Some(format!("{}\n\n原始日志摘要：\n{}", diag, lines))
+                            }
+                            (Some(diag), None) => Some(diag),
+                            (None, Some(lines)) => Some(lines),
+                            (None, None) => None,
+                        }
+                    };
+                    let log_path = watcher_log.path_string();
+                    let _ = app_handle.emit(
+                        "game:exit",
+                        GameExitPayload {
+                            code,
+                            version_id: Some(version_id.clone()),
+                            log_path: log_path.clone(),
+                            detail: detail.clone(),
+                        },
+                    );
+                    let message = match code {
+                        Some(0) => "游戏进程已结束".to_string(),
+                        Some(code) => format!("游戏进程已退出（代码 {code}）"),
+                        None => "游戏进程已结束".to_string(),
+                    };
+                    let message = match &log_path {
+                        Some(path) => format!("{message}。启动日志：{path}"),
+                        None => message,
+                    };
+                    watcher_log.write("cobble", &message);
+                    let _ = app_handle.emit(
+                        "game:log",
+                        GameLogPayload {
+                            stream: "cobble".to_string(),
+                            line: message,
+                        },
+                    );
+                    let _ = app_handle.emit(
+                        "game:status",
+                        GameStatus {
+                            state: "idle".to_string(),
+                            detail: None,
+                            pid: None,
+                            version_id: Some(version_id.clone()),
+                        },
+                    );
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => break,
             }
-            Ok(None) => {}
-            Err(_) => break,
         }
     });
 
@@ -729,8 +1002,16 @@ fn is_bedrock_process_running() -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn is_bedrock_process_running() -> bool {
-    for pattern in ["bedrock_server", "mcpelauncher-client", "mcpelauncher-ui", "MCPELauncher"] {
-        if let Ok(output) = std::process::Command::new("pgrep").args(["-f", pattern]).output() {
+    for pattern in [
+        "bedrock_server",
+        "mcpelauncher-client",
+        "mcpelauncher-ui",
+        "MCPELauncher",
+    ] {
+        if let Ok(output) = std::process::Command::new("pgrep")
+            .args(["-f", pattern])
+            .output()
+        {
             if output.status.success() && !output.stdout.is_empty() {
                 return true;
             }
@@ -776,7 +1057,12 @@ fn stop_game(app: AppHandle, state: State<'_, GameState>) -> Result<(), String> 
 
     #[cfg(not(target_os = "windows"))]
     {
-        for pattern in ["bedrock_server", "mcpelauncher-client", "mcpelauncher-ui", "MCPELauncher"] {
+        for pattern in [
+            "bedrock_server",
+            "mcpelauncher-client",
+            "mcpelauncher-ui",
+            "MCPELauncher",
+        ] {
             let _ = std::process::Command::new("pkill")
                 .args(["-9", "-f", pattern])
                 .output();
@@ -797,6 +1083,8 @@ fn stop_game(app: AppHandle, state: State<'_, GameState>) -> Result<(), String> 
         GameExitPayload {
             code: Some(0),
             version_id: None,
+            log_path: None,
+            detail: None,
         },
     );
     let _ = app.emit(
@@ -942,7 +1230,7 @@ async fn install_bedrock_pack(
             .unwrap_or_else(|| "pack.mcpack".to_string())
     });
 
-    bedrock::install_bedrock_pack(&p, &source, &final_filename).await
+    bedrock::install_bedrock_pack(&p, &source, &final_filename, None).await
 }
 
 fn launch_bedrock(
@@ -965,7 +1253,10 @@ fn launch_bedrock(
 
     // Synchronize username into Bedrock options.txt (mp_username)
     let sync_name = if !is_offline {
-        account.as_ref().map(|r| r.profile.name.as_str()).or(player_name.as_deref())
+        account
+            .as_ref()
+            .map(|r| r.profile.name.as_str())
+            .or(player_name.as_deref())
     } else {
         player_name.as_deref()
     };
@@ -989,18 +1280,16 @@ fn launch_bedrock(
         }
     }
 
-    let message = bedrock::launch_bedrock_edition(
-        &p,
-        version_id.as_deref(),
-        Some(&app),
-        is_offline,
-    )?;
+    let message =
+        bedrock::launch_bedrock_edition(&p, version_id.as_deref(), Some(&app), is_offline)?;
 
     // Mark bedrock as running
     state.stopping.store(false, Ordering::Relaxed);
     state.bedrock_running.store(true, Ordering::Relaxed);
 
-    let vid = version_id.clone().unwrap_or_else(|| "bedrock-uwp".to_string());
+    let vid = version_id
+        .clone()
+        .unwrap_or_else(|| "bedrock-uwp".to_string());
 
     let _ = app.emit(
         "game:status",
@@ -1035,6 +1324,8 @@ fn launch_bedrock(
                     GameExitPayload {
                         code,
                         version_id: Some(target_vid.clone()),
+                        log_path: None,
+                        detail: None,
                     },
                 );
                 let _ = app_handle.emit(
@@ -1139,7 +1430,6 @@ fn open_folder(_app: AppHandle, path: String) -> Result<(), String> {
         target
     };
 
-
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer")
@@ -1194,7 +1484,6 @@ fn open_url(_app: AppHandle, url: String) -> Result<(), String> {
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
         return Err("仅支持打开 http/https 链接".to_string());
     }
-
 
     #[cfg(target_os = "windows")]
     {

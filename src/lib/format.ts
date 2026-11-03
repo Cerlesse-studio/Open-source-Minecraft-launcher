@@ -21,11 +21,11 @@ export function typeTone(type: string): "grass" | "gold" | "muted" {
   return "muted";
 }
 
-export function formatDate(iso?: string): string {
+export function formatDate(iso?: string, locale = "zh-CN"): string {
   if (!iso) return "未知日期";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "未知日期";
-  return date.toLocaleDateString("zh-CN", {
+  return date.toLocaleDateString(locale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

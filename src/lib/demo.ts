@@ -1,4 +1,6 @@
 import type {
+  AppUpdateInfo,
+  AppUpdateProgress,
   BedrockContentItem,
   BedrockLoadersCatalog,
   BedrockModItem,
@@ -6,6 +8,7 @@ import type {
   BedrockStatus,
   BedrockVersionItem,
   ContentHit,
+  ContentDownloadProgress,
   ContentProjectType,
   ContentVersionItem,
   DownloadContentRequest,
@@ -37,6 +40,9 @@ export interface DemoEventMap {
   "multiplayer:status": MultiplayerStatus;
   "multiplayer:log": MultiplayerLogPayload;
   "multiplayer:install": MultiplayerInstallState;
+  "multiplayer:clone": { stage: string; done: number; total: number; current: string };
+  "content:progress": ContentDownloadProgress;
+  "update:progress": AppUpdateProgress;
 }
 
 export type DemoEventName = keyof DemoEventMap;
@@ -114,12 +120,14 @@ const javaInstalls: JavaInstall[] = [
     major: 21,
     version: "21.0.8+9-LTS",
     source: "系统安装",
+    is64Bit: true,
   },
   {
     path: "C:\\Program Files\\Java\\jdk-17.0.12\\bin\\java.exe",
     major: 17,
     version: "17.0.12",
     source: "系统安装",
+    is64Bit: true,
   },
 ];
 
@@ -152,6 +160,24 @@ export function demoSystemInfo(): SystemInfo {
     javaInstalls: javaInstalls.map((java) => ({ ...java })),
     gameRunning,
     launcherVersion: "0.0.7",
+  };
+}
+
+export function demoCheckAppUpdate(): AppUpdateInfo {
+  return {
+    currentVersion: demoSystemInfo().launcherVersion,
+    latestVersion: null,
+    available: false,
+    releaseName: null,
+    releaseUrl:
+      "https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/releases",
+    notes: null,
+    publishedAt: null,
+    asset: null,
+    cachedPath: null,
+    source: "github",
+    checkedAt: Date.now(),
+    message: "浏览器预览模式不连接 GitHub 更新服务。",
   };
 }
 
@@ -1082,7 +1108,65 @@ export async function demoGetContentVersions(
 export async function demoDownloadContentFile(
   request: DownloadContentRequest,
 ): Promise<DownloadContentResult> {
-  await sleep(400);
+  const total = request.size ?? 12_500_000;
+  const id = `content:${request.projectType}:${request.filename}`;
+  const title = request.title || request.filename;
+
+  emit("content:progress", {
+    id,
+    title,
+    filename: request.filename,
+    projectType: request.projectType,
+    stage: "downloading",
+    detail: `正在连接下载源...`,
+    doneBytes: 0,
+    totalBytes: total,
+    speedBps: 0,
+    threads: 16,
+  });
+
+  await sleep(250);
+  emit("content:progress", {
+    id,
+    title,
+    filename: request.filename,
+    projectType: request.projectType,
+    stage: "downloading",
+    detail: `正在高速多线程分片下载 ${request.filename}`,
+    doneBytes: Math.round(total * 0.45),
+    totalBytes: total,
+    speedBps: 8_500_000,
+    threads: 16,
+  });
+
+  await sleep(350);
+  emit("content:progress", {
+    id,
+    title,
+    filename: request.filename,
+    projectType: request.projectType,
+    stage: "downloading",
+    detail: `正在高速多线程分片下载 ${request.filename}`,
+    doneBytes: Math.round(total * 0.85),
+    totalBytes: total,
+    speedBps: 11_200_000,
+    threads: 16,
+  });
+
+  await sleep(200);
+  emit("content:progress", {
+    id,
+    title,
+    filename: request.filename,
+    projectType: request.projectType,
+    stage: "done",
+    detail: "下载已完成",
+    doneBytes: total,
+    totalBytes: total,
+    speedBps: 0,
+    threads: 16,
+  });
+
   const wanted = new Set(
     (request.gameVersions ?? []).map((v) => v.trim().toLowerCase()),
   );
@@ -1096,7 +1180,7 @@ export async function demoDownloadContentFile(
   return {
     success: true,
     filePath: `C:\\Users\\you\\.cobble\\${folder}\\${request.filename}`,
-    bytes: request.size ?? 2_048_000,
+    bytes: total,
     instanceId,
     autoMatched: !request.instanceId && Boolean(matched),
   };

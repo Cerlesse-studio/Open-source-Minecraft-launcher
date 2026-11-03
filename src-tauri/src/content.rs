@@ -1,3 +1,4 @@
+use crate::bridge::AppHandle;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -99,8 +100,23 @@ pub struct DownloadContentRequest {
     pub loader: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContentProgressPayload {
+    pub id: String,
+    pub title: String,
+    pub filename: String,
+    pub project_type: String,
+    pub stage: String,
+    pub detail: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    pub speed_bps: u64,
+    pub threads: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadContentResult {
     pub success: bool,
     pub file_path: String,
@@ -598,6 +614,7 @@ pub fn pick_mod_instance(
 }
 
 pub async fn download_content_file(
+    app: Option<&AppHandle>,
     request: DownloadContentRequest,
 ) -> Result<DownloadContentResult, String> {
     let root = net::absolute_path(&PathBuf::from(&request.root));
@@ -607,6 +624,46 @@ pub async fn download_content_file(
         .to_string_lossy()
         .to_string();
 
+    let task_id = format!("content:{}:{}", request.project_type, filename);
+    let title = if request.title.trim().is_empty() {
+        filename.clone()
+    } else {
+        request.title.clone()
+    };
+    let threads = net::download_threads();
+    let total_bytes = request.size.unwrap_or(0);
+
+    let emit =
+        |stage: &str, done: u64, total: u64, speed: u64, detail: &str, error: Option<String>| {
+            if let Some(app) = app {
+                let _ = app.emit(
+                    "content:progress",
+                    ContentProgressPayload {
+                        id: task_id.clone(),
+                        title: title.clone(),
+                        filename: filename.clone(),
+                        project_type: request.project_type.clone(),
+                        stage: stage.to_string(),
+                        detail: detail.to_string(),
+                        done_bytes: done,
+                        total_bytes: total,
+                        speed_bps: speed,
+                        threads,
+                        error,
+                    },
+                );
+            }
+        };
+
+    emit(
+        "downloading",
+        0,
+        total_bytes,
+        0,
+        &format!("准备下载 {filename}"),
+        None,
+    );
+
     // Check if it's a bedrock pack or targeted for bedrock
     let lower_name = filename.to_lowercase();
     if request.instance_id.as_deref() == Some("bedrock")
@@ -614,11 +671,61 @@ pub async fn download_content_file(
         || lower_name.ends_with(".mcaddon")
         || lower_name.ends_with(".mcworld")
     {
-        let res = crate::bedrock::install_bedrock_pack(&root, &request.url, &filename).await?;
+        let mut last_emit = Instant::now();
+        let mut last_bytes = 0u64;
+        let mut current_speed = 0u64;
+
+        let mut progress_cb = |done: u64, total: u64, _delta: u64| {
+            let now = Instant::now();
+            let elapsed_ms = now.duration_since(last_emit).as_millis();
+            if elapsed_ms >= 120 || (total > 0 && done >= total) {
+                if elapsed_ms > 0 {
+                    let diff = done.saturating_sub(last_bytes);
+                    current_speed = (diff * 1000) / (elapsed_ms as u64);
+                }
+                last_emit = now;
+                last_bytes = done;
+                let display_total = if total > 0 { total } else { total_bytes };
+                emit(
+                    "downloading",
+                    done,
+                    display_total,
+                    current_speed,
+                    &format!("正在下载 {filename}"),
+                    None,
+                );
+            }
+        };
+
+        let res = match crate::bedrock::install_bedrock_pack(
+            &root,
+            &request.url,
+            &filename,
+            Some(&mut progress_cb),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                emit(
+                    "error",
+                    last_bytes,
+                    total_bytes,
+                    0,
+                    &format!("安装失败: {e}"),
+                    Some(e.clone()),
+                );
+                return Err(e);
+            }
+        };
+
+        let final_bytes = request.size.unwrap_or(last_bytes);
+        emit("done", final_bytes, final_bytes, 0, "安装完成", None);
+
         return Ok(DownloadContentResult {
             success: true,
             file_path: res.target_path,
-            bytes: request.size.unwrap_or(0),
+            bytes: final_bytes,
             instance_id: None,
             auto_matched: false,
         });
@@ -649,8 +756,6 @@ pub async fn download_content_file(
     {
         Some(dir) => dir,
         None => {
-            // No local instance was built for this file: refuse instead of
-            // dropping it into a shared folder the game never reads.
             let versions = request
                 .game_versions
                 .iter()
@@ -670,31 +775,78 @@ pub async fn download_content_file(
                 .filter(|l| !l.is_empty() && *l != "all")
                 .map(|l| format!(" {l}"))
                 .unwrap_or_default();
-            return Err(format!(
+            let err_msg = format!(
                 "本地没有与 {wanted}{loader} 匹配的游戏版本，模组只会安装到对应版本的 mods 目录。请先在版本列表里安装该版本，再回来下载。"
-            ));
+            );
+            emit("error", 0, total_bytes, 0, &err_msg, Some(err_msg.clone()));
+            return Err(err_msg);
         }
     };
 
-    tokio::fs::create_dir_all(&target_dir)
-        .await
-        .map_err(|e| format!("创建目标目录失败: {e}"))?;
+    if let Err(e) = tokio::fs::create_dir_all(&target_dir).await {
+        let err_msg = format!("创建目标目录失败: {e}");
+        emit("error", 0, total_bytes, 0, &err_msg, Some(err_msg.clone()));
+        return Err(err_msg);
+    }
 
     let dest = target_dir.join(&filename);
 
-    // Mods, resource packs, shaders and data packs share the same download
-    // engine as game files: mirror fallback, the selected source, retries, the
-    // atomic `.part` file and the configured thread count.
-    let bytes = net::download_file_with_mirrors(
+    let mut last_emit = Instant::now();
+    let mut last_bytes = 0u64;
+    let mut current_speed = 0u64;
+
+    let mut progress_callback = |done: u64, total: u64, _delta: u64| {
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(last_emit).as_millis();
+        if elapsed_ms >= 120 || (total > 0 && done >= total) {
+            if elapsed_ms > 0 {
+                let bytes_diff = done.saturating_sub(last_bytes);
+                current_speed = (bytes_diff * 1000) / (elapsed_ms as u64);
+            }
+            last_emit = now;
+            last_bytes = done;
+            let display_total = if total > 0 { total } else { total_bytes };
+            let detail = format!("正在下载 {}", filename);
+            emit(
+                "downloading",
+                done,
+                display_total,
+                current_speed,
+                &detail,
+                None,
+            );
+        }
+    };
+
+    let download_res = net::download_file_with_mirrors(
         &request.url,
         &dest,
         request.sha1.as_deref(),
         request.size,
-        net::download_threads(),
+        threads,
         None,
-        None,
+        Some(&mut progress_callback),
     )
-    .await?;
+    .await;
+
+    let bytes = match download_res {
+        Ok(b) => {
+            let final_total = if b > 0 { b } else { total_bytes };
+            emit("done", final_total, final_total, 0, "下载已完成", None);
+            b
+        }
+        Err(e) => {
+            emit(
+                "error",
+                last_bytes,
+                total_bytes,
+                0,
+                &format!("下载失败: {e}"),
+                Some(e.clone()),
+            );
+            return Err(e);
+        }
+    };
 
     Ok(DownloadContentResult {
         success: true,
@@ -704,7 +856,6 @@ pub async fn download_content_file(
         auto_matched,
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

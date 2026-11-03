@@ -159,7 +159,11 @@ impl AccountRecord {
             client_id: self.client_id.clone(),
             uuid: self.profile.id.clone(),
             name: self.profile.name.clone(),
-            skin_url: self.profile.skin_url.as_ref().map(|u| u.replace("http://", "https://")),
+            skin_url: self
+                .profile
+                .skin_url
+                .as_ref()
+                .map(|u| u.replace("http://", "https://")),
             xuid: self.minecraft.xuid.clone(),
             entitlements: self.entitlements.clone(),
             session_expires_at: self.minecraft.expires_at,
@@ -1018,9 +1022,11 @@ mod tests {
         let second = uuid_v4();
         assert_ne!(first, second);
         assert_eq!(first.len(), 36);
-        assert!(first
-            .chars()
-            .all(|value| value.is_ascii_hexdigit() || value == '-'));
+        assert!(
+            first
+                .chars()
+                .all(|value| value.is_ascii_hexdigit() || value == '-')
+        );
         assert_eq!(first.matches('-').count(), 4);
         // Version nibble must be 4, variant must be RFC 4122.
         assert_eq!(&first[14..15], "4");

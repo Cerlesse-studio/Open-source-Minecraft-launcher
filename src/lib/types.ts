@@ -210,6 +210,20 @@ export interface DownloadContentRequest {
   loader?: string;
 }
 
+export interface ContentDownloadProgress {
+  id: string;
+  title: string;
+  filename: string;
+  projectType: string;
+  stage: "downloading" | "done" | "error";
+  detail: string;
+  doneBytes: number;
+  totalBytes: number;
+  speedBps: number;
+  threads: number;
+  error?: string | null;
+}
+
 export interface DownloadContentResult {
   success: boolean;
   filePath: string;
@@ -288,6 +302,7 @@ export interface JavaInstall {
   major: number;
   version: string;
   source: string;
+  is64Bit?: boolean;
 }
 
 export interface SystemInfo {
@@ -297,6 +312,46 @@ export interface SystemInfo {
   javaInstalls: JavaInstall[];
   gameRunning: boolean;
   launcherVersion: string;
+}
+
+export interface AppUpdateAsset {
+  name: string;
+  size: number;
+  downloadUrl: string;
+}
+
+export interface AppUpdateInfo {
+  currentVersion: string;
+  latestVersion: string | null;
+  available: boolean;
+  releaseName: string | null;
+  releaseUrl: string;
+  notes: string | null;
+  publishedAt: string | null;
+  asset: AppUpdateAsset | null;
+  /** Already downloaded package in the local update cache, when present. */
+  cachedPath: string | null;
+  source: "github";
+  checkedAt: number;
+  message: string | null;
+}
+
+export interface AppUpdateProgress {
+  received: number;
+  total: number;
+  percent: number;
+  fileName: string;
+}
+
+export interface AppUpdateDownloadResult {
+  path: string;
+  bytes: number;
+  fileName: string;
+}
+
+export interface AppUpdateInstallResult {
+  action: "installer" | "replace" | "open";
+  message: string;
 }
 
 export type GameStateName = "idle" | "preparing" | "running";
@@ -316,6 +371,10 @@ export interface GameLogPayload {
 export interface GameExitPayload {
   code: number | null;
   versionId?: string | null;
+  /** Persistent launcher log for this version. */
+  logPath?: string | null;
+  /** Last Java/Minecraft error lines captured before the process exited. */
+  detail?: string | null;
 }
 
 export type OfflineSkinType = "random" | "steve" | "alex" | "mojang" | "custom";
@@ -430,14 +489,21 @@ export type ThemeMode = "dark" | "light" | "system";
 export type HomePageMode = "preset" | "blank" | "local" | "online";
 /** `default` keeps the flat theme backdrop, `custom` paints one image. */
 export type BackgroundType = "default" | "custom";
+/** `zh-CN` is the source language; `en-US` is the English interface pack. */
+export type LauncherLanguage = "zh-CN" | "en-US";
 export type LauncherFont = "default" | "pixel" | "system" | "serif";
 /** Interface text weight; "medium" dials the whole launcher one step heavier. */
 export type LauncherFontWeight = "regular" | "medium";
 /** Interface letter spacing; useful with the pixel font. */
 export type LauncherLetterSpacing = "tight" | "normal" | "wide";
 
+/** EasyTier relay node selection mode: "auto" (default) or "manual". */
+export type EasyTierRelayMode = "auto" | "manual";
+
 export interface LauncherSettings {
   playerName: string;
+  /** Interface language; independent from the Minecraft version language. */
+  language: LauncherLanguage;
   gameRoot: string;
   memoryMb: number;
   javaPath: string;
@@ -488,6 +554,16 @@ export interface LauncherSettings {
   statusText: string;
   /** Replaces the launch button label; empty keeps the default per edition. */
   launchButtonText: string;
+  /** Master switch for the extension system and its sidebar entry. */
+  enableExtensions: boolean;
+  /** Allow F12 / Ctrl+Shift+I to open Chromium DevTools. */
+  enableDevTools: boolean;
+  /** Capture the Rust core process output in a separate console window. */
+  showBackendConsole: boolean;
+  /** EasyTier relay node selection mode: "auto" (default) or "manual". */
+  easyTierRelayMode: EasyTierRelayMode;
+  /** Manually selected EasyTier relay node URI. */
+  easyTierSelectedNode: string;
 }
 
 export type ViewId =
@@ -681,6 +757,14 @@ export interface MultiplayerStatus {
   overlayIpv4: string | null;
   pid: number | null;
   corePath: string | null;
+  /** Whether this kernel was started with a shared relay node. */
+  relay: boolean;
+  /** Whether `--p2p-only --need-p2p` is active. */
+  p2pOnly: boolean;
+  /** Whether the built-in public STUN list is allowed. Off by default. */
+  allowPublicStun: boolean;
+  /** EasyTier TCP/UDP listen port, when running. */
+  listenPort: number | null;
 }
 
 /** Windows Firewall state for the EasyTier listener and the overlay game port. */
@@ -690,6 +774,18 @@ export interface MultiplayerFirewallStatus {
   /** Our inbound rules exist, match the current ports, and the firewall is on. */
   ready: boolean;
   /** Human-readable reason when something could not be checked or applied. */
+  detail: string;
+}
+
+/** Result of a preflight latency check against one EasyTier node. */
+export interface MultiplayerEndpointProbe {
+  peer: string;
+  /** `tcp` / `udp` / `ws` / `wss` / `quic` / `wg`. */
+  protocol: string;
+  /** `null` means this protocol has no safe preflight probe. */
+  reachable: boolean | null;
+  /** TCP handshake round-trip in milliseconds, when measurable. */
+  latencyMs: number | null;
   detail: string;
 }
 
@@ -708,6 +804,17 @@ export interface MultiplayerPeer {
   isSelf: boolean;
 }
 
+export interface EasyTierPublicServer {
+  id: string;
+  name: string;
+  uri: string;
+  region: string;
+  description: string;
+  group?: string;
+  author?: string;
+  isCustom?: boolean;
+}
+
 /** The saved shape of the local EasyTier node. */
 export interface MultiplayerConfig {
   networkName: string;
@@ -715,7 +822,7 @@ export interface MultiplayerConfig {
   networkSecret: string;
   /** This machine's overlay IPv4 inside the virtual network. */
   overlayIpv4: string;
-  /** Transport addresses of other nodes, e.g. `tcp://[240e:…]:11010`. */
+  /** EasyTier seed nodes: public bootstrap servers or custom relays. */
   peers: string[];
   listenPort: number;
   /** Port from Minecraft's "Open to LAN" chat line, written into the share code. */
@@ -724,6 +831,16 @@ export interface MultiplayerConfig {
   hostVersion: string;
   /** Overlay IPv4 of the host while this machine is a guest; empty when hosting. */
   hostIpv4: string;
+  /** Explicit room role. */
+  role: "host" | "guest";
+  /** Selected public server URI (e.g. `tcp://public.easytier.cn:11010`). */
+  publicServer?: string;
+  /** Both sides join a shared EasyTier node instead of using the host's address. */
+  relay: boolean;
+  p2pOnly: boolean;
+  allowPublicStun: boolean;
+  relayNodes: string[];
+  hostEntry: string;
   /** Guest bandwidth cap the host sets, in bytes per second; 0 means unlimited. */
   recvBpsLimit: number;
   /** Host's local HTTP port that serves the read-only room resource list. */
@@ -732,12 +849,26 @@ export interface MultiplayerConfig {
   resourceToken: string;
 }
 
-/** One mod, shader pack, or resource pack shown in a room. */
+/** One mod, shader pack, datapack, or resource pack shown in a room. */
 export interface RoomResourceItem {
   name: string;
   fileName: string;
   enabled: boolean;
   size: number;
+  /** 房主生成的随机下载编号；旧房主没有这一项。 */
+  fileId?: string;
+  /** 相对游戏根目录的逻辑路径，用于把文件写回原位。 */
+  relativePath?: string;
+}
+
+/** Host version + loader info, used to install an identical guest instance. */
+export interface RoomVersionInfo {
+  mcVersion: string;
+  versionType: string;
+  loader: string;
+  loaderVersion: string;
+  optifineVersion: string;
+  fabricApiVersion: string;
 }
 
 /** A read-only snapshot of the host version's content. */
@@ -746,9 +877,30 @@ export interface RoomResources {
   mods: RoomResourceItem[];
   shaders: RoomResourceItem[];
   resourcePacks: RoomResourceItem[];
+  /** Datapacks in the instance folder and in each save's `datapacks` folder. */
+  datapacks: RoomResourceItem[];
+  /** Absent on older hosts. */
+  version?: RoomVersionInfo | null;
   updatedAt: number;
   /** 房主的局域网端口；只输 IPv6 加入的访客靠它认出要连哪个端口。 */
   hostPort?: number | null;
+}
+
+/** Result of one guest-side clone run. */
+export interface RoomCloneResult {
+  versionId: string;
+  downloaded: number;
+  skipped: number;
+  failed: number;
+  files: string[];
+  failures: string[];
+}
+
+export interface RoomCloneProgress {
+  stage: "start" | "download" | "done" | string;
+  done: number;
+  total: number;
+  current: string;
 }
 
 export interface RoomResourcesInfo {
@@ -843,6 +995,13 @@ export interface BedrockWorldItem {
   locationPath: string;
 }
 
+
+export interface DeveloperOptionsState {
+  devToolsEnabled: boolean;
+  backendConsoleEnabled: boolean;
+  logPath: string | null;
+  consoleOpen: boolean;
+}
 
 export interface ElectronChromiumProfile {
   versions: {

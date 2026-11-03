@@ -95,6 +95,7 @@ interface DownloadsViewProps {
   /** 内核、组件这类不依赖版本安装流程的后台下载任务。 */
   backgroundTasks?: BackgroundDownloadTask[];
   onRetryBackgroundTask?: (id: string) => void;
+  onDismissBackgroundTask?: (id: string) => void;
 }
 
 const THREAD_PRESETS = [4, 8, 16, 32, 64];
@@ -359,6 +360,7 @@ export function DownloadsView({
   onRemoveQueueItem,
   backgroundTasks = [],
   onRetryBackgroundTask,
+  onDismissBackgroundTask,
 }: DownloadsViewProps) {
   const [activeTab, setActiveTab] = useState<ListTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1263,6 +1265,17 @@ export function DownloadsView({
                     </div>
                   ) : null}
 
+                  {!running && onDismissBackgroundTask ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="size-7.5 p-0 text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                      onClick={() => onDismissBackgroundTask(task.id)}
+                      title="移除任务记录"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  ) : null}
                   {(failed || paused) && onRetryBackgroundTask ? (
                     <Button
                       size="sm"

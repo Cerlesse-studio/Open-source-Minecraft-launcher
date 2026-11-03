@@ -65,6 +65,15 @@ export function getEffectivePrimaryColor(
   return { color, fg: readableForeground(color) };
 }
 
+export function getLightModePrimary(hex: string): string {
+  const h = accentHue(hex);
+  // 黄绿色在人眼视觉中亮度极高，微调明度确保浅色底上有 >= 4.8:1 的充足对比度
+  const isYellowOrGreen = h >= 50 && h <= 150;
+  const targetLightness = isYellowOrGreen ? 27 : 33;
+  const rgbParts = hslToRgb(h, 85, targetLightness).split(", ").map(Number);
+  return "#" + rgbParts.map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Panel colors as [variable, saturation %, lightness %].
  *
@@ -100,19 +109,19 @@ const LIGHT_PANELS: ReadonlyArray<readonly [string, number, number]> = [
   ["--background-solid", 12, 97],
   ["--card-solid", 10, 100],
   ["--popover-solid", 10, 100],
-  ["--secondary-solid", 12, 94.5],
-  ["--muted-solid", 12, 94.5],
-  ["--accent-solid", 13, 91],
-  ["--border", 14, 86],
-  ["--input", 14, 86],
+  ["--secondary-solid", 12, 93],
+  ["--muted-solid", 12, 93],
+  ["--accent-solid", 14, 88],
+  ["--border", 15, 80],
+  ["--input", 15, 80],
   ["--sidebar-solid", 12, 96],
-  ["--sidebar-accent-solid", 13, 91],
-  ["--sidebar-border", 14, 86],
+  ["--sidebar-accent-solid", 14, 88],
+  ["--sidebar-border", 15, 80],
   ["--foreground", 13, 10],
   ["--card-foreground", 13, 10],
   ["--popover-foreground", 13, 10],
   ["--secondary-foreground", 13, 15],
-  ["--muted-foreground", 9, 40],
+  ["--muted-foreground", 10, 38],
   ["--accent-foreground", 13, 10],
   ["--sidebar-foreground", 13, 10],
   ["--sidebar-accent-foreground", 13, 10],
@@ -132,8 +141,6 @@ export function applyThemeToDom(settings: LauncherSettings): void {
 
   const root = document.documentElement;
   const { color, fg } = getEffectivePrimaryColor(settings);
-  const primaryRgb = hexToRgb(color);
-  const primaryFgRgb = hexToRgb(fg === "#ffffff" ? "#ffffff" : "#0b1408");
 
   const mode = settings.themeMode ?? "dark";
   const isDark =
@@ -142,17 +149,22 @@ export function applyThemeToDom(settings: LauncherSettings): void {
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches);
 
+  const activeColor = isDark ? color : getLightModePrimary(color);
+  const activeFg = isDark ? fg : "#ffffff";
+  const primaryRgb = hexToRgb(activeColor);
+  const primaryFgRgb = hexToRgb(activeFg === "#ffffff" ? "#ffffff" : "#0b1408");
+
   // 1. Primary & accent CSS variables
-  root.style.setProperty("--primary", color);
+  root.style.setProperty("--primary", activeColor);
   root.style.setProperty("--primary-rgb", primaryRgb);
-  root.style.setProperty("--primary-foreground", fg);
+  root.style.setProperty("--primary-foreground", activeFg);
   root.style.setProperty("--primary-fg-rgb", primaryFgRgb);
-  root.style.setProperty("--ring", color);
+  root.style.setProperty("--ring", activeColor);
   root.style.setProperty("--ring-rgb", primaryRgb);
-  root.style.setProperty("--sidebar-primary", color);
-  root.style.setProperty("--sidebar-primary-foreground", fg);
-  root.style.setProperty("--sidebar-ring", color);
-  root.style.setProperty("--chart-1", color);
+  root.style.setProperty("--sidebar-primary", activeColor);
+  root.style.setProperty("--sidebar-primary-foreground", activeFg);
+  root.style.setProperty("--sidebar-ring", activeColor);
+  root.style.setProperty("--chart-1", activeColor);
 
   // 2. Panel surfaces, tinted with the accent's hue
   applyPanelHue(root, accentHue(color), isDark);

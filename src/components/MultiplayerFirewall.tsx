@@ -10,31 +10,22 @@ interface MultiplayerFirewallNoticeProps {
   listenPort: number;
   hostPort: number;
   overlayIpv4: string;
-  publicAddress: string;
+  /** Relay mode only needs outbound connections; no router inbound rule. */
+  relay?: boolean;
   className?: string;
 }
 
-function publicHost(value: string): string {
-  const withoutScheme = value.trim().replace(/^(?:tcp|udp):\/\//i, "");
-  if (withoutScheme.startsWith("[")) {
-    const end = withoutScheme.indexOf("]");
-    return end > 1 ? withoutScheme.slice(1, end) : "";
-  }
-  return withoutScheme.split(":")[0] ?? "";
-}
-
 /**
- * Windows 防火墙负责本机入站，路由器/光猫负责 IPv6 入站，两层缺一不可。
- *
- * 启动器不再申请管理员权限：安装包在安装时就把 EasyTier 的入站端口写进
- * 防火墙，这里只做只读检查，把“本机这一层是否已放行”显示清楚。
+ * 直连模式先放行本机：双方同时向对方发包，尝试让状态防火墙建立回程。
+ * 这不能绕过路由器直接丢弃入站 IPv6 的策略。
+ * 启动器不申请管理员权限，安装包会在安装时写入本机规则，这里只做只读检查。
  */
 export function MultiplayerFirewallNotice({
   gameRoot,
   listenPort,
   hostPort,
   overlayIpv4,
-  publicAddress,
+  relay = false,
   className,
 }: MultiplayerFirewallNoticeProps) {
   const [status, setStatus] = useState<MultiplayerFirewallStatus | null>(null);
@@ -42,6 +33,13 @@ export function MultiplayerFirewallNotice({
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    // 共享节点只建立出站连接，本机没有任何入站监听需要放行，
+    // 不要再显示一个会误导用户去改防火墙/路由器的「未放行」。
+    if (relay) {
+      setStatus(null);
+      setChecking(false);
+      return;
+    }
     let alive = true;
     setChecking(true);
     const timer = window.setTimeout(() => {
@@ -65,37 +63,38 @@ export function MultiplayerFirewallNotice({
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [gameRoot, listenPort, hostPort, overlayIpv4, tick]);
+  }, [gameRoot, listenPort, hostPort, overlayIpv4, relay, tick]);
 
   const unsupported = status?.supported === false;
-  const host = publicHost(publicAddress);
 
   return (
     <div className={cn("space-y-1.5", className)}>
       <div className="flex flex-wrap items-center gap-1.5">
-        {status?.ready ? (
+        {relay || status?.ready ? (
           <ShieldCheck className="size-3.5 shrink-0 text-primary" />
         ) : (
           <ShieldAlert className="size-3.5 shrink-0 text-gold" />
         )}
         <span className="text-[10.5px] font-medium">
-          {unsupported ? "系统防火墙" : "Windows 防火墙"}
+          {relay ? "联机方式" : unsupported ? "系统防火墙" : "Windows 防火墙"}
         </span>
         <span
           className={cn(
             "text-[10px]",
-            status?.ready ? "text-primary" : "text-muted-foreground",
+            relay || status?.ready ? "text-primary" : "text-muted-foreground",
           )}
         >
-          {checking
-            ? "检查中…"
-            : status?.ready
-              ? "已放行"
-              : unsupported
-                ? "需手动放行"
-                : "未放行"}
+          {relay
+            ? "无需放行"
+            : checking
+              ? "检查中…"
+              : status?.ready
+                ? "已放行"
+                : unsupported
+                  ? "需手动放行"
+                  : "未放行"}
         </span>
-        {!unsupported ? (
+        {!relay && !unsupported ? (
           <Button
             variant="ghost"
             size="xs"
@@ -108,14 +107,9 @@ export function MultiplayerFirewallNotice({
         ) : null}
       </div>
       <p className="text-[9.5px] leading-4 text-muted-foreground/70">
-        安装时已自动放行 TCP/UDP {listenPort}；路由器（光猫）还需放行 IPv6 入站
-        {host ? (
-          <>
-            {" "}
-            到 <span className="font-mono text-foreground/80">{host}</span>
-          </>
-        ) : null}
-        。
+        {relay
+          ? "只建立出站连接，无需任何入站放行。"
+          : `本机 TCP/UDP ${listenPort} 已放行；路由器若丢弃入站 IPv6，仍需自行放行。`}
       </p>
       {!checking && status?.detail && !status.ready ? (
         <p

@@ -1,4 +1,5 @@
 import type { BackgroundType, HomePageMode, LauncherSettings } from "./types";
+import { DEFAULT_PUBLIC_SERVER } from "./multiplayer";
 
 const STORAGE_KEY = "cobble.settings.v1";
 
@@ -43,6 +44,7 @@ function isBackgroundType(value: unknown): value is BackgroundType {
 
 export const defaultSettings: LauncherSettings = {
   playerName: "Steve",
+  language: "zh-CN",
   gameRoot: "",
   memoryMb: 4096,
   javaPath: "",
@@ -62,7 +64,7 @@ export const defaultSettings: LauncherSettings = {
   windowTitle: "",
   customInfo: "PCL",
   launcherVisibility: "keep",
-  processPriority: "normal",
+  processPriority: "above_normal",
   windowSize: "default",
   customThemeColor: "#9bdd6b",
   themeMode: "dark",
@@ -84,6 +86,11 @@ export const defaultSettings: LauncherSettings = {
   letterSpacing: "normal",
   statusText: "",
   launchButtonText: "",
+  enableExtensions: true,
+  enableDevTools: false,
+  showBackendConsole: false,
+  easyTierRelayMode: "auto",
+  easyTierSelectedNode: DEFAULT_PUBLIC_SERVER,
 };
 
 export function loadSettings(): LauncherSettings {
@@ -98,6 +105,7 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.playerName === "string" && parsed.playerName.trim()
           ? parsed.playerName.slice(0, 16)
           : defaultSettings.playerName,
+      language: parsed.language === "en-US" ? "en-US" : "zh-CN",
       memoryMb:
         typeof parsed.memoryMb === "number"
           ? Math.min(16384, Math.max(1024, parsed.memoryMb))
@@ -210,6 +218,14 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.launchButtonText === "string"
           ? parsed.launchButtonText.slice(0, 20)
           : "",
+      enableExtensions: parsed.enableExtensions !== false,
+      enableDevTools: parsed.enableDevTools === true,
+      showBackendConsole: parsed.showBackendConsole === true,
+      easyTierRelayMode: parsed.easyTierRelayMode === "manual" ? "manual" : "auto",
+      easyTierSelectedNode:
+        typeof parsed.easyTierSelectedNode === "string" && parsed.easyTierSelectedNode.trim()
+          ? parsed.easyTierSelectedNode.trim()
+          : defaultSettings.easyTierSelectedNode,
     };
   } catch {
     return { ...defaultSettings };

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open } from "@/lib/desktop";
 import {
   AlertCircle,
@@ -16,25 +16,65 @@ import {
   Globe,
   Image as ImageIcon,
   Info,
+  Languages,
+  MessageSquareWarning,
   Monitor,
   Moon,
+  Network,
   Newspaper,
   Palette,
+  Plus,
+  Puzzle,
   RefreshCw,
+  Server,
   SlidersHorizontal,
   Sparkles,
   SquareDashed,
   Sun,
+  Terminal,
+  Trash2,
   Type,
   Upload,
   UserRound,
+  Zap,
+  LoaderCircle,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "cn";
-import { getElectronChromiumProfile, isDesktop, openExternalUrl, probeDownloadSources } from "../lib/backend";
-import { joinPath, shortPath } from "../lib/format";
+import {
+  checkAppUpdate,
+  configureDeveloperOptions,
+  downloadAppUpdate,
+  getDeveloperOptions,
+  getElectronChromiumProfile,
+  installAppUpdate,
+  isDesktop,
+  openExternalUrl,
+  probeDownloadSources,
+  probeMultiplayerLatency,
+  subscribe,
+} from "../lib/backend";
+import { formatBytes, formatDate, joinPath, shortPath } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import { DEFAULT_ACCENT } from "../lib/theme";
+import {
+  DEFAULT_PUBLIC_SERVER,
+  OFFICIAL_PUBLIC_SERVERS,
+  loadCustomServers,
+  saveCustomServers,
+  loadCachedCommunityServers,
+  syncCommunityRelayNodes,
+  parseServerUri,
+  pickFastestRelayServer,
+  loadCachedServerLatencies,
+  saveCachedServerLatencies,
+  batchProbeMultiplayerLatencies,
+} from "../lib/multiplayer";
 import type {
+  AppUpdateDownloadResult,
+  AppUpdateInfo,
+  AppUpdateProgress,
+  EasyTierPublicServer,
   MsAccount,
   DownloadSourceId,
   DownloadSourceProbe,
@@ -48,6 +88,7 @@ import type {
   SystemInfo,
   VersionIsolation,
   WindowSizeMode,
+  DeveloperOptionsState,
   ElectronChromiumProfile,
 } from "../lib/types";
 import { Avatar, PageHeader } from "./ui";
@@ -69,6 +110,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Slider } from "@/components/ui/slider";
+import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -163,6 +205,14 @@ const HOME_PAGE_OPTIONS: Array<{ id: HomePageMode; label: string; icon: LucideIc
   { id: "online", label: "联网更新", icon: CloudDownload },
 ];
 
+const FEEDBACK_URL =
+  "https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues";
+
+const LANGUAGE_OPTIONS: Array<{ value: LauncherSettings["language"]; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en-US", label: "English" },
+];
+
 const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
   official_ap: "官方 / 亚太 CDN",
   bmclapi: "BMCLAPI",
@@ -214,9 +264,15 @@ interface SettingsViewProps {
   onOpenFolder: (path: string) => void;
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
   account?: MsAccount | null;
+  initialTab?: SettingsTab;
 }
 
-type SettingsTab = "account" | "launch" | "download" | "personalization" | "about";
+type SettingsTab =
+  | "account"
+  | "launch"
+  | "download"
+  | "personalization"
+  | "about";
 
 function SettingsSection({
   title,
@@ -333,20 +389,243 @@ export function SettingsView({
   onOpenFolder,
   onNotify,
   account,
+  initialTab,
 }: SettingsViewProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+  const { t } = useI18n();
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || "account");
+  const lastInitialTabRef = useRef<SettingsTab | undefined>(initialTab);
+
+  useEffect(() => {
+    // 仅在外部真正切换传入新的 initialTab 时更新，避免内部设置修改导致反复重置与刷新
+    if (initialTab && initialTab !== lastInitialTabRef.current) {
+      lastInitialTabRef.current = initialTab;
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
   const [scanning, setScanning] = useState(false);
   const [rootDraft, setRootDraft] = useState(settings.gameRoot);
   const [skinCollapsed, setSkinCollapsed] = useState(false);
   const [sourceProbes, setSourceProbes] = useState<DownloadSourceProbe[] | null>(null);
   const [probingSources, setProbingSources] = useState(false);
   const [chromiumProfile, setChromiumProfile] = useState<ElectronChromiumProfile | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateDownloading, setUpdateDownloading] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<AppUpdateProgress | null>(null);
+  const [updateDownload, setUpdateDownload] =
+    useState<AppUpdateDownloadResult | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [developerConsole, setDeveloperConsole] = useState<DeveloperOptionsState | null>(null);
+  const updateAutoChecked = useRef(false);
+
+  // EasyTier 协助节点打洞与多线路中继
+  const [customServers, setCustomServers] = useState<string[]>(loadCustomServers);
+  const [syncedServers, setSyncedServers] = useState<EasyTierPublicServer[]>(loadCachedCommunityServers);
+  const [syncingCommunity, setSyncingCommunity] = useState(false);
+  const [serverGroupTab, setServerGroupTab] = useState<string>("all");
+  // 优先从本地持久化缓存读取测速结果，杜绝刷新后测速数据归空的问题
+  const [serverLatencies, setServerLatencies] = useState<Record<string, number | null>>(
+    () => loadCachedServerLatencies().latencies,
+  );
+  const [testingLatency, setTestingLatency] = useState(false);
+  const [newCustomInput, setNewCustomInput] = useState("");
+  const [testingCustom, setTestingCustom] = useState(false);
+  const [customTestResult, setCustomTestResult] = useState<number | null | undefined>(undefined);
+  const autoProbedRef = useRef(false);
+
+  const allRelayServers = useMemo<EasyTierPublicServer[]>(() => {
+    const list: EasyTierPublicServer[] = [...OFFICIAL_PUBLIC_SERVERS];
+    const seenUris = new Set(list.map((s) => s.uri));
+
+    syncedServers.forEach((synced) => {
+      if (!seenUris.has(synced.uri)) {
+        seenUris.add(synced.uri);
+        list.push(synced);
+      }
+    });
+
+    customServers.forEach((uri, idx) => {
+      if (!seenUris.has(uri)) {
+        seenUris.add(uri);
+        list.push({
+          id: `custom-${idx}-${uri}`,
+          name: `自定义节点 ${idx + 1}`,
+          uri,
+          region: "用户自建",
+          description: "第三方或自建 EasyTier 协助节点（支持 P2P 打洞与中继）",
+          group: "自建节点",
+          isCustom: true,
+        });
+      }
+    });
+    return list;
+  }, [syncedServers, customServers]);
+
+  const autoFastestServer = useMemo(() => {
+    return pickFastestRelayServer(allRelayServers, serverLatencies, DEFAULT_PUBLIC_SERVER);
+  }, [allRelayServers, serverLatencies]);
+
+  const filteredRelayServers = useMemo(() => {
+    if (serverGroupTab === "all") return allRelayServers;
+    if (serverGroupTab === "official") return allRelayServers.filter((s) => s.group === "官方推荐");
+    if (serverGroupTab === "community") return allRelayServers.filter((s) => s.group === "国内社区");
+    if (serverGroupTab === "crossborder") return allRelayServers.filter((s) => s.group === "海外跨境");
+    if (serverGroupTab === "custom") return allRelayServers.filter((s) => s.isCustom);
+    return allRelayServers;
+  }, [allRelayServers, serverGroupTab]);
+
+  // 首次进入设置时，若本地测速缓存为空或已过期，在后台静默发起一次分批测速更新优选节点
+  useEffect(() => {
+    if (autoProbedRef.current || allRelayServers.length === 0) return;
+    const cached = loadCachedServerLatencies();
+    if (!cached.isFresh || Object.keys(cached.latencies).length === 0) {
+      autoProbedRef.current = true;
+      void batchProbeMultiplayerLatencies(allRelayServers, 4, probeMultiplayerLatency)
+        .then((fresh) => {
+          setServerLatencies(fresh);
+        })
+        .catch(() => {});
+    }
+  }, [allRelayServers]);
+
+  const handleTestAllServers = async () => {
+    setTestingLatency(true);
+    try {
+      const results = await batchProbeMultiplayerLatencies(
+        allRelayServers,
+        4,
+        probeMultiplayerLatency,
+      );
+      setServerLatencies(results);
+      const fastest = pickFastestRelayServer(allRelayServers, results, DEFAULT_PUBLIC_SERVER);
+      const lat = results[fastest];
+      onNotify(
+        "info",
+        "测速完成",
+        `已对 ${allRelayServers.length} 个中继节点完成分批延迟检测${lat != null ? `，当前最优节点：${fastest} (${lat} ms)` : ""}`,
+      );
+    } catch {
+      onNotify("error", "测速异常", "网络探测遇到问题，请检查网络连接");
+    } finally {
+      setTestingLatency(false);
+    }
+  };
+
+  const handleSyncCommunityNodes = async () => {
+    setSyncingCommunity(true);
+    try {
+      const res = await syncCommunityRelayNodes();
+      setSyncedServers(res.servers);
+      onNotify("success", "已从 info.qtet.cn 同步最新 Relay 节点", `已载入 ${res.count} 个社区节点`);
+    } catch {
+      onNotify("error", "同步社区节点失败", "请检查网络连接");
+    } finally {
+      setSyncingCommunity(false);
+    }
+  };
+
+  const handleTestCustomNodeInput = async () => {
+    const parsed = parseServerUri(newCustomInput);
+    if (!parsed) {
+      onNotify("error", "节点地址格式无效", "支持 tcp://主机:端口 或 udp://主机:端口（例如 tcp://vps.com:11010）");
+      return;
+    }
+    const uri = parsed.full;
+    setTestingCustom(true);
+    setCustomTestResult(undefined);
+    try {
+      const probe = await probeMultiplayerLatency(uri);
+      const isUdp = uri.startsWith("udp://");
+      const reachable = probe.reachable;
+      const lat = reachable ? probe.latencyMs : null;
+      setCustomTestResult(lat);
+      if (reachable === true) {
+        onNotify("success", `TCP 节点已连通: ${lat != null ? `${lat} ms` : "就绪"}`);
+      } else if (reachable === null || isUdp) {
+        onNotify("success", "UDP 节点格式正确", "UDP 协议无需 TCP 预检，启动后将自动建立 UDP 通道。");
+      } else {
+        onNotify("error", "连接超时", "请确认服务器地址、端口及防火墙是否放行。");
+      }
+    } catch (err) {
+      setCustomTestResult(null);
+      onNotify("error", "测试失败", String(err));
+    } finally {
+      setTestingCustom(false);
+    }
+  };
+
+  const handleAddCustomNode = () => {
+    const parsed = parseServerUri(newCustomInput);
+    if (!parsed) {
+      onNotify("error", "节点地址格式无效", "支持 tcp://主机:端口 或 udp://主机:端口（例如 tcp://vps.com:11010）");
+      return;
+    }
+    const uri = parsed.full;
+    let nextList = customServers;
+    if (!customServers.includes(uri)) {
+      nextList = [...customServers, uri];
+      setCustomServers(nextList);
+      saveCustomServers(nextList);
+    }
+    setNewCustomInput("");
+    setCustomTestResult(undefined);
+    if (settings.easyTierRelayMode === "manual") {
+      onChange({ easyTierSelectedNode: uri });
+    }
+    onNotify("success", "已成功添加自定义协助节点", uri);
+
+    void probeMultiplayerLatency(uri).then((probe) => {
+      const lat = probe.reachable ? probe.latencyMs : null;
+      setServerLatencies((prev) => {
+        const next = { ...prev, [uri]: lat };
+        saveCachedServerLatencies(next);
+        return next;
+      });
+    });
+  };
+
+  const handleDeleteCustomNode = (uri: string) => {
+    const nextList = customServers.filter((item) => item !== uri);
+    setCustomServers(nextList);
+    saveCustomServers(nextList);
+    if (settings.easyTierSelectedNode === uri) {
+      onChange({ easyTierSelectedNode: DEFAULT_PUBLIC_SERVER });
+    }
+    onNotify("info", "已移除该自定义节点");
+  };
 
   useEffect(() => {
     if (isDesktop) {
       void getElectronChromiumProfile().then(setChromiumProfile);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "about" || !isDesktop) return;
+    void getDeveloperOptions().then(setDeveloperConsole).catch(() => undefined);
+  }, [activeTab, settings.enableDevTools, settings.showBackendConsole]);
+
+  const openBackendConsole = async () => {
+    if (!settings.showBackendConsole) {
+      onNotify("info", "后台日志未启用", "请先打开「后台进程日志」开关。");
+      return;
+    }
+    try {
+      const state = await configureDeveloperOptions({
+        devToolsEnabled: settings.enableDevTools,
+        backendConsoleEnabled: true,
+        openConsole: true,
+      });
+      setDeveloperConsole(state);
+      if (state?.consoleOpen) {
+        onNotify("success", "已打开后台日志窗口", state.logPath ?? undefined);
+      }
+    } catch (error) {
+      onNotify("error", "无法打开后台日志窗口", String(error));
+    }
+  };
   const cleanName = /^[A-Za-z0-9_]{1,16}$/.test(settings.playerName);
 
   // Custom mirror latency changes when the URL changes, so drop stale results.
@@ -526,14 +805,96 @@ export function SettingsView({
     settings.javaPath && !javaInstalls.some((java) => java.path === settings.javaPath);
   const selectedJava = settings.javaPath || "auto";
 
+  const handleCheckUpdate = async () => {
+    if (updateChecking || updateDownloading) return;
+    setUpdateChecking(true);
+    setUpdateError(null);
+    try {
+      const info = await checkAppUpdate();
+      setUpdateInfo(info);
+      setUpdateDownload(
+        info.cachedPath
+          ? {
+              path: info.cachedPath,
+              bytes: info.asset?.size ?? 0,
+              fileName: info.asset?.name ?? "",
+            }
+          : null,
+      );
+    } catch (error) {
+      setUpdateError(String(error));
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
+  const handleDownloadUpdate = async (force = false) => {
+    const asset = updateInfo?.asset;
+    if (!asset || updateDownloading) return;
+    setUpdateDownloading(true);
+    setUpdateError(null);
+    setUpdateProgress({
+      received: 0,
+      total: asset.size,
+      percent: 0,
+      fileName: asset.name,
+    });
+    try {
+      setUpdateDownload(await downloadAppUpdate(asset, force));
+    } catch (error) {
+      setUpdateError(String(error));
+    } finally {
+      setUpdateDownloading(false);
+      setUpdateProgress(null);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!updateDownload || updateInstalling) return;
+    setUpdateInstalling(true);
+    setUpdateError(null);
+    try {
+      const result = await installAppUpdate(updateDownload.path);
+      onNotify("success", "更新已准备就绪", result.message);
+    } catch (error) {
+      setUpdateError(String(error));
+      onNotify("error", "无法安装更新", String(error));
+    } finally {
+      setUpdateInstalling(false);
+    }
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    void subscribe("update:progress", (progress) => {
+      if (!disposed) setUpdateProgress(progress);
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unsubscribe = off;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "about" || updateAutoChecked.current) return;
+    updateAutoChecked.current = true;
+    void handleCheckUpdate();
+  }, [activeTab]);
+
   return (
     <div className="space-y-5">
       <PageHeader
-        title="设置"
+        title={t("设置")}
         actions={
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Check className="size-3.5 text-primary" />
-            已自动保存
+            {t("已自动保存")}
           </span>
         }
       />
@@ -547,38 +908,38 @@ export function SettingsView({
           <TabsList className="h-10 w-full justify-start gap-1 rounded-lg border border-border/70 bg-card/60 p-1">
             <TabsTrigger
               value="account"
-              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
-              <UserRound className="size-3.5 text-primary" />
-              账户设置
+              <UserRound className="size-3.5 transition-colors" />
+              {t("账户设置")}
             </TabsTrigger>
             <TabsTrigger
               value="launch"
-              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
-              <Gauge className="size-3.5 text-primary" />
-              游戏与启动
+              <Gauge className="size-3.5 transition-colors" />
+              {t("游戏与启动")}
             </TabsTrigger>
             <TabsTrigger
               value="download"
-              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
-              <Cpu className="size-3.5 text-primary" />
-              下载与网络
+              <Cpu className="size-3.5 transition-colors" />
+              {t("下载与网络")}
             </TabsTrigger>
             <TabsTrigger
               value="personalization"
-              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
-              <Sparkles className="size-3.5 text-primary" />
-              个性化
+              <Sparkles className="size-3.5 transition-colors" />
+              {t("个性化")}
             </TabsTrigger>
             <TabsTrigger
               value="about"
-              className="gap-2 px-3.5 py-1.5 text-[12px] data-[state=active]:bg-background/80"
+              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
-              <Info className="size-3.5 text-primary" />
-              关于启动器
+              <Info className="size-3.5 transition-colors" />
+              {t("关于启动器")}
             </TabsTrigger>
           </TabsList>
         </div>
@@ -1213,6 +1574,19 @@ export function SettingsView({
                         <span className="font-mono text-[9px] text-muted-foreground">
                           {java.version}
                         </span>
+                        {java.is64Bit !== undefined && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[8.5px] px-1 py-0 h-3.5",
+                              java.is64Bit
+                                ? "border-emerald-500/30 text-emerald-500"
+                                : "border-amber-500/40 text-amber-500",
+                            )}
+                          >
+                            {java.is64Bit ? "64 位" : "32 位 (限1G)"}
+                          </Badge>
+                        )}
                       </span>
                       <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
                         {shortPath(java.path, 48)}
@@ -1671,19 +2045,496 @@ export function SettingsView({
                 </p>
               </div>
             </SettingsSection>
+
+            {/* 网络设置：EasyTier 协助节点打洞与多线路中继 */}
+            <SettingsSection
+              title="EasyTier 协助节点打洞与多线路中继（网络设置）"
+              icon={<Network className="size-4 text-primary" />}
+              className="lg:col-span-2"
+              actions={
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    disabled={syncingCommunity}
+                    onClick={handleSyncCommunityNodes}
+                    title="从 info.qtet.cn 社区监控在线同步最新上线的中继节点"
+                  >
+                    <RefreshCw className={cn("size-3", syncingCommunity && "animate-spin")} />
+                    {syncingCommunity ? "同步中" : "同步社区最新"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    disabled={testingLatency}
+                    onClick={handleTestAllServers}
+                  >
+                    {testingLatency ? (
+                      <LoaderCircle className="size-3 animate-spin" />
+                    ) : (
+                      <Zap className="size-3 text-amber-400" />
+                    )}
+                    {testingLatency ? "测速中" : "全量测速"}
+                  </Button>
+                </div>
+              }
+            >
+              <div className="space-y-4">
+                {/* 模式选择：自动选择中继节点（默认） vs 手动选择 */}
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <Label className="text-[11px] font-medium text-foreground">
+                      中继节点选择模式
+                    </Label>
+                    <span className="text-[10px] text-muted-foreground">
+                      联机房间打洞与多线路中继使用的节点策略
+                    </span>
+                  </div>
+
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    {/* 自动选择模式卡片 */}
+                    <div
+                      onClick={() => {
+                        onChange({ easyTierRelayMode: "auto" });
+                        onNotify("info", "已设为自动选择中继节点", "将根据网络延迟动态优选最佳协助节点。");
+                      }}
+                      className={cn(
+                        "relative flex cursor-pointer flex-col justify-between rounded-xl border p-3.5 transition-all select-none",
+                        (settings.easyTierRelayMode || "auto") === "auto"
+                          ? "border-primary bg-primary/[0.06] ring-1 ring-primary/40 shadow-xs"
+                          : "border-border/60 bg-muted/20 hover:border-border hover:bg-muted/30",
+                      )}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="size-4 text-primary" />
+                            <span className="text-[12.5px] font-semibold text-foreground">
+                              自动选择中继节点
+                            </span>
+                            <Badge className="h-4 border-0 bg-primary/20 px-1.5 text-[9px] font-medium text-primary">
+                              默认 · 推荐
+                            </Badge>
+                          </div>
+                          <span
+                            className={cn(
+                              "flex size-4 items-center justify-center rounded-full border transition-colors",
+                              (settings.easyTierRelayMode || "auto") === "auto"
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-muted-foreground/30 bg-transparent",
+                            )}
+                          >
+                            {(settings.easyTierRelayMode || "auto") === "auto" ? (
+                              <Check className="size-2.5 stroke-[3]" />
+                            ) : null}
+                          </span>
+                        </div>
+                        <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+                          根据全网各节点测速结果，自动优选延迟最低、连接质量最稳定的协助打洞与多线路中继节点。
+                        </p>
+                      </div>
+
+                      <div className="mt-2.5 flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-2.5 py-1.5 text-[10.5px]">
+                        <span className="text-muted-foreground">当前优选节点：</span>
+                        <code className="min-w-0 max-w-[200px] truncate font-mono font-medium text-foreground">
+                          {autoFastestServer}
+                        </code>
+                        {serverLatencies[autoFastestServer] != null ? (
+                          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-emerald-400">
+                            {serverLatencies[autoFastestServer]} ms
+                          </span>
+                        ) : (
+                          <span className="font-mono text-[9.5px] text-muted-foreground">就绪</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 手动选择模式卡片 */}
+                    <div
+                      onClick={() => {
+                        onChange({ easyTierRelayMode: "manual" });
+                        onNotify("info", "已设为手动选择中继节点", "请在下方列表中指定固定的中继节点。");
+                      }}
+                      className={cn(
+                        "relative flex cursor-pointer flex-col justify-between rounded-xl border p-3.5 transition-all select-none",
+                        settings.easyTierRelayMode === "manual"
+                          ? "border-primary bg-primary/[0.06] ring-1 ring-primary/40 shadow-xs"
+                          : "border-border/60 bg-muted/20 hover:border-border hover:bg-muted/30",
+                      )}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Server className="size-4 text-primary" />
+                            <span className="text-[12.5px] font-semibold text-foreground">
+                              手动指定中继节点
+                            </span>
+                          </div>
+                          <span
+                            className={cn(
+                              "flex size-4 items-center justify-center rounded-full border transition-colors",
+                              settings.easyTierRelayMode === "manual"
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-muted-foreground/30 bg-transparent",
+                            )}
+                          >
+                            {settings.easyTierRelayMode === "manual" ? (
+                              <Check className="size-2.5 stroke-[3]" />
+                            ) : null}
+                          </span>
+                        </div>
+                        <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+                          锁定指定的官方节点、国内社区节点，或直接连接你自定义部署的自建 EasyTier 私有节点。
+                        </p>
+                      </div>
+
+                      <div className="mt-2.5 flex items-center justify-between rounded-lg border border-border/50 bg-background/50 px-2.5 py-1.5 text-[10.5px]">
+                        <span className="text-muted-foreground">当前指定节点：</span>
+                        <code className="min-w-0 max-w-[200px] truncate font-mono font-medium text-foreground">
+                          {settings.easyTierSelectedNode || DEFAULT_PUBLIC_SERVER}
+                        </code>
+                        {serverLatencies[settings.easyTierSelectedNode || DEFAULT_PUBLIC_SERVER] != null ? (
+                          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-emerald-400">
+                            {serverLatencies[settings.easyTierSelectedNode || DEFAULT_PUBLIC_SERVER]} ms
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 分类筛选标签 */}
+                <div className="flex flex-wrap items-center gap-1.5 border-b border-border/50 pb-2">
+                  {[
+                    { id: "all", label: "全部节点", count: allRelayServers.length },
+                    {
+                      id: "official",
+                      label: "官方推荐",
+                      count: allRelayServers.filter((s) => s.group === "官方推荐").length,
+                    },
+                    {
+                      id: "community",
+                      label: "国内社区",
+                      count: allRelayServers.filter((s) => s.group === "国内社区").length,
+                    },
+                    {
+                      id: "crossborder",
+                      label: "海外跨境",
+                      count: allRelayServers.filter((s) => s.group === "海外跨境").length,
+                    },
+                    ...(allRelayServers.some((s) => s.isCustom)
+                      ? [
+                          {
+                            id: "custom",
+                            label: "我的自建",
+                            count: allRelayServers.filter((s) => s.isCustom).length,
+                          },
+                        ]
+                      : []),
+                  ].map((tab) => {
+                    const active = serverGroupTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setServerGroupTab(tab.id)}
+                        className={cn(
+                          "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors select-none",
+                          active
+                            ? "bg-primary/15 text-primary shadow-xs"
+                            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                        )}
+                      >
+                        <span>{tab.label}</span>
+                        <span
+                          className={cn(
+                            "rounded-full px-1 text-[9.5px]",
+                            active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {tab.count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 节点列表卡片网格 */}
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {filteredRelayServers.map((srv) => {
+                    const isManualSelected =
+                      settings.easyTierRelayMode === "manual" &&
+                      (settings.easyTierSelectedNode || DEFAULT_PUBLIC_SERVER) === srv.uri;
+                    const isAutoSelected =
+                      (settings.easyTierRelayMode || "auto") === "auto" &&
+                      autoFastestServer === srv.uri;
+                    const isChosen = isManualSelected || isAutoSelected;
+                    const lat = serverLatencies[srv.uri];
+                    const schemeMatch = srv.uri.match(/^([a-zA-Z0-9]+):\/\//);
+                    const scheme = schemeMatch ? schemeMatch[1].toUpperCase() : "TCP";
+                    const schemeBadgeClass =
+                      scheme === "UDP"
+                        ? "border-violet-500/30 bg-violet-500/10 text-violet-400"
+                        : scheme === "WSS"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                          : scheme === "TXT"
+                            ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                            : "border-sky-500/30 bg-sky-500/10 text-sky-400";
+
+                    return (
+                      <div
+                        key={srv.id}
+                        onClick={() => {
+                          onChange({
+                            easyTierRelayMode: "manual",
+                            easyTierSelectedNode: srv.uri,
+                          });
+                          onNotify("success", "已手动选定中继协助节点", srv.uri);
+                        }}
+                        className={cn(
+                          "relative flex flex-col justify-between rounded-xl border p-3.5 text-left transition-all cursor-pointer select-none",
+                          isChosen
+                            ? "border-primary bg-card ring-1 ring-primary/50 shadow-sm"
+                            : "border-border/70 bg-card/40 hover:border-border hover:bg-card/70",
+                        )}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className={cn(
+                                  "shrink-0 rounded px-1 py-0.2 font-mono text-[9px] font-semibold border",
+                                  schemeBadgeClass,
+                                )}
+                              >
+                                {scheme}
+                              </span>
+                              <span className="font-semibold text-[12px] text-foreground truncate">
+                                {srv.name}
+                              </span>
+                              {srv.isCustom ? (
+                                <span className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 py-0.2 text-[9px] font-medium text-primary">
+                                  自建
+                                </span>
+                              ) : null}
+                              {isAutoSelected && (
+                                <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.2 text-[9px] font-medium text-amber-400">
+                                  自动优选
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {testingLatency ? (
+                                <span className="inline-flex items-center gap-1 font-mono text-[9.5px] text-muted-foreground">
+                                  <LoaderCircle className="size-2.5 animate-spin" />
+                                  测速
+                                </span>
+                              ) : lat !== undefined ? (
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[9.5px] font-medium",
+                                    lat != null
+                                      ? lat < 80
+                                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                                        : lat < 180
+                                          ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                                          : "border-rose-500/30 bg-rose-500/10 text-rose-400"
+                                      : srv.uri.startsWith("udp://")
+                                        ? "border-violet-500/30 bg-violet-500/10 text-violet-400"
+                                        : srv.uri.startsWith("txt://")
+                                          ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                                          : "border-destructive/30 bg-destructive/10 text-destructive",
+                                  )}
+                                >
+                                  {lat != null
+                                    ? `${lat} ms`
+                                    : srv.uri.startsWith("udp://")
+                                      ? "UDP 就绪"
+                                      : srv.uri.startsWith("txt://")
+                                        ? "DNS 动态"
+                                        : "超时"}
+                                </span>
+                              ) : (
+                                <Badge
+                                  variant="outline"
+                                  className="h-4 px-1.5 font-normal text-[9px] text-muted-foreground"
+                                >
+                                  {srv.region}
+                                </Badge>
+                              )}
+
+                              <span
+                                className={cn(
+                                  "flex size-4 items-center justify-center rounded-full border transition-colors",
+                                  isChosen
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-muted-foreground/30 bg-transparent",
+                                )}
+                              >
+                                {isChosen ? <Check className="size-2.5 stroke-[3]" /> : null}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* URI 地址栏 */}
+                          <div className="mt-2.5 flex items-center justify-between gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 font-mono text-[10.5px]">
+                            <code className="min-w-0 flex-1 truncate font-medium text-foreground">
+                              {srv.uri}
+                            </code>
+                            {srv.isCustom ? (
+                              <button
+                                type="button"
+                                className="p-0.5 text-muted-foreground/60 transition-colors hover:text-destructive"
+                                title="删除此自定义节点"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteCustomNode(srv.uri);
+                                }}
+                              >
+                                <Trash2 className="size-3" />
+                              </button>
+                            ) : null}
+                          </div>
+
+                          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                            {srv.description}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center justify-between px-1 text-[9.5px] text-muted-foreground/80">
+                  <span>共载入 {allRelayServers.length} 个 EasyTier 协助中继节点</span>
+                  <span>数据源：info.qtet.cn 社区监控 & EasyTier 官方</span>
+                </div>
+
+                {/* 自定义节点输入专区 */}
+                <div className="rounded-xl border border-border/60 bg-background/40 p-3.5">
+                  <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-foreground">
+                    <Plus className="size-3.5 text-primary" />
+                    <span>添加自定义 / 自建 EasyTier 协助打洞节点</span>
+                  </div>
+                  <p className="mt-1 text-[10.5px] text-muted-foreground">
+                    支持输入你自己或社区搭建的 EasyTier 协助节点，支持 TCP / UDP 协议通道。
+                  </p>
+                  <div className="mt-2.5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="min-w-0 flex-1">
+                      <Input
+                        value={newCustomInput}
+                        onChange={(e) => {
+                          setNewCustomInput(e.target.value);
+                          setCustomTestResult(undefined);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleAddCustomNode();
+                        }}
+                        placeholder="tcp://your-vps.com:11010 或 udp://..."
+                        className="h-8 font-mono text-[11px]"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1 px-2.5 text-[11px]"
+                        disabled={!newCustomInput.trim() || testingCustom}
+                        onClick={handleTestCustomNodeInput}
+                      >
+                        {testingCustom ? (
+                          <LoaderCircle className="size-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="size-3" />
+                        )}
+                        {customTestResult !== undefined ? (
+                          customTestResult != null ? (
+                            <span className="font-mono text-emerald-400">
+                              {customTestResult} ms
+                            </span>
+                          ) : (
+                            <span className="text-destructive">超时</span>
+                          )
+                        ) : (
+                          "测速"
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1 px-3 text-[11px] font-medium"
+                        disabled={!newCustomInput.trim()}
+                        onClick={handleAddCustomNode}
+                      >
+                        <Plus className="size-3.5" />
+                        添加节点
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </SettingsSection>
           </div>
         </TabsContent>
 
         {/* 个性化设置 Tab */}
         <TabsContent value="personalization" className="mt-0 space-y-4 focus-visible:outline-none">
           <div className="max-w-2xl space-y-4">
+            {/* 语言与地区：放在个性化首项，切换后整个启动器立即跟随 */}
+            <SettingsSection
+              title={t("语言与地区")}
+              icon={<Languages className="size-4" />}
+            >
+              <Field label={t("界面语言")}>
+                <RadioGroup
+                  value={settings.language}
+                  onValueChange={(val) => onChange({ language: val as LauncherSettings["language"] })}
+                  className="grid grid-cols-2 gap-2"
+                >
+                  {LANGUAGE_OPTIONS.map((option) => {
+                    const selected = settings.language === option.value;
+                    return (
+                      <Label
+                        key={option.value}
+                        htmlFor={`language-${option.value}`}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-all",
+                          selected
+                            ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/40"
+                            : "border-border/70 bg-background/40 text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+                        )}
+                      >
+                        <RadioGroupItem
+                          value={option.value}
+                          id={`language-${option.value}`}
+                          className="sr-only"
+                        />
+                        <span className="font-medium">{option.label}</span>
+                        {selected ? <Check className="ml-auto size-3.5" /> : null}
+                      </Label>
+                    );
+                  })}
+                </RadioGroup>
+              </Field>
+              <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                {t("切换启动器界面语言，保存后立即生效。")}
+              </p>
+              <p className="text-[10.5px] leading-5 text-muted-foreground/60">
+                {t(
+                  "English 界面包目前覆盖启动器框架、主页与个性化设置，其余页面会继续回退到中文。",
+                )}
+              </p>
+            </SettingsSection>
+
             {/* 主题配色与外观 */}
             <SettingsSection
-              title="主题"
+              title={t("主题")}
               icon={<Palette className="size-4" />}
             >
               {/* 明暗外观模式 */}
-              <Field label="外观模式">
+              <Field label={t("外观模式")}>
                 <RadioGroup
                   value={settings.themeMode}
                   onValueChange={(val) => onChange({ themeMode: val as any })}
@@ -1700,7 +2551,7 @@ export function SettingsView({
                   >
                     <RadioGroupItem value="dark" id="theme-dark" className="sr-only" />
                     <Moon className="size-4" />
-                    <span className="text-[11.5px] font-medium">深色模式</span>
+                    <span className="text-[11.5px] font-medium">{t("深色模式")}</span>
                   </Label>
                   <Label
                     htmlFor="theme-light"
@@ -1713,7 +2564,7 @@ export function SettingsView({
                   >
                     <RadioGroupItem value="light" id="theme-light" className="sr-only" />
                     <Sun className="size-4" />
-                    <span className="text-[11.5px] font-medium">浅色模式</span>
+                    <span className="text-[11.5px] font-medium">{t("浅色模式")}</span>
                   </Label>
                   <Label
                     htmlFor="theme-system"
@@ -1726,20 +2577,20 @@ export function SettingsView({
                   >
                     <RadioGroupItem value="system" id="theme-system" className="sr-only" />
                     <Monitor className="size-4" />
-                    <span className="text-[11.5px] font-medium">跟随系统</span>
+                    <span className="text-[11.5px] font-medium">{t("跟随系统")}</span>
                   </Label>
                 </RadioGroup>
               </Field>
 
               {/* 主题强调色：只保留一个自定义颜色，没有预设色卡 */}
-              <Field label="强调色">
+              <Field label={t("强调色")}>
                 <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/30 p-3">
                   <input
                     type="color"
                     value={settings.customThemeColor || DEFAULT_ACCENT}
                     onChange={(e) => onChange({ customThemeColor: e.target.value })}
                     className="size-8 cursor-pointer rounded border border-border/80 bg-transparent p-0.5"
-                    aria-label="强调色"
+                    aria-label={t("强调色")}
                   />
                   <Input
                     value={settings.customThemeColor || DEFAULT_ACCENT}
@@ -1753,7 +2604,7 @@ export function SettingsView({
 
             {/* 背景设置：只有无背景与一张自定义图片，不再提供预设壁纸 */}
             <SettingsSection
-              title="背景与透明度"
+              title={t("背景与透明度")}
               icon={<ImageIcon className="size-4" />}
             >
               <div className="grid grid-cols-2 gap-2">
@@ -1775,7 +2626,7 @@ export function SettingsView({
                       )}
                     >
                       <option.icon className="size-4" />
-                      {option.label}
+                      {t(option.label)}
                       {selected ? <Check className="ml-auto size-3.5" /> : null}
                     </button>
                   );
@@ -1785,12 +2636,12 @@ export function SettingsView({
               {/* 自定义壁纸路径选择 */}
               {settings.backgroundType === "custom" && (
                 <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">
-                  <Label className="text-[11px] text-muted-foreground">图片路径或链接</Label>
+                  <Label className="text-[11px] text-muted-foreground">{t("图片路径或链接")}</Label>
                   <div className="flex items-center gap-2">
                     <Input
                       value={settings.customBackgroundPath || ""}
                       onChange={(e) => onChange({ customBackgroundPath: e.target.value })}
-                      placeholder="本地图片路径 (如 D:\wallpaper.jpg) 或网络 URL"
+                      placeholder={t("本地图片路径 (如 D:\\wallpaper.jpg) 或网络 URL")}
                       className="h-8 flex-1 font-mono text-[11px]"
                     />
                     <Button
@@ -1800,7 +2651,7 @@ export function SettingsView({
                       onClick={() => void handlePickWallpaper()}
                     >
                       <FolderOpen className="size-3.5" />
-                      浏览
+                      {t("浏览")}
                     </Button>
                     {settings.customBackgroundPath && (
                       <Button
@@ -1809,7 +2660,7 @@ export function SettingsView({
                         className="h-8 text-[11px] text-muted-foreground hover:text-destructive"
                         onClick={() => onChange({ customBackgroundPath: "" })}
                       >
-                        清空
+                        {t("清空")}
                       </Button>
                     )}
                   </div>
@@ -1820,7 +2671,7 @@ export function SettingsView({
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 pt-1">
                 <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3">
                   <div className="flex items-center justify-between text-[11.5px]">
-                    <span className="text-muted-foreground">背景模糊度</span>
+                    <span className="text-muted-foreground">{t("背景模糊度")}</span>
                     <span className="font-mono text-primary font-medium">{settings.backgroundBlur} px</span>
                   </div>
                   <Slider
@@ -1834,7 +2685,7 @@ export function SettingsView({
 
                 <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3">
                   <div className="flex items-center justify-between text-[11.5px]">
-                    <span className="text-muted-foreground">背景不透明度</span>
+                    <span className="text-muted-foreground">{t("背景不透明度")}</span>
                     <span className="font-mono text-primary font-medium">{settings.backgroundOpacity}%</span>
                   </div>
                   <Slider
@@ -1849,7 +2700,7 @@ export function SettingsView({
                 {/* 全局面板透明度：与背景滑杆同一块面板，不再单独占一节 */}
                 <div className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3 sm:col-span-2">
                   <div className="flex items-center justify-between text-[11.5px]">
-                    <span className="text-muted-foreground">界面不透明度</span>
+                    <span className="text-muted-foreground">{t("界面不透明度")}</span>
                     <span className="font-mono text-primary font-medium">{settings.uiOpacity}%</span>
                   </div>
                   <Slider
@@ -1860,7 +2711,7 @@ export function SettingsView({
                     onValueChange={([val]) => onChange({ uiOpacity: val })}
                   />
                   <p className="text-[10.5px] text-muted-foreground/70">
-                    作用于卡片、侧边栏、标题栏、弹窗与输入框
+                    {t("作用于卡片、侧边栏、标题栏、弹窗与输入框")}
                   </p>
                 </div>
               </div>
@@ -1868,7 +2719,7 @@ export function SettingsView({
               {/* 网格线与毛玻璃开关 */}
               <div className="space-y-2 pt-1">
                 <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
-                  <Label className="text-[12px] font-medium text-foreground">方块网格</Label>
+                  <Label className="text-[12px] font-medium text-foreground">{t("方块网格")}</Label>
                   <Switch
                     checked={settings.showWorldGrid}
                     onCheckedChange={(val) => onChange({ showWorldGrid: val })}
@@ -1876,7 +2727,7 @@ export function SettingsView({
                 </div>
 
                 <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
-                  <Label className="text-[12px] font-medium text-foreground">磨砂玻璃</Label>
+                  <Label className="text-[12px] font-medium text-foreground">{t("磨砂玻璃")}</Label>
                   <Switch
                     checked={settings.enableMica}
                     onCheckedChange={(val) => onChange({ enableMica: val })}
@@ -1886,8 +2737,8 @@ export function SettingsView({
             </SettingsSection>
 
             {/* 主页：PCL2 风格的可自定义主页区域 */}
-            <SettingsSection title="主页" icon={<Newspaper className="size-4" />}>
-              <Field label="主页内容">
+            <SettingsSection title={t("主页")} icon={<Newspaper className="size-4" />}>
+              <Field label={t("主页内容")}>
                 <RadioGroup
                   value={settings.homePageMode}
                   onValueChange={(val) => onChange({ homePageMode: val as HomePageMode })}
@@ -1910,7 +2761,7 @@ export function SettingsView({
                         className="sr-only"
                       />
                       <option.icon className="size-4" />
-                      <span className="text-[11.5px] font-medium">{option.label}</span>
+                      <span className="text-[11.5px] font-medium">{t(option.label)}</span>
                     </Label>
                   ))}
                 </RadioGroup>
@@ -1918,30 +2769,33 @@ export function SettingsView({
 
               <p className="text-[10.5px] leading-5 text-muted-foreground/70">
                 {settings.homePageMode === "preset"
-                  ? "使用内置的“我的世界更新新闻”作为主页内容。"
+                  ? t("使用内置的“我的世界更新新闻”作为主页内容。")
                   : settings.homePageMode === "blank"
-                    ? "主页区域保持空白，只保留右侧启动面板。"
+                    ? t("主页区域保持空白，只保留右侧启动面板。")
                     : settings.homePageMode === "local"
-                      ? "读取本地 HTML 文件，或直接使用 PCL2 的 .xaml 自定义主页；XAML 里的相对图片会按文件所在目录读取。"
-                      : "从网络地址加载 HTML 或 PCL2 的 .xaml 主页，可设置自动刷新间隔保持内容最新。"}
+                      ? t(
+                          "读取本地 HTML 文件，或直接使用 PCL2 的 .xaml 自定义主页；XAML 里的相对图片会按文件所在目录读取。",
+                        )
+                      : t(
+                          "从网络地址加载 HTML 或 PCL2 的 .xaml 主页，可设置自动刷新间隔保持内容最新。",
+                        )}
               </p>
 
               <p className="text-[10.5px] leading-5 text-muted-foreground/70">
-                兼容 PCL2 自定义主页：支持 Grid / StackPanel / Border / TextBlock / Image
-                等布局与内容组件，以及 MyCard、MyButton、MyHint、MyTextBox 等 PCL
-                控件、{'{DynamicResource}'} 主题色与 EventType 动作（打开网页 / 复制文本 /
-                刷新主页 / 启动游戏）。无法还原的元素会在主页标题旁标记。
+                {t(
+                  "兼容 PCL2 自定义主页：支持 Grid / StackPanel / Border / TextBlock / Image 等布局与内容组件，以及 MyCard、MyButton、MyHint、MyTextBox 等 PCL 控件、{DynamicResource} 主题色与 EventType 动作（打开网页 / 复制文本 / 刷新主页 / 启动游戏）。无法还原的元素会在主页标题旁标记。",
+                )}
               </p>
 
               {settings.homePageMode === "local" ? (
                 <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">                    <Label className="text-[11px] text-muted-foreground">
-                      本地主页文件（HTML 或 PCL2 的 .xaml）
+                      {t("本地主页文件（HTML 或 PCL2 的 .xaml）")}
                     </Label>
                   <div className="flex items-center gap-2">
                     <Input
                       value={settings.homePageLocalPath || ""}
                       onChange={(e) => onChange({ homePageLocalPath: e.target.value })}
-                      placeholder="例如 D:\\PCL2\\Homepage.html"
+                      placeholder={t("例如 D:\\PCL2\\Homepage.html")}
                       className="h-8 flex-1 font-mono text-[11px]"
                     />
                     <Button
@@ -1951,7 +2805,7 @@ export function SettingsView({
                       onClick={() => void handlePickHomePage()}
                     >
                       <FolderOpen className="size-3.5" />
-                      浏览
+                      {t("浏览")}
                     </Button>
                     {settings.homePageLocalPath ? (
                       <Button
@@ -1960,7 +2814,7 @@ export function SettingsView({
                         className="h-8 text-[11px] text-muted-foreground hover:text-destructive"
                         onClick={() => onChange({ homePageLocalPath: "" })}
                       >
-                        清空
+                        {t("清空")}
                       </Button>
                     ) : null}
                   </div>
@@ -1970,7 +2824,7 @@ export function SettingsView({
               {settings.homePageMode === "online" ? (
                 <div className="space-y-3">
                   <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">
-                    <Label className="text-[11px] text-muted-foreground">主页地址</Label>
+                    <Label className="text-[11px] text-muted-foreground">{t("主页地址")}</Label>
                     <Input
                       value={settings.homePageUrl || ""}
                       onChange={(e) => onChange({ homePageUrl: e.target.value })}
@@ -1978,20 +2832,28 @@ export function SettingsView({
                       className="h-8 font-mono text-[11px]"
                     />
                   </div>
-                  <Field label="自动刷新间隔">
+                  <Field label={t("自动刷新间隔")}>
                     <SettingsSelect
                       value={String(settings.homePageRefreshMinutes)}
                       onChange={(val) => onChange({ homePageRefreshMinutes: Number(val) })}
                       options={[
                         {
                           value: "0",
-                          label: "仅手动刷新",
-                          description: "打开主页或点击刷新时更新",
+                          label: t("仅手动刷新"),
+                          description: t("打开主页或点击刷新时更新"),
                         },
-                        { value: "5", label: "每 5 分钟", description: "适合频繁更新的主页" },
-                        { value: "15", label: "每 15 分钟", description: "较为均衡" },
-                        { value: "30", label: "每 30 分钟", description: "节省流量" },
-                        { value: "60", label: "每 60 分钟", description: "适合更新较慢的页面" },
+                        {
+                          value: "5",
+                          label: t("每 5 分钟"),
+                          description: t("适合频繁更新的主页"),
+                        },
+                        { value: "15", label: t("每 15 分钟"), description: t("较为均衡") },
+                        { value: "30", label: t("每 30 分钟"), description: t("节省流量") },
+                        {
+                          value: "60",
+                          label: t("每 60 分钟"),
+                          description: t("适合更新较慢的页面"),
+                        },
                       ]}
                     />
                   </Field>
@@ -2001,77 +2863,77 @@ export function SettingsView({
 
             {/* 界面排版与视觉定制 */}
             <SettingsSection
-              title="排版与文案"
+              title={t("排版与文案")}
               icon={<Type className="size-4" />}
             >
-              <Field label="界面字体风格">
+              <Field label={t("界面字体风格")}>
                 <SettingsSelect
                   value={settings.fontFamily}
                   onChange={(val) => onChange({ fontFamily: val as any })}
                   options={[
                     {
                       value: "default",
-                      label: "现代极简 (Geist Sans)",
-                      description: "专为代码与设计优化的现代极简无衬线字体（推荐）",
+                      label: t("现代极简 (Geist Sans)"),
+                      description: t("专为代码与设计优化的现代极简无衬线字体（推荐）"),
                     },
                     {
                       value: "pixel",
-                      label: "复古像素 (Silkscreen)",
-                      description: "经典的 8-bit Minecraft 像素风格字体",
+                      label: t("复古像素 (Silkscreen)"),
+                      description: t("经典的 8-bit Minecraft 像素风格字体"),
                     },
                     {
                       value: "system",
-                      label: "系统原生字体 (System UI)",
-                      description: "跟随当前操作系统原生 UI 字体配置",
+                      label: t("系统原生字体 (System UI)"),
+                      description: t("跟随当前操作系统原生 UI 字体配置"),
                     },
                     {
                       value: "serif",
-                      label: "古典衬线 (Serif)",
-                      description: "Georgia 与宋体回退，适合喜欢阅读感的排版",
+                      label: t("古典衬线 (Serif)"),
+                      description: t("Georgia 与宋体回退，适合喜欢阅读感的排版"),
                     },
                   ]}
                 />
               </Field>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field label="界面字重">
+                <Field label={t("界面字重")}>
                   <SettingsSelect
                     value={settings.fontWeight}
                     onChange={(val) => onChange({ fontWeight: val as any })}
                     options={[
                       {
                         value: "regular",
-                        label: "常规字重 (400)",
-                        description: "默认，轻盈通透",
+                        label: t("常规字重 (400)"),
+                        description: t("默认，轻盈通透"),
                       },
                       {
                         value: "medium",
-                        label: "中等字重 (500)",
-                        description: "文字更厚重，小字号也更清晰",
+                        label: t("中等字重 (500)"),
+                        description: t("文字更厚重，小字号也更清晰"),
                       },
                     ]}
                   />
                 </Field>
 
-                <Field label="字间距">
+                <Field label={t("字间距")}>
                   <SettingsSelect
                     value={settings.letterSpacing}
                     onChange={(val) => onChange({ letterSpacing: val as any })}
                     options={[
                       {
                         value: "tight",
-                        label: "紧凑 (-0.01em)",
-                        description: "信息密度更高，适合小屏",
+                        label: t("紧凑 (-0.01em)"),
+                        description: t("信息密度更高，适合小屏"),
                       },
                       {
                         value: "normal",
-                        label: "标准",
-                        description: "默认排版间距",
+                        label: t("标准"),
+                        description: t("默认排版间距"),
                       },
                       {
                         value: "wide",
-                        label: "宽松 (+0.03em)",
-                        description: "更舒缓，搭配像素字体尤其清晰",
+                        label: t("宽松 (+0.03em)"),
+                        description: t("更舒缓，搭配像素字体尤其清晰"),
                       },
                     ]}
                   />
@@ -2079,14 +2941,14 @@ export function SettingsView({
               </div>
 
               <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
-                <Label className="text-[12px] font-medium text-foreground">平滑过渡动效</Label>
+                <Label className="text-[12px] font-medium text-foreground">{t("平滑过渡动效")}</Label>
                 <Switch
                   checked={settings.enableAnimation}
                   onCheckedChange={(val) => onChange({ enableAnimation: val })}
                 />
               </div>
 
-              <Field label="自定义启动器窗口标题 (留空使用默认名称)">
+              <Field label={t("自定义启动器窗口标题 (留空使用默认名称)")}>
                 <Input
                   value={settings.windowTitle || ""}
                   onChange={(e) => onChange({ windowTitle: e.target.value })}
@@ -2095,31 +2957,31 @@ export function SettingsView({
                 />
               </Field>
 
-              <Field label="启动器个性标语 / 座右铭签名">
+              <Field label={t("启动器个性标语 / 座右铭签名")}>
                 <Input
                   value={settings.customSlogan || ""}
                   onChange={(e) => onChange({ customSlogan: e.target.value })}
-                  placeholder="自由探索，无限创造。"
+                  placeholder={t("自由探索，无限创造。")}
                   className="h-8 text-[11px]"
                 />
               </Field>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field label="首页状态文案 (留空使用默认)">
+                <Field label={t("首页状态文案 (留空使用默认)")}>
                   <Input
                     value={settings.statusText || ""}
                     onChange={(e) => onChange({ statusText: e.target.value })}
-                    placeholder="准备就绪，随时出发"
+                    placeholder={t("准备就绪，随时出发")}
                     maxLength={40}
                     className="h-8 text-[11px]"
                   />
                 </Field>
 
-                <Field label="启动按钮文案 (留空使用默认)">
+                <Field label={t("启动按钮文案 (留空使用默认)")}>
                   <Input
                     value={settings.launchButtonText || ""}
                     onChange={(e) => onChange({ launchButtonText: e.target.value })}
-                    placeholder="启动游戏 / 启动基岩版"
+                    placeholder={t("启动游戏 / 启动基岩版")}
                     maxLength={20}
                     className="h-8 text-[11px]"
                   />
@@ -2132,6 +2994,222 @@ export function SettingsView({
         {/* 关于启动器 Tab */}
         <TabsContent value="about" className="mt-0 space-y-4 focus-visible:outline-none">
           <div className="max-w-2xl space-y-4">
+            <SettingsSection
+              title="软件更新"
+              icon={<CloudDownload className="size-4" />}
+              actions={
+                <Badge
+                  variant="outline"
+                  className="border-primary/30 bg-primary/10 font-mono text-[9.5px] text-primary"
+                >
+                  GitHub Releases
+                </Badge>
+              }
+            >
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/15 p-3">
+                  <div className="min-w-0">
+                    <p className="text-[12px] font-medium text-foreground">
+                      当前版本{" "}
+                      <span className="font-mono">
+                        v{updateInfo?.currentVersion ?? systemInfo?.launcherVersion ?? "0.0.7"}
+                      </span>
+                      {updateInfo?.available && updateInfo.latestVersion ? (
+                        <span className="ml-2 font-mono text-[11px] text-primary">
+                          → v{updateInfo.latestVersion}
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="mt-0.5 text-[10.5px] leading-4 text-muted-foreground">
+                      更新包默认由 GitHub Releases 分发，下载后暂存于本机更新目录。
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 gap-1.5"
+                    onClick={() => void handleCheckUpdate()}
+                    disabled={updateChecking || updateDownloading}
+                  >
+                    <RefreshCw className={cn("size-3.5", updateChecking && "animate-spin")} />
+                    {updateChecking ? "检查中…" : "检查更新"}
+                  </Button>
+                </div>
+
+                {updateError ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-[11px] leading-5 text-destructive">
+                    <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                    <span className="min-w-0 break-all">{updateError}</span>
+                  </div>
+                ) : null}
+
+                {updateInfo && !updateInfo.available && !updateChecking ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/15 p-2.5 text-[11px] leading-5 text-muted-foreground">
+                    <Info className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <span>
+                      {updateInfo.message || "当前已是最新版本。"}
+                      {!isDesktop ? " 桌面版可直接在启动器内下载并安装。" : ""}
+                    </span>
+                  </div>
+                ) : null}
+
+                {updateInfo?.available ? (
+                  <div className="space-y-3 rounded-lg border border-primary/25 bg-primary/5 p-3.5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[12.5px] font-semibold text-foreground">
+                          发现新版本 v{updateInfo.latestVersion}
+                        </p>
+                        <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                          {updateInfo.releaseName ? `${updateInfo.releaseName} · ` : ""}
+                          {updateInfo.publishedAt
+                            ? `${formatDate(updateInfo.publishedAt)} · `
+                            : ""}
+                          来自 GitHub Releases
+                        </p>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className="border-primary/35 bg-primary/10 font-mono text-[9.5px] text-primary"
+                      >
+                        OTA
+                      </Badge>
+                    </div>
+
+                    {updateInfo.notes ? (
+                      <div className="max-h-28 overflow-y-auto whitespace-pre-line rounded-md border border-border/40 bg-background/50 p-2.5 text-[11px] leading-5 text-muted-foreground">
+                        {updateInfo.notes}
+                      </div>
+                    ) : null}
+
+                    {updateInfo.asset ? (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <span
+                            className="min-w-0 truncate font-mono text-foreground/90"
+                            title={updateInfo.asset.name}
+                          >
+                            {updateInfo.asset.name}
+                          </span>
+                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                            {formatBytes(updateInfo.asset.size)}
+                          </span>
+                        </div>
+
+                        {updateDownload ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                className="h-8 gap-1.5"
+                                onClick={() => void handleInstallUpdate()}
+                                disabled={updateInstalling}
+                              >
+                                <Check className="size-3.5" />
+                                {updateInstalling ? "正在启动…" : "安装更新"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8"
+                                onClick={() => void handleDownloadUpdate(true)}
+                                disabled={updateDownloading || updateInstalling}
+                              >
+                                重新下载
+                              </Button>
+                            </div>
+                            <p
+                              className="truncate font-mono text-[9.5px] text-muted-foreground/70"
+                              title={updateDownload.path}
+                            >
+                              已下载：{shortPath(updateDownload.path, 48)}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <Button
+                              size="sm"
+                              className="h-8 gap-1.5"
+                              onClick={() => void handleDownloadUpdate()}
+                              disabled={updateDownloading}
+                            >
+                              <CloudDownload
+                                className={cn("size-3.5", updateDownloading && "animate-pulse")}
+                              />
+                              {updateDownloading
+                                ? `下载中 ${updateProgress?.percent ?? 0}%`
+                                : "下载更新"}
+                            </Button>
+                            {updateDownloading ? (
+                              <div className="space-y-1.5">
+                                <Progress
+                                  value={updateProgress?.percent ?? 0}
+                                  className="h-1.5"
+                                />
+                                <div className="flex justify-between gap-2 font-mono text-[9.5px] text-muted-foreground">
+                                  <span>
+                                    {formatBytes(updateProgress?.received ?? 0)} /{" "}
+                                    {formatBytes(
+                                      updateProgress?.total || updateInfo.asset.size,
+                                    )}
+                                  </span>
+                                  <span>{updateProgress?.percent ?? 0}%</span>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1.5"
+                        onClick={() => void openExternalUrl(updateInfo.releaseUrl)}
+                      >
+                        <ExternalLink className="size-3.5" />
+                        前往 GitHub Releases 下载
+                      </Button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground transition-colors hover:text-primary"
+                      onClick={() => void openExternalUrl(updateInfo.releaseUrl)}
+                    >
+                      查看发布说明
+                      <ExternalLink className="size-3" />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </SettingsSection>
+
+            <SettingsSection
+              title="问题反馈"
+              icon={<MessageSquareWarning className="size-4" />}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="text-[11.5px] leading-5 text-muted-foreground">
+                    遇到 bug、兼容性问题，或有功能建议？请到 GitHub Issues 提交，附上启动器版本与复现步骤会更快定位。
+                  </p>
+                  <p className="truncate font-mono text-[9.5px] text-muted-foreground/60">
+                    github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 shrink-0 gap-1.5 border-primary/35 bg-primary/10 text-primary hover:bg-primary/15"
+                  onClick={() => void openExternalUrl(FEEDBACK_URL)}
+                >
+                  <MessageSquareWarning className="size-3.5" />
+                  提交反馈
+                  <ExternalLink className="size-3" />
+                </Button>
+              </div>
+            </SettingsSection>
+
             <SettingsSection
               title="系统架构与运行环境"
               icon={<Info className="size-4" />}
@@ -2165,6 +3243,125 @@ export function SettingsView({
                   </Badge>
                 </div>
               </div>
+            </SettingsSection>
+
+            <SettingsSection
+              title="开发者选项"
+              icon={<Terminal className="size-4" />}
+              actions={
+                <Badge
+                  variant="outline"
+                  className="border-primary/30 bg-primary/10 font-mono text-[9.5px] text-primary"
+                >
+                  {isDesktop ? "Electron" : "浏览器预览"}
+                </Badge>
+              }
+            >
+              <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                这些开关只影响本机启动器，设置会自动保存。关闭扩展或调试能力不会删除任何已安装内容。
+              </p>
+
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/15 p-3">
+                <div className="min-w-0 space-y-1">
+                  <Label
+                    htmlFor="developer-extensions"
+                    className="flex items-center gap-1.5 text-[12px] font-medium text-foreground"
+                  >
+                    <Puzzle className="size-3.5 text-primary" />
+                    启用扩展功能
+                  </Label>
+                  <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                    关闭后隐藏侧边栏的「扩展」入口，并停止扩展后台脚本与游戏启动/退出事件分发。扩展目录和启用状态会原样保留。
+                  </p>
+                </div>
+                <Switch
+                  id="developer-extensions"
+                  checked={settings.enableExtensions}
+                  onCheckedChange={(val) => onChange({ enableExtensions: val })}
+                />
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/15 p-3">
+                <div className="min-w-0 space-y-1">
+                  <Label
+                    htmlFor="developer-devtools"
+                    className="flex items-center gap-1.5 text-[12px] font-medium text-foreground"
+                  >
+                    <Monitor className="size-3.5 text-primary" />
+                    启用 Chromium F12 开发者工具
+                  </Label>
+                  <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                    开启后可随时按 <kbd className="rounded border border-border/70 bg-background/60 px-1 font-mono text-[9.5px]">F12</kbd> 或{" "}
+                    <kbd className="rounded border border-border/70 bg-background/60 px-1 font-mono text-[9.5px]">Ctrl+Shift+I</kbd>{" "}
+                    打开独立 DevTools 窗口；关闭时会自动收起，并拦截系统默认快捷键。
+                  </p>
+                </div>
+                <Switch
+                  id="developer-devtools"
+                  checked={settings.enableDevTools}
+                  onCheckedChange={(val) => onChange({ enableDevTools: val })}
+                />
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/15 p-3">
+                <div className="min-w-0 space-y-1">
+                  <Label
+                    htmlFor="developer-console"
+                    className="flex items-center gap-1.5 text-[12px] font-medium text-foreground"
+                  >
+                    <Terminal className="size-3.5 text-primary" />
+                    后台进程日志（CMD 控制台）
+                  </Label>
+                  <p className="text-[10.5px] leading-5 text-muted-foreground/70">
+                    开启后自动打开独立的等宽日志窗口，实时捕获 Rust 核心的 stdout、stderr、进程退出与 IPC 状态，并同步写入日志文件。
+                  </p>
+                </div>
+                <Switch
+                  id="developer-console"
+                  checked={settings.showBackendConsole}
+                  onCheckedChange={(val) => onChange({ showBackendConsole: val })}
+                />
+              </div>
+
+              {settings.showBackendConsole ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-background/30 p-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="text-[10.5px] text-muted-foreground/60">日志文件</p>
+                    <p
+                      className="truncate font-mono text-[10px] text-foreground/80"
+                      title={developerConsole?.logPath ?? undefined}
+                    >
+                      {developerConsole?.logPath ?? "启用后生成到用户数据目录 /logs/core-console.log"}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 gap-1.5 text-[11px]"
+                    onClick={() => void openBackendConsole()}
+                  >
+                    <Terminal className="size-3.5" />
+                    打开日志窗口
+                  </Button>
+                  {developerConsole?.logPath ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+                      onClick={() => onOpenFolder(developerConsole.logPath ?? "")}
+                    >
+                      所在文件夹
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {!isDesktop ? (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/35 bg-amber-500/10 p-2.5 text-[10.5px] leading-5 text-amber-300">
+                  <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                  <span>浏览器预览模式没有 Electron 主进程，F12 与后台日志窗口只在桌面版生效。</span>
+                </div>
+              ) : null}
             </SettingsSection>
 
             <SettingsSection

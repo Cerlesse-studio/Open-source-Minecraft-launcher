@@ -151,6 +151,26 @@ class ExtensionRuntimeManager {
   private notificationHandler: NotificationHandler | null = null;
   private wasmInstances = new Map<string, WebAssembly.Instance>();
   private runtimeEvents = new Map<string, ChromeEvent>();
+  private enabled = true;
+
+  /** Master switch from Settings → Developer; disabling releases every hook. */
+  setEnabled(enabled: boolean) {
+    if (this.enabled === enabled) return;
+    this.enabled = enabled;
+    if (!enabled) {
+      this.activeExtensions.clear();
+      this.onLaunchListeners = [];
+      this.onExitListeners = [];
+      this.wasmInstances.clear();
+      this.runtimeEvents.clear();
+      this.logs = [];
+      this.notifyLogListeners();
+    }
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
 
   setNotificationHandler(handler: NotificationHandler) {
     this.notificationHandler = handler;
@@ -201,6 +221,7 @@ class ExtensionRuntimeManager {
 
   // Load and instantiate WebAssembly binary if available
   async getOrInitWasm(ext: ExtensionItem): Promise<WebAssembly.Instance | null> {
+    if (!this.enabled) return null;
     if (this.wasmInstances.has(ext.id)) {
       return this.wasmInstances.get(ext.id)!;
     }
@@ -299,6 +320,7 @@ class ExtensionRuntimeManager {
 
   /** Delivers a `chrome.runtime.sendMessage` to background listeners. */
   async dispatchMessage(extensionId: string, message: unknown, sender: unknown): Promise<unknown> {
+    if (!this.enabled) return undefined;
     const event = this.runtimeEvents.get(extensionId);
     if (!event) return undefined;
 
@@ -336,13 +358,14 @@ class ExtensionRuntimeManager {
 
   // Execute background script with the `launcher` API bridge
   async activateExtension(ext: ExtensionItem) {
-    if (!ext.enabled || !ext.jsCode) {
+    if (!this.enabled || !ext.enabled || !ext.jsCode) {
       return;
     }
     this.activeExtensions.set(ext.id, ext);
     this.appendLog(ext.id, "info", `正在启动扩展后台服务: ${ext.manifest.name} (v${ext.manifest.version})`);
 
     const wasmInstance = await this.getOrInitWasm(ext);
+    if (!this.enabled) return;
     const runtimeEvent = createChromeEvent();
     this.runtimeEvents.set(ext.id, runtimeEvent);
     const chromeApi = this.createChromeApi(ext, runtimeEvent);
@@ -441,6 +464,7 @@ class ExtensionRuntimeManager {
 
   // Trigger game lifecycle hooks
   notifyGameLaunch(event: unknown) {
+    if (!this.enabled) return;
     this.appendLog("system", "info", `分发游戏启动生命周期事件给 ${this.onLaunchListeners.length} 个监听器`);
     for (const listener of this.onLaunchListeners) {
       try {
@@ -452,6 +476,7 @@ class ExtensionRuntimeManager {
   }
 
   notifyGameExit(event: unknown) {
+    if (!this.enabled) return;
     this.appendLog("system", "info", `分发游戏退出生命周期事件给 ${this.onExitListeners.length} 个监听器`);
     for (const listener of this.onExitListeners) {
       try {

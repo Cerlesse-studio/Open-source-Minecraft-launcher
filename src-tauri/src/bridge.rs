@@ -122,7 +122,7 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             .await?,
         ),
         "download_content_file" => {
-            to_value(crate::download_content_file(argument(&args, "request")?).await?)
+            to_value(crate::download_content_file(app.clone(), argument(&args, "request")?).await?)
         }
         "get_version_loaders" => {
             to_value(crate::get_version_loaders(argument(&args, "mcVersion")?).await?)
@@ -425,11 +425,14 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             )
             .await?,
         ),
-        "stop_multiplayer" => to_value(crate::multiplayer::stop_multiplayer(
-            app.clone(),
-            argument(&args, "root")?,
-            app.state::<MultiplayerState>(),
-        )),
+        "stop_multiplayer" => to_value(
+            crate::multiplayer::stop_multiplayer(
+                app.clone(),
+                argument(&args, "root")?,
+                app.state::<MultiplayerState>(),
+            )
+            .await,
+        ),
         "start_room_resources" => to_value(
             crate::multiplayer::start_room_resources(
                 argument(&args, "root")?,
@@ -448,6 +451,21 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
                 argument(&args, "host")?,
                 argument(&args, "port")?,
                 argument(&args, "token")?,
+                argument(&args, "timeoutMs")?,
+                app.state::<MultiplayerState>(),
+            )
+            .await?,
+        ),
+        "clone_room_resources" => to_value(
+            crate::multiplayer::clone_room_resources(
+                app.clone(),
+                argument(&args, "root")?,
+                argument(&args, "host")?,
+                argument(&args, "port")?,
+                argument(&args, "token")?,
+                argument(&args, "includeMods")?,
+                argument(&args, "includeShaders")?,
+                argument(&args, "includeDatapacks")?,
                 app.state::<MultiplayerState>(),
             )
             .await?,
@@ -455,6 +473,14 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
         "get_multiplayer_peers" => to_value(
             crate::multiplayer::get_multiplayer_peers(
                 argument(&args, "root")?,
+                app.state::<MultiplayerState>(),
+            )
+            .await?,
+        ),
+        "add_multiplayer_peer" => to_value(
+            crate::multiplayer::add_multiplayer_peer(
+                argument(&args, "root")?,
+                argument(&args, "peer")?,
                 app.state::<MultiplayerState>(),
             )
             .await?,
@@ -482,6 +508,9 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
         }
         "probe_multiplayer_endpoint" => {
             to_value(crate::multiplayer::probe_multiplayer_endpoint(argument(&args, "peer")?).await)
+        }
+        "probe_multiplayer_latency" => {
+            to_value(crate::multiplayer::probe_multiplayer_latency(argument(&args, "peer")?).await)
         }
         "read_minecraft_lan_port" => to_value(
             crate::multiplayer::read_minecraft_lan_port(
@@ -514,9 +543,9 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             app.state::<MultiplayerState>(),
             argument(&args, "localPort")?,
         )),
-        "list_extensions" => to_value(
-            crate::list_extensions(app.clone(), argument(&args, "root").ok()).await?,
-        ),
+        "list_extensions" => {
+            to_value(crate::list_extensions(app.clone(), argument(&args, "root").ok()).await?)
+        }
         "install_extension_zip" => to_value(
             crate::install_extension_zip(
                 app.clone(),
@@ -584,7 +613,13 @@ pub fn run() {
     let runtime = tokio::runtime::Runtime::new().expect("failed to start async runtime");
     let app = AppHandle::default();
     for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Error reading stdin line: {e}");
+                continue;
+            }
+        };
         let request: Request = match serde_json::from_str(&line) {
             Ok(request) => request,
             Err(error) => {

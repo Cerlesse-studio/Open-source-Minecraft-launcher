@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import { isDesktop } from "../lib/backend";
+import { useI18n } from "../lib/i18n";
 import type { GameStateName, OfflineSkinType, ViewId } from "../lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,7 @@ async function withWindow(action: (window: ReturnType<typeof getCurrentWindow>) 
 }
 
 export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
+  const { t } = useI18n();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -69,9 +71,9 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
         <Badge
           variant="outline"
           className="mr-2 border-dashed text-[10px] font-normal text-muted-foreground"
-          title="当前在浏览器中预览，不会下载或启动真实游戏"
+          title={t("当前在浏览器中预览，不会下载或启动真实游戏")}
         >
-          预览模式
+          {t("预览模式")}
         </Badge>
       ) : null}
       <div className="flex items-center gap-0.5 pr-1.5">
@@ -79,7 +81,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
           variant="ghost"
           size="icon-sm"
           className="rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label="最小化"
+          aria-label={t("最小化")}
           onClick={() => withWindow((window) => window.minimize())}
         >
           <Minus />
@@ -88,7 +90,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
           variant="ghost"
           size="icon-sm"
           className="rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label={maximized ? "还原窗口" : "最大化"}
+          aria-label={maximized ? t("还原窗口") : t("最大化")}
           onClick={() =>
             withWindow(async (window) => {
               await window.toggleMaximize();
@@ -102,7 +104,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
           variant="ghost"
           size="icon-sm"
           className="rounded-md text-muted-foreground hover:bg-destructive hover:text-white"
-          aria-label="关闭"
+          aria-label={t("关闭")}
           onClick={() => withWindow((window) => window.close())}
         >
           <X />
@@ -122,7 +124,7 @@ const NAV_ITEMS: Array<{
   {
     id: "multiplayer",
     label: "联机",
-    hint: "把局域网世界通过公网 IPv6 分享给好友",
+    hint: "无需公网 IPv6，通过共享节点分享局域网世界",
     icon: Network,
   },
   { id: "download", label: "下载", hint: "下载新的游戏版本与进入下载进度", icon: Download },
@@ -133,6 +135,7 @@ const NAV_ITEMS: Array<{
 export function Sidebar({
   view,
   onNavigate,
+  onPrefetch,
   playerName,
   installedCount,
   installingVersion,
@@ -148,9 +151,12 @@ export function Sidebar({
   mojangSkinName,
   signedInName,
   skinUrl,
+  extensionsEnabled = true,
 }: {
   view: ViewId;
   onNavigate: (view: ViewId) => void;
+  /** Warm a lazy page chunk before the click actually happens. */
+  onPrefetch?: (view: ViewId) => void;
   playerName: string;
   installedCount: number;
   installingVersion?: string | null;
@@ -167,18 +173,21 @@ export function Sidebar({
   /** Gamertag of the signed-in Microsoft account, shared by both editions. */
   signedInName?: string | null;
   skinUrl?: string | null;
+  /** Settings → Developer master switch; hides the extension entry when off. */
+  extensionsEnabled?: boolean;
 }) {
+  const { t } = useI18n();
   const javaLabel = javaMajor
     ? `Java ${javaMajor}`
     : javaDetecting
-      ? "正在检测 Java"
-      : "Java 未检测到";
+      ? t("正在检测 Java")
+      : t("Java 未检测到");
   const javaDetail = javaMajor
-    ? "启动时会再次校验版本"
+    ? t("启动时会再次校验版本")
     : javaDetecting
-      ? "正在扫描本机与运行时"
-      : "首次启动会自动安装";
-  const toggleLabel = collapsed ? "展开菜单" : "收起菜单";
+      ? t("正在扫描本机与运行时")
+      : t("首次启动会自动安装");
+  const toggleLabel = collapsed ? t("展开菜单") : t("收起菜单");
 
   const isCustomSkin = skinType === "custom" && Boolean(customSkinPath);
   const effectiveName = signedInName || playerName;
@@ -213,10 +222,10 @@ export function Sidebar({
         onClick={() => onNavigate("settings")}
         title={
           collapsed
-            ? `${signedInName || playerName} · 打开启动器设置`
+            ? `${signedInName || playerName} · ${t("打开启动器设置")}`
             : signedInName
-              ? `已登录正版账户 ${signedInName} · 打开启动器设置`
-              : "打开启动器设置"
+              ? t("已登录正版账户 {name} · 打开启动器设置", { name: signedInName })
+              : t("打开启动器设置")
         }
       >
         <div
@@ -250,11 +259,11 @@ export function Sidebar({
                       : "border-border/80 text-muted-foreground",
                   )}
                 >
-                  {signedInName ? "正版" : "离线"}
+                  {signedInName ? t("正版") : t("离线")}
                 </Badge>
               </span>
               <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                {signedInName ? "Java 与基岩版共用此账户" : "本地账户"}
+                {signedInName ? t("Java 与基岩版共用此账户") : t("本地账户")}
               </span>
             </span>
             <Settings2 className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
@@ -264,13 +273,18 @@ export function Sidebar({
 
       {!collapsed ? (
         <p className="mb-2 mt-7 px-3 text-[11px] font-medium text-muted-foreground/70">
-          导航
+          {t("导航")}
         </p>
       ) : (
         <div className="my-4 h-px bg-sidebar-border" />
       )}
-      <nav className={cn("flex flex-col gap-1", collapsed && "mt-0")} aria-label="主导航">
-        {NAV_ITEMS.map((item) => {
+      <nav
+        className={cn("flex flex-col gap-1", collapsed && "mt-0")}
+        aria-label={t("主导航")}
+      >
+        {NAV_ITEMS.filter(
+          (item) => item.id !== "extensions" || extensionsEnabled,
+        ).map((item) => {
           const Icon = item.icon;
           const active =
             view === item.id ||
@@ -286,17 +300,23 @@ export function Sidebar({
                 collapsed
                   ? "mx-auto size-12 justify-center rounded-xl"
                   : "h-9 gap-2.5 rounded-lg px-3",
-                active && "bg-sidebar-accent text-sidebar-accent-foreground",
+                active && "bg-primary/10 border border-primary/25 font-medium text-primary shadow-xs dark:border-transparent dark:bg-sidebar-accent dark:text-sidebar-accent-foreground",
               )}
               onClick={() => onNavigate(item.id)}
+              onPointerEnter={() => onPrefetch?.(item.id)}
+              onFocus={() => onPrefetch?.(item.id)}
               aria-current={active ? "page" : undefined}
-              aria-label={collapsed ? item.label : undefined}
-              title={collapsed ? `${item.label} — ${item.hint}` : item.hint}
+              aria-label={collapsed ? t(item.label) : undefined}
+              title={
+                collapsed
+                  ? `${t(item.label)} — ${t(item.hint)}`
+                  : t(item.hint)
+              }
             >
               {active ? (
                 <span
                   className={cn(
-                    "absolute top-2 bottom-2 w-0.5 rounded-full bg-primary",
+                    "absolute top-1.5 bottom-1.5 w-1 rounded-full bg-primary",
                     collapsed ? "left-1" : "left-0",
                   )}
                 />
@@ -310,7 +330,7 @@ export function Sidebar({
               />
               {!collapsed ? (
                 <>
-                  <span className="flex-1 text-left">{item.label}</span>
+                  <span className="flex-1 text-left">{t(item.label)}</span>
                   {showCount ? (
                     <Badge
                       variant={active ? "secondary" : "outline"}
@@ -325,7 +345,7 @@ export function Sidebar({
                       className="h-5 gap-1 border-gold/35 bg-gold/10 px-1.5 text-[9px] font-normal text-gold"
                     >
                       <StatusDot tone="pending" />
-                      下载中
+                      {t("下载中")}
                     </Badge>
                   ) : null}
                 </>
@@ -398,7 +418,11 @@ export function Sidebar({
           "mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/70",
           collapsed ? "justify-center" : "px-1",
         )}
-        title={collapsed ? `Open-source-Minecraft-launcher ${launcherVersion} · ${runtimeStatus === "running" ? "运行中" : "空闲"}` : undefined}
+        title={
+          collapsed
+            ? `Open-source-Minecraft-launcher ${launcherVersion} · ${runtimeStatus === "running" ? t("运行中") : t("空闲")}`
+            : undefined
+        }
       >
         <img src="/logo.png" alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
         {!collapsed ? (
@@ -406,7 +430,7 @@ export function Sidebar({
             <span className="font-mono">Open-source-Minecraft-launcher {launcherVersion}</span>
             <span className="ml-auto flex items-center gap-1.5">
               <StatusDot tone={runtimeStatus === "running" ? "live" : "muted"} />
-              {runtimeStatus === "running" ? "运行中" : "空闲"}
+              {runtimeStatus === "running" ? t("运行中") : t("空闲")}
             </span>
           </>
         ) : null}

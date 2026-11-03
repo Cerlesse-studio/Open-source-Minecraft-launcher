@@ -1,5 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const events = new Set(['install:progress', 'game:log', 'game:status', 'game:exit', 'multiplayer:status', 'multiplayer:log', 'multiplayer:install']);
+const events = new Set([
+  'install:progress',
+  'content:progress',
+  'game:log',
+  'game:status',
+  'game:exit',
+  'multiplayer:status',
+  'multiplayer:log',
+  'multiplayer:install',
+  'update:progress',
+]);
 contextBridge.exposeInMainWorld('launcher', {
   invoke: (command, args) => ipcRenderer.invoke('core:invoke', command, args),
   listen: (event, handler) => {

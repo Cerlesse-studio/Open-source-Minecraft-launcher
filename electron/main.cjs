@@ -7,6 +7,7 @@ const readline = require('node:readline');
 const { performance } = require('node:perf_hooks');
 const { readElectronFuses } = require('./fuses.cjs');
 const { collectBaselineReport } = require('./measure-baseline.cjs');
+const updater = require('./updater.cjs');
 
 const bootStartTime = performance.now();
 let readyInteractiveMs = null;
@@ -118,6 +119,17 @@ let loginWindow;
 let core;
 let nextId = 0;
 const pending = new Map();
+
+// ============================================================================
+// 开发者选项：F12 DevTools / 后台核心进程日志
+// ============================================================================
+let devToolsEnabled = false;
+let backendConsoleEnabled = false;
+let backendConsoleWindow = null;
+let backendLogPath = null;
+let backendLogStream = null;
+let backendLogLines = [];
+const BACKEND_LOG_LIMIT = 4000;
 // Without an explicit icon Electron shows its own logo on the window and the
 // taskbar (always in development, where electron.exe is the running binary).
 const appIcon = app.isPackaged
@@ -131,43 +143,102 @@ const appIcon = app.isPackaged
     );
 const events = new Set([
   'install:progress',
+  'content:progress',
   'game:log',
   'game:status',
   'game:exit',
   'multiplayer:status',
   'multiplayer:log',
   'multiplayer:install',
+  'update:progress',
 ]);
 
-function startCore() {
+function resolveCoreBinary() {
   const binary = `open-source-minecraft-launcher${process.platform === 'win32' ? '.exe' : ''}`;
-  const binaryPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'core', binary)
-    : path.join(__dirname, '..', 'src-tauri', 'target', 'debug', binary);
-  // Tauri stored accounts in its application config directory, named by its identifier.
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'core', binary),
+        path.join(path.dirname(process.execPath), 'resources', 'core', binary),
+        path.join(process.resourcesPath, binary),
+        path.join(path.dirname(process.execPath), binary),
+      ]
+    : [
+        path.join(__dirname, '..', 'src-tauri', 'target', 'release', binary),
+        path.join(__dirname, '..', 'src-tauri', 'target', 'debug', binary),
+      ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
+
+function startCore() {
+  if (core && core.stdin && core.stdin.writable && core.exitCode === null) {
+    return;
+  }
+  const binaryPath = resolveCoreBinary();
   const config = path.join(app.getPath('appData'), 'com.opensource.minecraft.launcher');
   const resources = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', 'src-tauri');
-  core = spawn(binaryPath, [], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-    env: {
-      ...process.env,
-      OSML_HOME: app.getPath('home'),
-      OSML_CONFIG: config,
-      OSML_RESOURCES: resources,
-    },
+
+  appendBackendLog('system', `启动核心进程: ${binaryPath}`);
+  appendBackendLog('system', `工作目录: ${config}`);
+  try {
+    core = spawn(binaryPath, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: {
+        ...process.env,
+        OSML_HOME: app.getPath('home'),
+        OSML_CONFIG: config,
+        OSML_RESOURCES: resources,
+      },
+    });
+    appendBackendLog('system', `核心进程 PID: ${core.pid ?? '未知'}`);
+  } catch (err) {
+    console.error('启动核心进程失败:', err);
+    appendBackendLog('system', `启动核心进程失败: ${err}`);
+    failPending(err);
+    return;
+  }
+
+  core.stderr.on('data', (data) => {
+    process.stderr.write(data);
+    appendBackendLog('stderr', data);
   });
-  core.stderr.on('data', (data) => process.stderr.write(data));
-  core.on('error', failPending);
-  core.on('exit', (code) => failPending(new Error(`核心进程已退出 (${code})`)));
-  core.stdin.on('error', failPending);
+  core.on('error', (err) => {
+    console.error('核心进程异常:', err);
+    appendBackendLog('system', `核心进程异常: ${err}`);
+    failPending(err);
+  });
+  core.on('exit', (code, signal) => {
+    console.warn(`核心进程已退出 (code=${code}, signal=${signal})`);
+    appendBackendLog('system', `核心进程已退出 (code=${code}, signal=${signal})`);
+    failPending(new Error(`核心进程已退出 (${code})`));
+  });
+  core.stdin.on('error', (err) => {
+    console.error('核心进程输入流异常:', err);
+    appendBackendLog('system', `核心进程输入流异常: ${err}`);
+    failPending(err);
+  });
   readline.createInterface({ input: core.stdout }).on('line', (line) => {
     let message;
     try {
       message = JSON.parse(line);
     } catch {
-      console.error('核心进程输出无效');
+      console.error('核心进程输出无效:', line);
+      appendBackendLog('stdout', line);
       return;
+    }
+    if (message.event) {
+      appendBackendLog('event', String(message.event));
+    } else if (message.id != null) {
+      appendBackendLog(
+        'ipc',
+        `#${message.id} ${message.error != null ? `失败: ${message.error}` : '完成'}`,
+      );
     }
     if (events.has(message.event) && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('core:event', message.event, message.payload);
@@ -186,7 +257,17 @@ function failPending(error) {
 }
 
 function invokeCore(command, args) {
-  if (!core || !core.stdin.writable) return Promise.reject(new Error('核心进程不可用'));
+  if (!core || !core.stdin || !core.stdin.writable || core.exitCode !== null) {
+    console.warn('核心进程未就绪，正在尝试拉起核心进程...');
+    try {
+      startCore();
+    } catch (e) {
+      return Promise.reject(new Error('核心进程不可用: ' + e.message));
+    }
+  }
+  if (!core || !core.stdin || !core.stdin.writable) {
+    return Promise.reject(new Error('核心进程不可用'));
+  }
   const id = ++nextId;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -254,6 +335,257 @@ async function openLogin(url) {
   await loginWindow.loadURL(url);
   loginWindow.show();
   loginWindow.focus();
+}
+
+function ensureBackendLogFile() {
+  if (backendLogPath) return backendLogPath;
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, 'core-console.log');
+    try {
+      if (fs.statSync(logPath).size > 5 * 1024 * 1024) fs.truncateSync(logPath, 0);
+    } catch {
+      // A missing or unreadable previous log is fine; create it below.
+    }
+    backendLogStream = fs.createWriteStream(logPath, { flags: 'a' });
+    backendLogStream.on('error', (error) => {
+      console.error('后台日志写入失败:', error);
+      backendLogStream = null;
+    });
+    backendLogPath = logPath;
+  } catch (error) {
+    console.error('无法创建后台日志文件:', error);
+    backendLogPath = null;
+  }
+  return backendLogPath;
+}
+
+function sanitizeBackendLogText(value) {
+  return String(value)
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(
+      /((?:access[_-]?token|refresh[_-]?token|device[_-]?code|authorization|password|secret)\s*["']?\s*[:=]\s*["']?)([^"'\s,}]+)/gi,
+      '$1***',
+    );
+}
+
+function appendBackendLog(stream, value) {
+  if (!backendConsoleEnabled) return;
+  ensureBackendLogFile();
+  const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const text = sanitizeBackendLogText(value).replace(/\r/g, '');
+  for (const raw of text.split('\n')) {
+    const line = raw.trimEnd();
+    if (!line) continue;
+    const entry = `[${stamp}] [${stream}] ${line}`;
+    backendLogLines.push(entry);
+    if (backendLogLines.length > BACKEND_LOG_LIMIT) backendLogLines.shift();
+    if (backendLogStream) backendLogStream.write(entry + '\n');
+    if (backendConsoleWindow && !backendConsoleWindow.isDestroyed()) {
+      backendConsoleWindow.webContents.send('backend:log', entry);
+    }
+  }
+}
+
+function backendConsoleHtml() {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>后台进程日志 — CMD</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: #050807; color: #c9d6ce; font: 12px/1.55 "Cascadia Mono", "Consolas", "Geist Mono", monospace; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #1d2b23; background: #0a100d; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #9bdd6b; box-shadow: 0 0 8px rgba(155,221,107,.7); flex: none; }
+  h1 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: #d7e6dc; white-space: nowrap; }
+  .hint { color: #5f7468; font-size: 10.5px; }
+  .spacer { flex: 1; }
+  button { border: 1px solid #263a2e; background: #101a14; color: #a9bbaf; border-radius: 5px; padding: 4px 9px; font: inherit; font-size: 10.5px; cursor: pointer; }
+  button:hover { border-color: #3f6b4e; color: #d7e6dc; }
+  main { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px 18px; }
+  #log { min-height: 100%; }
+  .row { white-space: pre-wrap; overflow-wrap: anywhere; color: #93a69a; }
+  .row.system { color: #9bdd6b; }
+  .row.stderr { color: #f0a3a3; }
+  .row.event { color: #86b8e8; }
+  .row.ipc { color: #7f9187; }
+  footer { display: flex; align-items: center; gap: 12px; padding: 7px 14px; border-top: 1px solid #1d2b23; background: #0a100d; color: #5f7468; font-size: 10px; }
+  label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  input { accent-color: #9bdd6b; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>后台进程日志</h1>
+  <span class="hint">Rust Core · stdout / stderr</span>
+  <span class="spacer"></span>
+  <button id="copy" type="button">复制全部</button>
+  <button id="clear" type="button">清空窗口</button>
+</header>
+<main><div id="log"></div></main>
+<footer>
+  <span id="count">0 行</span>
+  <span id="message"></span>
+  <span class="spacer"></span>
+  <label><input id="follow" type="checkbox" checked /> 自动滚动</label>
+</footer>
+<script>
+(function () {
+  var logEl = document.getElementById('log');
+  var countEl = document.getElementById('count');
+  var messageEl = document.getElementById('message');
+  var followEl = document.getElementById('follow');
+  var lines = [];
+  var LIMIT = 4000;
+  function rowClass(text) {
+    if (text.indexOf('[system]') !== -1) return 'row system';
+    if (text.indexOf('[stderr]') !== -1) return 'row stderr';
+    if (text.indexOf('[event]') !== -1) return 'row event';
+    if (text.indexOf('[ipc]') !== -1) return 'row ipc';
+    return 'row';
+  }
+  function makeRow(text) {
+    var row = document.createElement('div');
+    row.className = rowClass(text);
+    row.textContent = text;
+    return row;
+  }
+  function updateCount() { countEl.textContent = lines.length + ' 行'; }
+  function render() {
+    logEl.textContent = '';
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < lines.length; i += 1) fragment.appendChild(makeRow(lines[i]));
+    logEl.appendChild(fragment);
+    updateCount();
+    if (followEl.checked) logEl.scrollTop = logEl.scrollHeight;
+  }
+  function append(text) {
+    lines.push(text);
+    if (lines.length > LIMIT) lines.shift();
+    if (logEl.childElementCount >= LIMIT && logEl.firstChild) logEl.removeChild(logEl.firstChild);
+    logEl.appendChild(makeRow(text));
+    updateCount();
+    if (followEl.checked) logEl.scrollTop = logEl.scrollHeight;
+  }
+  window.backendConsole.onSnapshot(function (snapshot) {
+    lines = Array.isArray(snapshot) ? snapshot.slice(-LIMIT) : [];
+    render();
+  });
+  window.backendConsole.onLine(append);
+  document.getElementById('copy').addEventListener('click', function () {
+    if (!lines.length) return;
+    var area = document.createElement('textarea');
+    area.value = lines.join(String.fromCharCode(10));
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand('copy'); messageEl.textContent = '已复制'; }
+    catch (error) { messageEl.textContent = '复制失败'; }
+    document.body.removeChild(area);
+    setTimeout(function () { messageEl.textContent = ''; }, 1600);
+  });
+  document.getElementById('clear').addEventListener('click', function () {
+    lines = [];
+    logEl.textContent = '';
+    updateCount();
+    messageEl.textContent = '窗口已清空，主进程仍在记录';
+    setTimeout(function () { messageEl.textContent = ''; }, 2200);
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+function sendBackendSnapshot() {
+  if (!backendConsoleWindow || backendConsoleWindow.isDestroyed()) return;
+  backendConsoleWindow.webContents.send('backend:snapshot', backendLogLines.slice(-BACKEND_LOG_LIMIT));
+}
+
+function openBackendConsoleWindow() {
+  if (!backendConsoleEnabled) return null;
+  ensureBackendLogFile();
+  if (backendConsoleWindow && !backendConsoleWindow.isDestroyed()) {
+    backendConsoleWindow.show();
+    backendConsoleWindow.focus();
+    return backendConsoleWindow;
+  }
+  backendConsoleWindow = new BrowserWindow({
+    title: '后台进程日志 — CMD',
+    width: 940,
+    height: 620,
+    minWidth: 620,
+    minHeight: 360,
+    icon: appIcon,
+    backgroundColor: '#050807',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      devTools: devToolsEnabled,
+      preload: path.join(__dirname, 'backend-console-preload.cjs'),
+    },
+  });
+  backendConsoleWindow.setMenuBarVisibility(false);
+  backendConsoleWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  backendConsoleWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  backendConsoleWindow.on('closed', () => {
+    backendConsoleWindow = null;
+  });
+  // A data: URL can finish loading before its inline script installs the
+  // preload listeners; a short delay makes the initial history reliable.
+  backendConsoleWindow.webContents.once('did-finish-load', () => {
+    setTimeout(sendBackendSnapshot, 120);
+  });
+  backendConsoleWindow.loadURL(
+    'data:text/html;charset=utf-8,' + encodeURIComponent(backendConsoleHtml()),
+  );
+  return backendConsoleWindow;
+}
+
+function closeBackendConsoleWindow() {
+  if (backendConsoleWindow && !backendConsoleWindow.isDestroyed()) backendConsoleWindow.close();
+  backendConsoleWindow = null;
+}
+
+function applyDeveloperOptions(options = {}) {
+  const nextDevTools = options.devToolsEnabled === true;
+  if (!nextDevTools) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.closeDevTools();
+    if (backendConsoleWindow && !backendConsoleWindow.isDestroyed()) {
+      backendConsoleWindow.webContents.closeDevTools();
+    }
+  }
+  devToolsEnabled = nextDevTools;
+
+  const nextBackendConsole = options.backendConsoleEnabled === true;
+  const nextBackendConsolePreviouslyEnabled = backendConsoleEnabled;
+  if (!nextBackendConsole) {
+    backendConsoleEnabled = false;
+    backendLogLines = [];
+    closeBackendConsoleWindow();
+  } else if (!backendConsoleEnabled) {
+    backendConsoleEnabled = true;
+    appendBackendLog('system', '已启用后台进程日志捕获，等待 Rust 核心输出…');
+  }
+
+  if (backendConsoleEnabled) {
+    ensureBackendLogFile();
+    if (options.openConsole === true || !nextBackendConsolePreviouslyEnabled) openBackendConsoleWindow();
+  }
+
+  return {
+    devToolsEnabled,
+    backendConsoleEnabled,
+    logPath: backendConsoleEnabled ? backendLogPath : null,
+    consoleOpen: Boolean(backendConsoleWindow && !backendConsoleWindow.isDestroyed()),
+  };
 }
 
 function getElectronChromiumProfile() {
@@ -365,6 +697,21 @@ app.whenReady().then(async () => {
 
   applyPrunedFeatureGuards(mainWindow.webContents);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = String(input.key || '');
+    const isF12 = key === 'F12';
+    const isInspectShortcut =
+      (input.control || input.meta) && input.shift && key.toLowerCase() === 'i';
+    if (!isF12 && !isInspectShortcut) return;
+    event.preventDefault();
+    if (!devToolsEnabled) return;
+    if (mainWindow.webContents.isDevToolsOpened()) mainWindow.webContents.closeDevTools();
+    else mainWindow.webContents.openDevTools({ mode: 'detach' });
+  });
+  mainWindow.webContents.on('devtools-opened', () => {
+    if (!devToolsEnabled) mainWindow.webContents.closeDevTools();
+  });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const allowed = app.isPackaged
       ? url.startsWith('launcher://app/')
@@ -410,6 +757,28 @@ app.whenReady().then(async () => {
       if (error) throw new Error(error);
       return;
     }
+    if (command === 'configure_developer_options') return applyDeveloperOptions(args);
+    if (command === 'get_developer_options') {
+      return {
+        devToolsEnabled,
+        backendConsoleEnabled,
+        logPath: backendLogPath,
+        consoleOpen: Boolean(backendConsoleWindow && !backendConsoleWindow.isDestroyed()),
+      };
+    }
+    if (command === 'check_app_update') return updater.checkForUpdate();
+    if (command === 'download_app_update') {
+      return updater.downloadUpdate(
+        args?.asset,
+        (progress) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('core:event', 'update:progress', progress);
+          }
+        },
+        Boolean(args?.force),
+      );
+    }
+    if (command === 'install_app_update') return updater.installUpdate(args?.path);
     return invokeCore(command, args);
   });
 

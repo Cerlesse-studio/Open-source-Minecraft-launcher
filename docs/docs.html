@@ -165,7 +165,7 @@
                 <tr><td>Rust</td><td>stable，1.85+（项目使用 edition 2024）</td></tr>
                 <tr><td>桌面运行时</td><td>Electron 内置 Chromium，不依赖 WebView2 或 WebKitGTK。</td></tr>
                 <tr><td>网络</td><td>首次安装版本、依赖和 Java 需要联网</td></tr>
-                <tr><td>其他</td><td>基岩版需要 Windows 10 / 11；联机需要公网 IPv6</td></tr>
+                <tr><td>其他</td><td>基岩版需要 Windows 10 / 11；联机默认使用 IPv6 双向直连，不联系 STUN、信令或中继；需要双方有公网 IPv6，并放行本机 TCP/UDP 11010</td></tr>
               </tbody>
             </table>
           </div>
@@ -193,12 +193,17 @@ npm run start</code></pre>
             <p><span class="callout-title">Windows PowerShell</span>如果提示「无法加载 npm.ps1，因为在此系统上禁止运行脚本」，改用 <code>npm.cmd run start</code>，或在 <code>cmd</code> 中执行 <code>npm run start</code>。</p>
           </div>
 
-          <h3>构建安装包</h3>
+          <h3>构建单文件与安装包</h3>
+          <p>项目支持一键打包 Windows 独立单文件可执行文件（免安装版）或安装包：</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
-            <pre><code>npm run electron:build</code></pre>
+            <pre><code># 一键打包单文件（免安装独立 EXE）
+npm run electron:build:portable
+
+# 一键打包安装包（NSIS Setup 安装程序）
+npm run electron:build:nsis</code></pre>
           </div>
-          <p>构建产物输出在 <code>release/</code>。首次构建需要编译全部 Rust 依赖，会比日常开发慢很多。</p>
+          <p>单文件免安装产物输出在 <code>release/Open-source-Minecraft-launcher.exe</code>。首次构建需要编译全部 Rust 依赖，耗时较长。</p>
 
           <h3>测试</h3>
           <div class="code-block">
@@ -302,22 +307,22 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 
         <section class="doc-section" id="multiplayer">
           <h2><span class="h2-index">07</span>联机</h2>
-          <p>联机以内置的 <a href="https://easytier.cn" target="_blank" rel="noopener">EasyTier</a> v2.6.4 为内核，用公网 IPv6 做点对点直连，不依赖中转服务器。</p>
+          <p>联机以内置的 <a href="https://easytier.cn" target="_blank" rel="noopener">EasyTier</a> v2.6.4 为内核。默认是 <strong>IPv6 双向直连</strong>：房主发分享码，访客回执码，双方同时向对方的 IPv6 发包；启动器不联系 STUN、信令或中继，数据只经过两台电脑。</p>
 
           <h3>三步开房</h3>
           <ol>
             <li><strong>装内核</strong>：双方进入「联机」页安装 EasyTier 内核。任务由后端持有，切页、重启启动器都可继续下载。</li>
-            <li><strong>创建房间</strong>：房主选择本机的公网 IPv6 作为入口；进入游戏后点「对局域网开放」，启动器会从本次 <code>logs/latest.log</code> 自动读取端口并生成分享码。</li>
+            <li><strong>创建房间</strong>：保持「IPv6 直连（默认）」；进入游戏后点「对局域网开放」，启动器会从本次 <code>logs/latest.log</code> 自动读取端口并生成分享码。访客加入后把房间页的回执码发回房主，房主在「纯 IPv6 P2P」面板粘贴并点「登记」。</li>
             <li><strong>加入房间</strong>：好友粘贴整段分享码加入，打开游戏「多人游戏 → 局域网」即可看到世界；也可以手动直连房间页给出的 <code>10.126.126.x:端口</code>。</li>
           </ol>
 
           <h3>分享码与局域网发现</h3>
-          <p>分享码格式为 <code>cobble-mp://join?name=…&amp;secret=…&amp;peer=…&amp;ip=…&amp;port=…</code>，把网络标识、密钥、房主入口地址、虚拟地址和世界端口打包成一段文本。房主监听 <code>tcp://[::]:11010</code> / <code>udp://[::]:11010</code>，访客把房主公网 IPv6 作为初始对等节点。</p>
+          <p>分享码格式为 <code>cobble-mp://join?name=…&amp;secret=…&amp;peer=…&amp;ip=…&amp;port=…</code>，访客回执码格式为 <code>cobble-mp://reply?name=…&amp;peer=…</code>。直连模式监听 <code>tcp://[::]:11010</code> / <code>udp://[::]:11010</code>，并以 <code>--p2p-only</code> 运行；中继模式只有手动切换并填节点才启用，以 <code>--no-listener</code> 启动。</p>
           <p>点「显示到局域网」后，后端会在 <code>127.0.0.1</code> 上开一个 TCP 代理，并持续向 <code>224.0.2.60:4445</code> 与 <code>127.0.0.1:4445</code> 发送 <code>[MOTD]…[/MOTD][AD]…[/AD]</code>，好友的世界会直接出现在「多人游戏 → 局域网」里。</p>
 
-          <div class="callout callout-warn">
+          <div class="callout">
             <svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg>
-            <p><span class="callout-title">公网 IPv6 是硬性条件</span>当前设计不内置中转节点。双方都需要可用的公网 IPv6；房主还需要放行 TCP / UDP <code>11010</code> 与 Minecraft 世界端口，路由器 / 光猫一侧要自行做对应放行。</p>
+            <p><span class="callout-title">路由器限制</span>启动器会自动放行 Windows 防火墙的本机 TCP/UDP <code>11010</code>，不需要端口映射。但如果路由器的 IPv6 防火墙直接丢弃入站包，直连仍会失败，软件无法远程修改路由器；此时需要在路由器 IPv6 防火墙放行 UDP <code>11010</code>，或改用自建中继。公共共享节点是可选第三方路径，默认关闭，不会自动切换。完整说明见 <a href="multiplayer-network.md">联机网络方案</a>。</p>
           </div>
         </section>
 
@@ -432,10 +437,16 @@ npm run build
 # Rust 单测
 cargo test --manifest-path src-tauri/Cargo.toml
 
+# 一键打包单文件免安装独立 EXE（输出至 release/Open-source-Minecraft-launcher.exe）
+npm run electron:build:portable
+
+# 一键打包 NSIS 安装包
+npm run electron:build:nsis
+
 # 可选的下载 / 启动冒烟测试（会真实下载并尝试启动游戏）
 cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></pre>
           </div>
-          <p>安装包由 <code>npm run electron:build</code> 生成，产物位于 <code>release/</code>。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
+          <p>打包单文件推荐运行 <code>npm run electron:build:portable</code>，生成单个免安装的 <code>Open-source-Minecraft-launcher.exe</code> 文件。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
 
           <div class="doc-grid">
             <div class="doc-mini-card"><strong>格式化</strong><span><code>cargo fmt --manifest-path src-tauri/Cargo.toml -- --check</code></span></div>
@@ -460,7 +471,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
             </details>
             <details class="faq">
               <summary>联机需要公网 IPv6 吗？</summary>
-              <div class="faq-body"><p>是。当前设计是公网 IPv6 点对点直连，不内置中转节点。双方都需要可用的公网 IPv6；房主还需要放行 TCP / UDP <code>11010</code> 与 Minecraft 世界端口。</p></div>
+              <div class="faq-body"><p>默认的 IPv6 双向直连需要双方都有公网 IPv6，并放行本机 TCP/UDP <code>11010</code>。启动器不联系 STUN、信令或中继；路由器通常不需要端口映射，但如果其 IPv6 防火墙直接丢弃入站包，仍需在路由器放行或改用自建中继。没有公网 IPv6 时，可在创建页切换到公益节点或自建中继模式。</p></div>
             </details>
             <details class="faq">
               <summary>下载慢、镜像 404 或经常中断怎么办？</summary>
@@ -504,7 +515,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
           <h3>产品</h3>
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
-            <a href="index.html#preview">界面预览</a>
+            <a href="index.html#capabilities">功能</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>

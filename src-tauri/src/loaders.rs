@@ -889,6 +889,10 @@ pub fn get_installer_info(
     }
 }
 
+static VALID_PATCHED_JAR_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, u64, std::time::SystemTime)>>,
+> = std::sync::OnceLock::new();
+
 pub fn is_valid_patched_client_jar(path: &Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
@@ -896,19 +900,38 @@ pub fn is_valid_patched_client_jar(path: &Path) -> bool {
     let Ok(meta) = file.metadata() else {
         return false;
     };
-    if meta.len() < 100 * 1024 {
+    let len = meta.len();
+    if len < 100 * 1024 {
         return false;
     }
+    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let cache_key = (path.to_path_buf(), len, mtime);
+
+    let cache = VALID_PATCHED_JAR_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    if let Ok(guard) = cache.lock() {
+        if guard.contains(&cache_key) {
+            return true;
+        }
+    }
+
     let Ok(mut archive) = zip::ZipArchive::new(file) else {
         return false;
     };
     let has_mc = archive
         .by_name("net/minecraft/client/Minecraft.class")
         .is_ok();
-    has_mc
+    let valid = has_mc
         || archive
             .by_name("net/minecraft/client/main/Main.class")
-            .is_ok()
+            .is_ok();
+
+    if valid {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(cache_key);
+        }
+    }
+    valid
 }
 
 pub async fn ensure_forge_or_neoforge_client_jar(
@@ -932,7 +955,9 @@ pub async fn ensure_forge_or_neoforge_client_jar(
     let client_rel_path = if loader_type == "neoforge" {
         format!("net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-client.jar")
     } else {
-        format!("net/minecraftforge/forge/{clean_mc}-{loader_version}/forge-{clean_mc}-{loader_version}-client.jar")
+        format!(
+            "net/minecraftforge/forge/{clean_mc}-{loader_version}/forge-{clean_mc}-{loader_version}-client.jar"
+        )
     };
     let client_jar_path = libraries_dir.join(&client_rel_path);
 
@@ -1016,8 +1041,16 @@ pub async fn ensure_forge_or_neoforge_client_jar(
         let mut ok = false;
         let mut last_err = String::new();
         for url in &installer_urls {
-            match net::download_file_multithreaded(url, &installer_path, None, None, 4, None, None)
-                .await
+            match net::download_file_multithreaded(
+                url,
+                &installer_path,
+                None,
+                None,
+                net::download_threads(),
+                None,
+                None,
+            )
+            .await
             {
                 Ok(_) => {
                     ok = true;
@@ -1126,8 +1159,16 @@ async fn apply_forge_or_neoforge(
         let mut last_err = String::new();
         let mut ok = false;
         for url in &installer_urls {
-            match net::download_file_multithreaded(url, &installer_path, None, None, 4, None, None)
-                .await
+            match net::download_file_multithreaded(
+                url,
+                &installer_path,
+                None,
+                None,
+                net::download_threads(),
+                None,
+                None,
+            )
+            .await
             {
                 Ok(_) => {
                     ok = true;

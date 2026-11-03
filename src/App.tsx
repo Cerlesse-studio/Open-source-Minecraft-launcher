@@ -1,13 +1,15 @@
 import {
-  lazy,
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentType,
   type CSSProperties,
 } from "react";
+import { LoaderCircle } from "lucide-react";
 import { getCurrentWindow } from "@/lib/desktop";
 import { Sidebar, TitleBar } from "./components/Chrome";
 import type { DownloadFileEvent } from "./components/DownloadsView";
@@ -15,55 +17,129 @@ import { HomeView } from "./components/HomeView";
 import { extensionRuntime } from "./lib/extensions";
 import type { LogEntry } from "./components/Console";
 
-const DownloadCatalogView = lazy(() =>
-  import("./components/DownloadCatalogView").then((m) => ({
-    default: m.DownloadCatalogView,
-  })),
+/**
+ * Preloadable replacement for React.lazy.
+ *
+ * React.lazy still starts its loader on the first render even when the module
+ * was already imported, so that first visit spends an extra Suspense cycle.
+ * Caching the resolved component here lets a preloaded page render
+ * synchronously on its first click.
+ */
+function createLazyView<P extends object>(
+  loader: () => Promise<ComponentType<P>>,
+) {
+  let component: ComponentType<P> | null = null;
+  let loading: Promise<void> | null = null;
+  let failure: unknown = null;
+
+  const preload = () => {
+    if (!loading) {
+      loading = loader().then(
+        (loaded) => {
+          component = loaded;
+        },
+        (error) => {
+          // Resolve instead of rejecting so a failed hover preload does not
+          // become an unhandled rejection. The retry throws `failure`.
+          failure = error;
+        },
+      );
+    }
+    return loading;
+  };
+
+  function View(props: P) {
+    if (failure) throw failure;
+    if (!component) throw preload();
+    const Loaded = component;
+    return <Loaded {...props} />;
+  }
+
+  return { preload, View };
+}
+
+const downloadCatalogView = createLazyView(() =>
+  import("./components/DownloadCatalogView").then((m) => m.DownloadCatalogView),
 );
-const DownloadsView = lazy(() =>
-  import("./components/DownloadsView").then((m) => ({
-    default: m.DownloadsView,
-  })),
+const downloadsView = createLazyView(() =>
+  import("./components/DownloadsView").then((m) => m.DownloadsView),
 );
-const MultiplayerView = lazy(() =>
-  import("./components/MultiplayerView").then((m) => ({
-    default: m.MultiplayerView,
-  })),
+const multiplayerView = createLazyView(() =>
+  import("./components/MultiplayerView").then((m) => m.MultiplayerView),
 );
-const SettingsView = lazy(() =>
-  import("./components/SettingsView").then((m) => ({
-    default: m.SettingsView,
-  })),
+const settingsView = createLazyView(() =>
+  import("./components/SettingsView").then((m) => m.SettingsView),
 );
-const ExtensionsView = lazy(() =>
-  import("./components/ExtensionsView").then((m) => ({
-    default: m.ExtensionsView,
-  })),
+const extensionsView = createLazyView(() =>
+  import("./components/ExtensionsView").then((m) => m.ExtensionsView),
 );
-const VersionInstallView = lazy(() =>
-  import("./components/VersionInstallView").then((m) => ({
-    default: m.VersionInstallView,
-  })),
+const versionInstallView = createLazyView(() =>
+  import("./components/VersionInstallView").then((m) => m.VersionInstallView),
 );
-const VersionSelectView = lazy(() =>
-  import("./components/VersionSelectView").then((m) => ({
-    default: m.VersionSelectView,
-  })),
+const versionSelectView = createLazyView(() =>
+  import("./components/VersionSelectView").then((m) => m.VersionSelectView),
 );
-const VersionSettingsView = lazy(() =>
-  import("./components/VersionSettingsView").then((m) => ({
-    default: m.VersionSettingsView,
-  })),
+const versionSettingsView = createLazyView(() =>
+  import("./components/VersionSettingsView").then((m) => m.VersionSettingsView),
 );
-const AccountDialog = lazy(() =>
-  import("./components/AccountDialog").then((m) => ({
-    default: m.AccountDialog,
-  })),
+const accountDialog = createLazyView(() =>
+  import("./components/AccountDialog").then((m) => m.AccountDialog),
 );
+
+const DownloadCatalogView = downloadCatalogView.View;
+const DownloadsView = downloadsView.View;
+const MultiplayerView = multiplayerView.View;
+const SettingsView = settingsView.View;
+const ExtensionsView = extensionsView.View;
+const VersionInstallView = versionInstallView.View;
+const VersionSelectView = versionSelectView.View;
+const VersionSettingsView = versionSettingsView.View;
+const AccountDialog = accountDialog.View;
+
+/** Same imports the views used above, wired for the startup/hover warmer. */
+const VIEW_PRELOADERS: Partial<Record<ViewId, () => Promise<void>>> = {
+  multiplayer: multiplayerView.preload,
+  download: downloadCatalogView.preload,
+  "download-progress": downloadsView.preload,
+  "version-select": versionSelectView.preload,
+  "version-install": versionInstallView.preload,
+  "version-settings": versionSettingsView.preload,
+  extensions: extensionsView.preload,
+  settings: settingsView.preload,
+};
+
+function preloadView(view: ViewId) {
+  void VIEW_PRELOADERS[view]?.();
+}
+
+function ViewLoading() {
+  const { t } = useI18n();
+  return (
+    <div
+      aria-busy="true"
+      aria-live="polite"
+      className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8"
+    >
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <LoaderCircle className="size-3.5 animate-spin text-primary" />
+        {t("正在载入页面…")}
+      </div>
+      <div className="mt-4 space-y-3">
+        <div className="h-8 w-48 animate-pulse rounded-md bg-muted/35" />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="h-28 animate-pulse rounded-xl bg-muted/25" />
+          <div className="h-28 animate-pulse rounded-xl bg-muted/25" />
+        </div>
+        <div className="h-48 animate-pulse rounded-xl bg-muted/20" />
+      </div>
+    </div>
+  );
+}
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
   cancelInstall,
+  configureDeveloperOptions,
   deleteBedrockVersion,
   deleteVersion,
   detectJava,
@@ -88,6 +164,7 @@ import {
 import { applyThemeToDom } from "./lib/theme";
 import { timeNow } from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
+import { setLanguage, useI18n } from "./lib/i18n";
 import {
   loadVersionSettings,
   resolveVersionLaunchSettings,
@@ -96,6 +173,7 @@ import {
 } from "./lib/versionSettings";
 import type {
   BackgroundDownloadTask,
+  ContentDownloadProgress,
   BedrockVersionItem,
   DownloadHistoryRecord,
   GameEdition,
@@ -180,6 +258,9 @@ export default function App() {
   const activeAccount = account?.signedIn && !offlineMode ? account : null;
   const [installTarget, setInstallTarget] = useState<VersionSummary | null>(null);
   const [view, setView] = useState<ViewId>("home");
+  const [settingsTab, setSettingsTab] = useState<
+    "account" | "launch" | "download" | "personalization" | "about"
+  >("account");
   const [manifestLoading, setManifestLoading] = useState(true);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
@@ -293,6 +374,17 @@ export default function App() {
     };
     document.addEventListener("contextmenu", onContextMenu);
     return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, []);
+
+  // Warm the lazy pages shortly after startup. A first visit used to spend
+  // hundreds of milliseconds fetching and evaluating the module after the
+  // click; resolving the component here keeps navigation quick. Hovering a
+  // nav item starts the same import earlier for impatient clicks.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      for (const preload of Object.values(VIEW_PRELOADERS)) void preload?.();
+    }, 900);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -454,7 +546,24 @@ export default function App() {
   useEffect(() => {
     settingsRef.current = settings;
     saveSettings(settings);
+    setLanguage(settings.language);
   }, [settings]);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    void configureDeveloperOptions({
+      devToolsEnabled: settings.enableDevTools,
+      backendConsoleEnabled: settings.showBackendConsole,
+    }).catch(() => undefined);
+  }, [settings.enableDevTools, settings.showBackendConsole]);
+
+  useEffect(() => {
+    extensionRuntime.setEnabled(settings.enableExtensions);
+  }, [settings.enableExtensions]);
+
+  useEffect(() => {
+    if (!settings.enableExtensions && view === "extensions") setView("home");
+  }, [settings.enableExtensions, view]);
 
   useEffect(() => {
     versionSettingsRef.current = versionSettings;
@@ -478,6 +587,74 @@ export default function App() {
   }, [sidebarCollapsed]);
 
   /** 内核/组件类下载统一记录在这里，下载页只读这一份状态。 */
+  const applyContentProgress = useCallback((payload: ContentDownloadProgress) => {
+    const isDone = payload.stage === "done";
+    const isError = payload.stage === "error";
+    const status: BackgroundDownloadTask["status"] = isDone
+      ? "done"
+      : isError
+        ? "error"
+        : "running";
+
+    const typeNameMap: Record<string, string> = {
+      mod: "模组",
+      modpack: "整合包",
+      shader: "光影包",
+      resourcepack: "材质包",
+      datapack: "数据包",
+    };
+    const categoryLabel = typeNameMap[payload.projectType] || "组件";
+
+    const task: BackgroundDownloadTask = {
+      id: payload.id,
+      title: payload.title || payload.filename,
+      status,
+      active: !isDone && !isError,
+      stage: payload.stage,
+      detail: payload.detail,
+      doneBytes: payload.doneBytes,
+      totalBytes: payload.totalBytes,
+      speedBps: payload.speedBps,
+      threads: payload.threads,
+      version: categoryLabel,
+      error: payload.error ?? null,
+      startedAt: Date.now(),
+      finishedAt: isDone || isError ? Date.now() : null,
+      resumable: false,
+      partialBytes: payload.doneBytes,
+    };
+
+    setBackgroundTasks((current) => {
+      const existing = current.find((item) => item.id === task.id);
+      const others = current.filter((item) => item.id !== task.id);
+      const updated = {
+        ...task,
+        startedAt: existing?.startedAt ?? task.startedAt,
+      };
+      return [...others, updated].sort((a, b) => a.startedAt - b.startedAt);
+    });
+
+    if (payload.speedBps > 0) {
+      if (payload.speedBps > peakSpeedRef.current) {
+        peakSpeedRef.current = payload.speedBps;
+      }
+      setPeakSpeedBps((prev) => Math.max(prev, payload.speedBps));
+      setSpeedHistory((prev) => [...prev.slice(-23), payload.speedBps]);
+    }
+
+    if (payload.detail) {
+      const ev: DownloadFileEvent = {
+        id: ++fileEventId.current,
+        time: timeNow(),
+        versionId: payload.title || payload.filename,
+        stage: categoryLabel,
+        detail: payload.detail,
+        speedBps: payload.speedBps,
+      };
+      setFileEvents((prev) => [ev, ...prev].slice(0, MAX_FILE_EVENTS));
+    }
+  }, []);
+
   const applyBackgroundTask = useCallback((state: MultiplayerInstallState) => {
     const task = toBackgroundDownloadTask(state);
     if (!task) return;
@@ -733,19 +910,36 @@ export default function App() {
           } catch {}
         }
         if (payload.code !== null && payload.code !== 0) {
+          const detail = payload.detail?.trim();
+          const logPath = payload.logPath?.trim();
+          const extra = [
+            detail || null,
+            logPath ? `启动日志：${logPath}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n");
           pushToast(
             "error",
             "游戏异常退出",
-            `进程返回代码 ${payload.code}。查看运行日志定位问题。`,
+            `进程返回代码 ${payload.code}。${extra ? `\n${extra}` : "查看运行日志定位问题。"}`,
+          );
+          pushLog(
+            "cobble",
+            `游戏返回代码 ${payload.code}${logPath ? `，完整日志：${logPath}` : ""}`,
           );
         }
         void refreshInstalled();
       }),
     );
 
-    track(
+        track(
       subscribe("multiplayer:install", (state) => {
         applyBackgroundTask(state);
+      }),
+    );
+    track(
+      subscribe("content:progress", (payload) => {
+        applyContentProgress(payload);
       }),
     );
 
@@ -1335,8 +1529,10 @@ export default function App() {
     setSettings((current) => ({ ...current, ...patch }));
   }, []);
 
-  useEffect(() => {
-    contentRef.current?.scrollTo({ top: 0 });
+  // Reset before paint: doing this in an effect let the new page show the old
+  // scroll position for a frame, which read as a stutter during navigation.
+  useLayoutEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [view]);
 
   // A single wallpaper layer for the whole window. It has to live outside the
@@ -1378,6 +1574,7 @@ export default function App() {
         <Sidebar
           view={view}
           onNavigate={setView}
+          onPrefetch={preloadView}
           playerName={settings.playerName}
           installedCount={installed.length}
           installingVersion={installingVersion}
@@ -1393,6 +1590,7 @@ export default function App() {
           mojangSkinName={settings.mojangSkinName}
           signedInName={activeAccount ? activeAccount.name : null}
           skinUrl={activeAccount?.skinUrl ?? null}
+          extensionsEnabled={settings.enableExtensions}
         />
 
         <main
@@ -1411,36 +1609,41 @@ export default function App() {
             />
           ) : null}
           {view === "home" ? (
-            <HomeView
-              installed={installed}
-              selectedVersion={selectedVersion}
-              playerName={settings.playerName}
-              onPlayerNameChange={(playerName) => updateSettings({ playerName })}
-              runtime={runtime}
-              launchProgress={launchProgress}
-              onLaunch={() => void handleLaunch(undefined, { stay: true })}
-              onStop={() => void handleStop()}
-              onOpenVersionSelect={() => setView("version-select")}
-              onOpenVersionSettings={() => setView("version-settings")}
-              onOpenSettings={() => setView("settings")}
-              gameRoot={settings.gameRoot}
-              onOpenDownloadBedrock={() => setView("download")}
-              onNotify={pushToast}
-              edition={edition}
-              onEditionChange={handleEditionChange}
-              selectedBedrockVersion={selectedBedrockVersion}
-              settings={settings}
-              onUpdateSettings={updateSettings}
-              accountType={activeAccount ? "microsoft" : "offline"}
-              account={activeAccount}
-              storedAccount={account}
-              onOpenAccount={() => setAccountOpen(true)}
-              onSelectOffline={() => setOfflineMode(true)}
-              onSelectMicrosoft={() => setOfflineMode(false)}
-            />
+            <div key="home" className="view-enter h-full">
+              <HomeView
+                installed={installed}
+                selectedVersion={selectedVersion}
+                playerName={settings.playerName}
+                onPlayerNameChange={(playerName) => updateSettings({ playerName })}
+                runtime={runtime}
+                launchProgress={launchProgress}
+                onLaunch={() => void handleLaunch(undefined, { stay: true })}
+                onStop={() => void handleStop()}
+                onOpenVersionSelect={() => setView("version-select")}
+                onOpenVersionSettings={() => setView("version-settings")}
+                onOpenSettings={() => setView("settings")}
+                gameRoot={settings.gameRoot}
+                onOpenDownloadBedrock={() => setView("download")}
+                onNotify={pushToast}
+                edition={edition}
+                onEditionChange={handleEditionChange}
+                selectedBedrockVersion={selectedBedrockVersion}
+                settings={settings}
+                onUpdateSettings={updateSettings}
+                accountType={activeAccount ? "microsoft" : "offline"}
+                account={activeAccount}
+                storedAccount={account}
+                onOpenAccount={() => setAccountOpen(true)}
+                onSelectOffline={() => setOfflineMode(true)}
+                onSelectMicrosoft={() => setOfflineMode(false)}
+              />
+            </div>
           ) : (
-            <Suspense fallback={null}>
-            <div className="relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8">
+            <Suspense fallback={<ViewLoading />}>
+              <div
+                key={view}
+                className="view-enter relative mx-auto w-full max-w-[1360px] px-5 py-6 lg:px-8"
+              >
               {view === "multiplayer" ? (
                 <MultiplayerView
                   gameRoot={settings.gameRoot}
@@ -1453,6 +1656,13 @@ export default function App() {
                   }
                   installed={installed}
                   onLaunchVersion={(versionId) => void handleLaunch(versionId)}
+                  onRefreshInstalled={() => refreshInstalled()}
+                  settings={settings}
+                  onOpenSettings={(tab) => {
+                    if (tab) setSettingsTab(tab as any);
+                    setView("settings");
+                  }}
+                  onUpdateSettings={updateSettings}
                 />
               ) : null}
 
@@ -1614,7 +1824,7 @@ export default function App() {
                 />
               ) : null}
 
-              {view === "extensions" ? (
+              {view === "extensions" && settings.enableExtensions ? (
                 <ExtensionsView
                   gameRoot={settings.gameRoot}
                   onNotification={(title, message, type) =>
@@ -1634,9 +1844,10 @@ export default function App() {
                   onOpenFolder={(path) => void openFolder(path)}
                   onNotify={pushToast}
                   account={activeAccount}
+                  initialTab={settingsTab}
                 />
               ) : null}
-            </div>
+              </div>
             </Suspense>
           )}
         </main>

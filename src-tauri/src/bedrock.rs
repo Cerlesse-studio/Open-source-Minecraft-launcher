@@ -5,10 +5,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -311,13 +310,20 @@ fn store_client_installed() -> bool {
             return true;
         }
         if let Ok(home) = std::env::var("HOME") {
-            if PathBuf::from(home).join("Applications/MCPELauncher.app").is_dir() {
+            if PathBuf::from(home)
+                .join("Applications/MCPELauncher.app")
+                .is_dir()
+            {
                 return true;
             }
         }
     }
 
-    for bin in ["/usr/bin/mcpelauncher-client", "/usr/local/bin/mcpelauncher-client", "/opt/homebrew/bin/mcpelauncher-client"] {
+    for bin in [
+        "/usr/bin/mcpelauncher-client",
+        "/usr/local/bin/mcpelauncher-client",
+        "/opt/homebrew/bin/mcpelauncher-client",
+    ] {
         if Path::new(bin).is_file() {
             return true;
         }
@@ -332,7 +338,10 @@ fn store_client_installed() -> bool {
     #[cfg(target_os = "linux")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            if PathBuf::from(home).join(".var/app/io.mrarm.mcpelauncher").is_dir() {
+            if PathBuf::from(home)
+                .join(".var/app/io.mrarm.mcpelauncher")
+                .is_dir()
+            {
                 return true;
             }
         }
@@ -454,7 +463,11 @@ pub fn inspect_bedrock_version_dir(dir: &Path) -> BedrockVersionInspection {
     let root_server = dir.join("bedrock_server.exe");
     let root_linux_server = dir.join("bedrock_server");
     let root_mcpelauncher = dir.join("mcpelauncher-client");
-    let root_mac_app = dir.join("MCPELauncher.app").join("Contents").join("MacOS").join("mcpelauncher-client");
+    let root_mac_app = dir
+        .join("MCPELauncher.app")
+        .join("Contents")
+        .join("MacOS")
+        .join("mcpelauncher-client");
     let root_manifest = dir.join("AppxManifest.xml");
     let root_bundle_manifest = dir.join("AppxBundleManifest.xml");
 
@@ -852,91 +865,686 @@ fn save_cached_versions(items: &[BedrockVersionItem]) {
 
 pub fn get_curated_fallback_versions() -> Vec<BedrockVersionItem> {
     let verified_builds: &[(&str, &str, &str, &str, &str, Option<&str>)] = &[
-        ("26.70.21", "Minecraft 基岩预览版 1.26.7021", "2026-10-20", "preview", "http://assets1.xboxlive.cn/4/2ec63a1c-595c-4b79-acec-8d13f783d395/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.7021.0.d5dbdada-38e9-474e-8f33-f2bb9d37aff8/Microsoft.MinecraftWindowsBeta_1.26.7021.0_x64__8wekyb3d8bbwe.msixvc", Some("7d6c6efe364426c0899b60607054fb3a")),
-        ("26.70.20", "Minecraft 基岩预览版 1.26.7020", "2026-10-13", "preview", "http://assets1.xboxlive.cn/1/2bffe360-a2f7-4fd4-ab62-cdb0cc85c535/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.7020.0.0a6991c3-7935-48eb-a853-04178fbac6e9/Microsoft.MinecraftWindowsBeta_1.26.7020.0_x64__8wekyb3d8bbwe.msixvc", Some("9a43da62dbb0ae04dfc0cd5b421282b2")),
-        ("26.60.30", "Minecraft 基岩预览版 1.26.6030", "2026-10-06", "preview", "http://assets1.xboxlive.cn/8/ed0240a7-6a36-4676-a49c-ecaf4a80f982/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6030.0.b2297db8-27de-4a6d-91bf-8d751cdf17c2/Microsoft.MinecraftWindowsBeta_1.26.6030.0_x64__8wekyb3d8bbwe.msixvc", Some("8710a04f17d13850d51c2186d3e7acfd")),
-        ("26.60.29", "Minecraft 基岩预览版 1.26.6029", "2026-09-30", "preview", "http://assets1.xboxlive.cn/3/b8193333-7971-4a88-97a4-1427a7409238/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6029.0.5844aa77-d936-4fca-be4d-eebcb663f4fd/Microsoft.MinecraftWindowsBeta_1.26.6029.0_x64__8wekyb3d8bbwe.msixvc", Some("2ae2a647dd5e1afea1197852aecb4349")),
-        ("26.60.28", "Minecraft 基岩预览版 1.26.6028", "2026-09-22", "preview", "http://assets1.xboxlive.cn/2/f19a5cb5-d3aa-44d0-bed0-1ae2225fe1c5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6028.0.4e2edfd9-aa74-4022-b39e-ec5877b72aa4/Microsoft.MinecraftWindowsBeta_1.26.6028.0_x64__8wekyb3d8bbwe.msixvc", Some("465b439fef1704b80ff28a1a8e2d4d53")),
-        ("26.60.24", "Minecraft 基岩预览版 1.26.6024", "2026-09-16", "preview", "http://assets1.xboxlive.cn/2/f0110d2e-8abe-4f4f-8d6b-cd629bcbe8b6/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6024.0.e0aceea1-5f55-4010-a1d8-d08a2a68411f/Microsoft.MinecraftWindowsBeta_1.26.6024.0_x64__8wekyb3d8bbwe.msixvc", Some("67562f5c5b097f7a29e94f7ca70b9b5f")),
-        ("26.60.22", "Minecraft 基岩预览版 1.26.6022", "2026-09-08", "preview", "http://assets1.xboxlive.cn/7/ee270b73-26e1-41f3-8715-997b4c460dc2/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6022.0.1a5c8da3-b363-4887-95ff-38da3add0837/Microsoft.MinecraftWindowsBeta_1.26.6022.0_x64__8wekyb3d8bbwe.msixvc", Some("e63aff478924670f1c6289c6074b1e1b")),
-        ("26.60.21", "Minecraft 基岩预览版 1.26.6021", "2026-09-02", "preview", "http://assets1.xboxlive.cn/Z/847dd1ec-63c3-4d62-bc52-9869a94c6e8a/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6021.0.33e14b09-4990-4484-8726-cde80dad7aeb/Microsoft.MinecraftWindowsBeta_1.26.6021.0_x64__8wekyb3d8bbwe.msixvc", Some("fb3e9b5bc32e1cda9a62b74cb903c226")),
-        ("26.52", "Minecraft 基岩版 1.26.5203", "2026-09-25", "release", "http://assets1.xboxlive.cn/Z/80c6fe1f-3d12-47fe-ace0-1406ce1bc3c6/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5203.0.8faf62df-3520-469d-9462-64acfbabde93/Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe.msixvc", Some("bfa350ce68510f1263e308e5bcae369f")),
-        ("26.51", "Minecraft 基岩版 1.26.5101", "2026-09-15", "release", "http://assets1.xboxlive.cn/10/5e9a91e8-88d2-4e34-8751-0180989ce008/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5101.0.20150e80-9196-49cc-af90-b8cf9902a48a/Microsoft.MinecraftUWP_1.26.5101.0_x64__8wekyb3d8bbwe.msixvc", Some("ba41aee910a8579bd1f78e3297d07ab4")),
-        ("26.50.27", "Minecraft 基岩预览版 1.26.5027", "2026-08-25", "preview", "http://assets1.xboxlive.cn/Z/2d958585-77c7-411c-bac3-dac3e1d6bae4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5027.0.17615f0c-b7ed-42fa-b24e-1d9339eee1f4/Microsoft.MinecraftWindowsBeta_1.26.5027.0_x64__8wekyb3d8bbwe.msixvc", Some("b946cc57cc344d9a3e70ee10bf9b13bd")),
-        ("26.50.26", "Minecraft 基岩预览版 1.26.5026", "2026-08-18", "preview", "http://assets1.xboxlive.cn/1/a925bd0b-2b43-4ee5-8627-6b01424db621/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5026.0.db9f683a-2750-420f-9f4a-671779cf8e16/Microsoft.MinecraftWindowsBeta_1.26.5026.0_x64__8wekyb3d8bbwe.msixvc", Some("1fa5523b79b427c922ecf732514032d0")),
-        ("26.50.25", "Minecraft 基岩预览版 1.26.5025", "2026-08-11", "preview", "http://assets1.xboxlive.cn/2/11f8409a-f5ad-45c8-b948-e9303038072b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5025.0.e34bda0f-58d9-438f-b880-d566784d0960/Microsoft.MinecraftWindowsBeta_1.26.5025.0_x64__8wekyb3d8bbwe.msixvc", Some("70c109678dbcd836ee204f1a02d16c78")),
-        ("26.50.24", "Minecraft 基岩预览版 1.26.5024", "2026-08-05", "preview", "http://assets1.xboxlive.cn/13/004d6e48-ccbd-48df-a84b-a7e0f9701d63/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5024.0.03c4fb17-2396-469a-9332-a641028d55e1/Microsoft.MinecraftWindowsBeta_1.26.5024.0_x64__8wekyb3d8bbwe.msixvc", Some("a8d886b4fd2744f9c1b1c3e896c870b1")),
-        ("26.50.22", "Minecraft 基岩预览版 1.26.5022", "2026-07-28", "preview", "http://assets1.xboxlive.cn/6/f172ff25-7185-4237-96a1-ba5d2f76e4e8/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5022.0.0a7be581-3f98-4a7e-8ea6-fd3bb21ff55d/Microsoft.MinecraftWindowsBeta_1.26.5022.0_x64__8wekyb3d8bbwe.msixvc", Some("990436628facc1a80236b4ed7d68a182")),
-        ("26.50.20", "Minecraft 基岩预览版 1.26.5020", "2026-07-21", "preview", "http://assets1.xboxlive.cn/4/2a7b3957-be08-4f41-8830-51ac401772ba/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5020.0.a8c0f83b-1c78-4cb9-a5b4-a6a848545bac/Microsoft.MinecraftWindowsBeta_1.26.5020.0_x64__8wekyb3d8bbwe.msixvc", Some("703e5b4e53dd3e9592aee7188e651903")),
-        ("26.50", "Minecraft 基岩版 1.26.5004", "2026-09-15", "release", "http://assets1.xboxlive.cn/15/889f0637-a9a1-481d-a019-789cfa3c8350/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5004.0.4df08a0f-ae5b-4ad1-8260-c6e0294856ab/Microsoft.MinecraftUWP_1.26.5004.0_x64__8wekyb3d8bbwe.msixvc", Some("d10018a435dbe00a1da8cc411ebf309f")),
-        ("26.45", "Minecraft 基岩版 1.26.4501", "2026-08-28", "release", "http://assets1.xboxlive.cn/Z/8a3dfbab-b161-470f-8b42-c94f0b4f8f6f/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4501.0.8f39f343-cd87-4b76-8994-dc8310fc2f06/Microsoft.MinecraftUWP_1.26.4501.0_x64__8wekyb3d8bbwe.msixvc", Some("a0f488255a72400d20ae2203656f308f")),
-        ("26.44", "Minecraft 基岩版 1.26.4403", "2026-08-14", "release", "http://assets1.xboxlive.cn/Z/343b46e3-cf8d-4d07-b95d-97578788d4ff/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4403.0.c576ef1b-0106-4b07-82d9-441f5b2eb985/Microsoft.MinecraftUWP_1.26.4403.0_x64__8wekyb3d8bbwe.msixvc", Some("91a5abae9202d9746f5411a5fe4dfa97")),
-        ("26.42", "Minecraft 基岩版 1.26.4201", "2026-08-07", "release", "http://assets1.xboxlive.cn/13/c385ae75-5cc0-4140-9b1f-7c24b8ec799b/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4201.0.4c345687-4f56-4eb5-b66f-4460f2f0fa62/Microsoft.MinecraftUWP_1.26.4201.0_x64__8wekyb3d8bbwe.msixvc", Some("2896d795878490d0eb6ef725c0dcde8e")),
-        ("26.40.31", "Minecraft 基岩预览版 1.26.4031", "2026-07-14", "preview", "http://assets1.xboxlive.cn/Z/226869fb-b691-4d44-bf42-e07a24fb9efb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4031.0.4b249979-15fc-47fa-96fa-53929cdc6267/Microsoft.MinecraftWindowsBeta_1.26.4031.0_x64__8wekyb3d8bbwe.msixvc", Some("2a09745c992484da45bef545f1039a60")),
-        ("26.40.30", "Minecraft 基岩预览版 1.26.4030", "2026-07-07", "preview", "http://assets1.xboxlive.cn/7/6de89d20-a43b-4b1d-9e7c-6e570e9e1f74/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4030.0.0cb9011a-a256-459e-803f-c8c97ff2869c/Microsoft.MinecraftWindowsBeta_1.26.4030.0_x64__8wekyb3d8bbwe.msixvc", Some("9f4b40e9404f1c79f3f030cb469b4f12")),
-        ("26.40.27", "Minecraft 基岩预览版 1.26.4027", "2026-06-23", "preview", "http://assets1.xboxlive.cn/8/7c21123c-3eab-488e-9227-e61fd272a0f9/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4027.0.29737025-1779-436b-a042-7b1bc46a05df/Microsoft.MinecraftWindowsBeta_1.26.4027.0_x64__8wekyb3d8bbwe.msixvc", Some("8b789a4f197bd3ec9dc919df3769d9d3")),
-        ("26.40.26", "Minecraft 基岩预览版 1.26.4026", "2026-06-17", "preview", "http://assets1.xboxlive.cn/14/b971d9f7-85b2-4703-8495-f607b39ab2d2/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4026.0.a5d7d68d-b235-45d9-a631-c4e9dab78a54/Microsoft.MinecraftWindowsBeta_1.26.4026.0_x64__8wekyb3d8bbwe.msixvc", Some("ad3c52bae7bdf8089fc0691918019096")),
-        ("26.40.22", "Minecraft 基岩预览版 1.26.4022", "2026-06-10", "preview", "http://assets1.xboxlive.cn/14/84273643-82d9-461c-97ec-92f42a785118/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4022.0.d1afad30-ca3c-4d2f-94b5-ab05c898cb98/Microsoft.MinecraftWindowsBeta_1.26.4022.0_x64__8wekyb3d8bbwe.msixvc", Some("0af35178d4c508847384bdbe86e35205")),
-        ("26.40.20", "Minecraft 基岩预览版 1.26.4020", "2026-06-02", "preview", "http://assets1.xboxlive.cn/6/a60447f4-1922-4e8f-8540-411000a6ef52/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4020.0.b658fe3c-0983-44e2-bea3-231ab1384313/Microsoft.MinecraftWindowsBeta_1.26.4020.0_x64__8wekyb3d8bbwe.msixvc", Some("95092c66a0bc6b5d71d4c8ad6a3f3ee0")),
-        ("26.40", "Minecraft 基岩版 1.26.4005", "2026-08-04", "release", "http://assets1.xboxlive.cn/4/126a2a46-2f8e-407b-80f2-8560a63ce023/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4005.0.4c2b83a6-6147-4006-aa1b-1f494f17e026/Microsoft.MinecraftUWP_1.26.4005.0_x64__8wekyb3d8bbwe.msixvc", Some("ed596f043f77a602f0067bb97ede8899")),
-        ("26.33", "Minecraft 基岩版 1.26.3301", "2026-07-09", "release", "http://assets1.xboxlive.cn/10/1e7d62c3-960f-4386-81b1-1789edc683d1/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3301.0.2a4af946-1668-404e-8cc0-cb081f69103a/Microsoft.MinecraftUWP_1.26.3301.0_x64__8wekyb3d8bbwe.msixvc", Some("11dad2ffbb1612650ef5449fdb6a91e6")),
-        ("26.32", "Minecraft 基岩版 1.26.3202", "2026-06-25", "release", "http://assets1.xboxlive.cn/9/db5d4795-9b25-4cd1-989e-7024300cbe18/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3202.0.ec30be1b-5dc1-4b43-85a8-c717dcf363d9/Microsoft.MinecraftUWP_1.26.3202.0_x64__8wekyb3d8bbwe.msixvc", Some("13c5c890c639f822348d871976bfa5f5")),
-        ("26.31", "Minecraft 基岩版 1.26.3101", "2026-06-19", "release", "http://assets1.xboxlive.cn/6/d449f74e-9ff0-4ea6-82e5-21fc53f8d40d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3101.0.12b6a1df-e792-4168-b7ed-4ee580f26c7d/Microsoft.MinecraftUWP_1.26.3101.0_x64__8wekyb3d8bbwe.msixvc", Some("ad911c23cdb735a44d775c13c3531aac")),
-        ("26.30.32", "Minecraft 基岩预览版 1.26.3032", "2026-05-26", "preview", "http://assets1.xboxlive.cn/8/21d722cf-ec80-4f01-b806-51e7f620fcec/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3032.0.c6f09ba1-0569-4167-8349-27e9155949ad/Microsoft.MinecraftWindowsBeta_1.26.3032.0_x64__8wekyb3d8bbwe.msixvc", Some("fced02ad87c6c99ad441de4d681aeeae")),
-        ("26.30.29", "Minecraft 基岩预览版 1.26.3029", "2026-05-19", "preview", "http://assets1.xboxlive.cn/10/ef077752-be17-46ad-809f-fab7174a49a4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3029.0.38f295a8-df0a-4692-9d48-53af71dfccc0/Microsoft.MinecraftWindowsBeta_1.26.3029.0_x64__8wekyb3d8bbwe.msixvc", Some("5e93e7906fd4e262df4b37f0ed8e4532")),
-        ("26.30.28", "Minecraft 基岩预览版 1.26.3028", "2026-05-12", "preview", "http://assets1.xboxlive.cn/6/9382dd60-5f58-4738-8bc4-d0c2f128ea8b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3028.0.6948466a-9bff-4fa9-b2a4-be4c3f7fda02/Microsoft.MinecraftWindowsBeta_1.26.3028.0_x64__8wekyb3d8bbwe.msixvc", Some("104675cf76ae27d60faaad743d4a8054")),
-        ("26.30.27", "Minecraft 基岩预览版 1.26.3027", "2026-05-06", "preview", "http://assets1.xboxlive.cn/12/e8a63b9f-cf11-4321-a555-f2f0c7608678/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3027.0.24047402-b4a4-41c1-ad0f-7d7107fe9c81/Microsoft.MinecraftWindowsBeta_1.26.3027.0_x64__8wekyb3d8bbwe.msixvc", Some("126a14512860a6817b01e7a7948b6ad0")),
-        ("26.30.25", "Minecraft 基岩预览版 1.26.3025", "2026-04-30", "preview", "http://assets1.xboxlive.cn/11/1dcfebae-a93b-4f91-a04a-35ad02ea1c8e/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3025.0.3137c69c-0310-47b9-adfe-8068008e2a32/Microsoft.MinecraftWindowsBeta_1.26.3025.0_x64__8wekyb3d8bbwe.msixvc", Some("aec5db8a611e419ee4bbaa6e73cb0f84")),
-        ("26.30.20", "Minecraft 基岩预览版 1.26.3020", "2026-04-21", "preview", "http://assets1.xboxlive.cn/1/c612bb96-0cb8-4855-a922-3e8771fdc863/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3020.0.00b7c5c1-b6ba-46fc-a0d7-36afc4a9956c/Microsoft.MinecraftWindowsBeta_1.26.3020.0_x64__8wekyb3d8bbwe.msixvc", Some("9e68e792a83ef04dcbec4939d5701d7a")),
-        ("26.30", "Minecraft 基岩版 1.26.3005", "2026-06-16", "release", "http://assets1.xboxlive.cn/12/480484ea-7b1c-4443-b152-411e07e1329d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3005.0.48bff00d-cff7-4432-8d1e-662d92be1b14/Microsoft.MinecraftUWP_1.26.3005.0_x64__8wekyb3d8bbwe.msixvc", Some("b58b9b8d19ba0b5e65309a8fad741a14")),
-        ("26.21", "Minecraft 基岩版 1.26.2101", "2026-05-14", "release", "http://assets1.xboxlive.cn/10/2e8b0dcb-b4db-43fa-b65e-115c50b2ecb9/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2101.0.a7c55ac8-a285-4f26-8c0c-42692fae7385/MICROSOFT.MINECRAFTUWP_1.26.2101.0_x64__8wekyb3d8bbwe.msixvc", Some("463ec59ba177e156232b906fd5650a33")),
-        ("26.20.27", "Minecraft 基岩预览版 1.26.2027", "2026-04-14", "preview", "http://assets1.xboxlive.cn/Z/4215e89e-22ab-4be3-9e37-0ed8ff10f265/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2027.0.b190ee0d-e343-435a-b833-c6eddcb6c340/Microsoft.MinecraftWindowsBeta_1.26.2027.0_x64__8wekyb3d8bbwe.msixvc", Some("f83fb35d9a66dadede198d76c0637de5")),
-        ("26.20.26", "Minecraft 基岩预览版 1.26.2026", "2026-04-08", "preview", "http://assets1.xboxlive.cn/14/effc0e3a-5070-468a-8212-733e7fb4bec5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2026.0.f5da1a06-3175-4b56-be3b-971d2f6ba90a/Microsoft.MinecraftWindowsBeta_1.26.2026.0_x64__8wekyb3d8bbwe.msixvc", Some("f35b444f94df3b8732f174dbe6c3f2b9")),
-        ("26.20.23", "Minecraft 基岩预览版 1.26.2023", "2026-03-31", "preview", "http://assets1.xboxlive.cn/3/cf17f409-bf46-48ca-9b2d-d7b82bcb0b4d/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2023.0.f228e3b2-97f2-46af-aa2c-66830d53e828/Microsoft.MinecraftWindowsBeta_1.26.2023.0_x64__8wekyb3d8bbwe.msixvc", Some("79a7d1f4d6435a6821d5fb1727f470d3")),
-        ("26.20.22", "Minecraft 基岩预览版 1.26.2022", "2026-03-25", "preview", "http://assets1.xboxlive.cn/7/fdcd1bc9-328c-46d8-82b6-013b032ee927/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2022.0.3adf24eb-5003-4bc3-8475-6a3a4f228d04/Microsoft.MinecraftWindowsBeta_1.26.2022.0_x64__8wekyb3d8bbwe.msixvc", Some("a9fc97c9be3c58868e4ded7e56d6f46b")),
-        ("26.20.21", "Minecraft 基岩预览版 1.26.2021", "2026-03-17", "preview", "http://assets1.xboxlive.cn/8/8b87fe8e-5634-4c87-bd34-0314e4e066b3/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2021.0.b446899f-6b80-44da-b907-ce4f2ce089ab/Microsoft.MinecraftWindowsBeta_1.26.2021.0_x64__8wekyb3d8bbwe.msixvc", Some("636167b24fa5db339891dbf6cd3b92bd")),
-        ("26.20.20", "Minecraft 基岩预览版 1.26.2020", "2026-03-10", "preview", "http://assets1.xboxlive.cn/Z/c8428042-5476-48ad-bf6d-46c76122d5ed/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2020.0.d7b1b26a-ce59-4f6a-8ceb-e311b785a066/Microsoft.MinecraftWindowsBeta_1.26.2020.0_x64__8wekyb3d8bbwe.msixvc", Some("0756ade3f9b67ea14f61bc5718d7452a")),
-        ("26.20", "Minecraft 基岩版 1.26.2004", "2026-05-05", "release", "http://assets1.xboxlive.cn/2/86daedd1-ddc7-44ef-99a3-112e2ccceb27/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2004.0.3328906d-f8ed-4fc5-936d-a59522fe5e8f/MICROSOFT.MINECRAFTUWP_1.26.2004.0_x64__8wekyb3d8bbwe.msixvc", Some("10c214dc667bf3d334eb82fd9f6ce5d0")),
-        ("26.13", "Minecraft 基岩版 1.26.1301", "2026-04-06", "release", "http://assets1.xboxlive.cn/4/3e8e0782-5c66-4d46-963e-f430fc88cd72/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1301.0.d7836dec-3a0f-48cd-b211-aeb7ec2b7cc3/MICROSOFT.MINECRAFTUWP_1.26.1301.0_x64__8wekyb3d8bbwe.msixvc", Some("b8c3bb7561e743980a3fd5ed93e2ec0f")),
-        ("26.12", "Minecraft 基岩版 1.26.1202", "2026-04-01", "release", "http://assets1.xboxlive.cn/3/c6f987ba-e97d-4759-b001-86a1e905fde1/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1202.0.5d6372fb-8149-4d5c-96b8-1ad1a0f039f5/MICROSOFT.MINECRAFTUWP_1.26.1202.0_x64__8wekyb3d8bbwe.msixvc", Some("8b62a806f69d1fa94ea31c5f38ee94ea")),
-        ("26.11", "Minecraft 基岩版 1.26.1101", "2026-03-26", "release", "http://assets1.xboxlive.cn/14/1ce08876-7829-4fe5-8f94-6e34636da6b8/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1101.0.fcbb70f6-904b-4da5-9236-30f4863c9bff/MICROSOFT.MINECRAFTUWP_1.26.1101.0_x64__8wekyb3d8bbwe.msixvc", Some("334a6896b349173c175eb7106d2a1c81")),
-        ("26.10.26", "Minecraft 基岩预览版 1.26.1026", "2026-03-04", "preview", "http://assets1.xboxlive.cn/8/63eb397f-e60e-4851-b241-94029293ddeb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1026.0.f795f370-c349-455b-b332-57be7958dd39/Microsoft.MinecraftWindowsBeta_1.26.1026.0_x64__8wekyb3d8bbwe.msixvc", Some("f920f1b8ac76c1d2f4740e2d17f6c141")),
-        ("26.10.25", "Minecraft 基岩预览版 1.26.1025", "2026-02-24", "preview", "http://assets1.xboxlive.cn/9/e7c6a085-9edb-4b1d-ab70-cafde689042b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1025.0.8ed6a550-c1df-4c76-b90c-275613125eb4/Microsoft.MinecraftWindowsBeta_1.26.1025.0_x64__8wekyb3d8bbwe.msixvc", Some("c17153d7d5c1326bf1cb95d89c6cb330")),
-        ("26.10.24", "Minecraft 基岩预览版 1.26.1024", "2026-02-17", "preview", "http://assets1.xboxlive.cn/12/dd9d78e3-de88-424d-85d4-cffccd48010b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1024.0.0061cdab-53a1-452d-8ee1-22b28b5cc13a/Microsoft.MinecraftWindowsBeta_1.26.1024.0_x64__8wekyb3d8bbwe.msixvc", Some("2ebb78d498d510e1d445b6ba272dcf8a")),
-        ("26.10.23", "Minecraft 基岩预览版 1.26.1023", "2026-02-11", "preview", "http://assets1.xboxlive.cn/14/661b2941-351d-48b2-b4d9-464feb557481/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1023.0.6c998046-b308-4020-a651-592f6725d1ac/Microsoft.MinecraftWindowsBeta_1.26.1023.0_x64__8wekyb3d8bbwe.msixvc", Some("58971f6b4c4d46eb6b4fb1d15a9725dc")),
-        ("26.10.21", "Minecraft 基岩预览版 1.26.1021", "2026-02-03", "preview", "http://assets1.xboxlive.cn/15/1d69a3cf-d0a8-4a38-ab32-8910f481b568/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1021.0.e189f7d0-fa07-4ab1-9ecb-39f2f79ec6b0/Microsoft.MinecraftWindowsBeta_1.26.1021.0_x64__8wekyb3d8bbwe.msixvc", Some("3ee2f123a362b0f056397ca4253dce92")),
-        ("26.10.20", "Minecraft 基岩预览版 1.26.1020", "2026-01-28", "preview", "http://assets1.xboxlive.cn/5/30a64eba-581a-4b1f-acd6-ab303a27013d/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1020.0.7e6df79b-3178-4b78-86ac-708d4c4b6bff/Microsoft.MinecraftWindowsBeta_1.26.1020.0_x64__8wekyb3d8bbwe.msixvc", Some("f289a536d7e8d9bb941fd771a366ebb4")),
-        ("26.10", "Minecraft 基岩版 1.26.1004", "2026-03-24", "release", "http://assets1.xboxlive.cn/12/925750b8-ef63-4a06-88de-d6c4235589b0/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1004.0.0c28a937-2f41-49ed-b641-a246abf8e0be/MICROSOFT.MINECRAFTUWP_1.26.1004.0_x64__8wekyb3d8bbwe.msixvc", Some("7e4d94673c98bea0f29168b8a8d4236e")),
-        ("26.3", "Minecraft 基岩版 1.26.301", "2026-03-02", "release", "http://assets1.xboxlive.cn/10/2ad96056-8398-4336-a406-38cc72765a4a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.301.0.2157d268-7f78-444c-9c38-00b1bd6c901c/MICROSOFT.MINECRAFTUWP_1.26.301.0_x64__8wekyb3d8bbwe.msixvc", Some("d957631857c3d2c6e23dcc1b101278c2")),
-        ("26.2", "Minecraft 基岩版 1.26.201", "2026-02-25", "release", "http://assets1.xboxlive.cn/1/d4026290-4784-446f-9823-8c46324b9a9c/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.201.0.3b9636eb-65a6-4347-a8cd-29cb04fb6d64/MICROSOFT.MINECRAFTUWP_1.26.201.0_x64__8wekyb3d8bbwe.msixvc", Some("672652c501b8c193ddee25e15aa31ef6")),
-        ("26.1", "Minecraft 基岩版 1.26.101", "2026-02-19", "release", "http://assets1.xboxlive.cn/5/818fd83b-d59c-4a16-a9ec-69035f29be7d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.101.0.aa0c35a7-1e86-440d-a49b-55309f7ff9f3/MICROSOFT.MINECRAFTUWP_1.26.101.0_x64__8wekyb3d8bbwe.msixvc", Some("a39d3d3016efbd44f8f08e72d53b4bfb")),
-        ("26.0.29", "Minecraft 基岩预览版 1.26.29", "2026-01-20", "preview", "http://assets1.xboxlive.cn/4/ffb7672a-2ae3-4e7a-8fa1-9bc12bcea4db/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.29.0.41f2f0ae-9cd8-42cf-9e60-6f83d57cc0d3/Microsoft.MinecraftWindowsBeta_1.26.29.0_x64__8wekyb3d8bbwe.msixvc", Some("18a7aa4babb0832834555a2ba3da572d")),
-        ("26.0.28", "Minecraft 基岩预览版 1.26.28", "2026-01-13", "preview", "http://assets1.xboxlive.cn/3/0a7b04ce-40f8-4abf-8a38-2b71c4a3d3f5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.28.0.53c28bda-eb6d-47f7-a791-155c6bb27f68/Microsoft.MinecraftWindowsBeta_1.26.28.0_x64__8wekyb3d8bbwe.msixvc", Some("528964ecf0fa2cc329aba5ded1b76a26")),
-        ("26.0.27", "Minecraft 基岩预览版 1.26.27", "2026-01-07", "preview", "http://assets1.xboxlive.cn/3/832b5f58-fff0-46d7-afe3-62f3eada2d33/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.27.0.219a6a4d-b5ae-42a4-a557-f8e6dd240acc/Microsoft.MinecraftWindowsBeta_1.26.27.0_x64__8wekyb3d8bbwe.msixvc", Some("31f02662131e374ffd0bc704fa98c53b")),
-        ("26.0.26", "Minecraft 基岩预览版 1.26.26", "2025-12-17", "preview", "http://assets1.xboxlive.cn/3/86bb7d70-546f-4445-bd74-56de82ebbc99/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.26.0.18a224cd-1246-4304-a83c-7f68190c7423/Microsoft.MinecraftWindowsBeta_1.26.26.0_x64__8wekyb3d8bbwe.msixvc", Some("53106438adb98237b09ec2d0f54a2f6a")),
-        ("26.0.25", "Minecraft 基岩预览版 1.26.25", "2025-12-10", "preview", "http://assets1.xboxlive.cn/7/5cba9ea8-c8fe-4881-8c16-b512a92c3588/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.25.0.0a3996fe-521b-428f-b73f-c3fe5c11fd1e/Microsoft.MinecraftWindowsBeta_1.26.25.0_x64__8wekyb3d8bbwe.msixvc", Some("1f5b6a70e6e2d038af096abb9c47a60f")),
-        ("26.0.24", "Minecraft 基岩预览版 1.26.24", "2025-12-03", "preview", "http://assets1.xboxlive.cn/15/b9cdebf8-52b9-4d9b-83c6-1e1ca6a15f4f/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.24.0.61bfaa7b-f7cd-4cad-bb6a-783c07c3f7c5/Microsoft.MinecraftWindowsBeta_1.26.24.0_x64__8wekyb3d8bbwe.msixvc", Some("3c6116a5ca7806d3f7de7ae1dde08432")),
-        ("26.0", "Minecraft 基岩版 1.26.2", "2026-02-10", "release", "http://assets1.xboxlive.cn/1/d107af1a-5006-4455-b71a-b7395465a0b9/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2.0.7b0bec04-ae0d-4136-82ec-29bb9751adc7/MICROSOFT.MINECRAFTUWP_1.26.2.0_x64__8wekyb3d8bbwe.msixvc", Some("0c620d717842fc3ba7069bfb62d54165")),
-        ("1.21.132", "Minecraft 基岩版 1.21.13201", "2026-01-08", "release", "http://assets1.xboxlive.cn/13/c59fd319-299a-40d1-bb2b-e6f1b96fb87a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13201.0.47219e94-fffa-4fea-b27b-b9a133750594/MICROSOFT.MINECRAFTUWP_1.21.13201.0_x64__8wekyb3d8bbwe.msixvc", Some("ec7b5d1d8f3ad0a57b56032438adec8b")),
-        ("1.21.131", "Minecraft 基岩版 1.21.13101", "2025-12-16", "release", "http://assets1.xboxlive.cn/8/78fd651c-c534-4c5b-9aeb-bcc845993203/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13101.0.cb540108-7a26-4ec7-81d6-5c29e54c323d/MICROSOFT.MINECRAFTUWP_1.21.13101.0_x64__8wekyb3d8bbwe.msixvc", Some("2200e45813fcf53c3c64b3ee4d9a0bfa")),
-        ("1.21.130.28", "Minecraft 基岩预览版 1.21.13028", "2025-11-18", "preview", "http://assets1.xboxlive.cn/3/c96c8f5e-eec0-41b3-b9d5-7a6e260e1ae1/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13028.0.bb956973-67ec-4403-a7ff-451a3e2d0746/Microsoft.MinecraftWindowsBeta_1.21.13028.0_x64__8wekyb3d8bbwe.msixvc", Some("6cc0e7ed28bdd9a91792b8054985a94f")),
-        ("1.21.130.27", "Minecraft 基岩预览版 1.21.13027", "2025-11-11", "preview", "http://assets1.xboxlive.cn/7/9bcb9729-a886-4ff0-8a1b-2ea27294bdc6/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13027.0.4d3d7571-540b-4ebb-9968-a301639d6c0c/Microsoft.MinecraftWindowsBeta_1.21.13027.0_x64__8wekyb3d8bbwe.msixvc", Some("2a1c40e454628b31ac3adb189538ba49")),
-        ("1.21.130.26", "Minecraft 基岩预览版 1.21.13026", "2025-11-04", "preview", "http://assets1.xboxlive.cn/6/05fe140b-9d00-4bb0-9379-6060a7d87bbf/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13026.0.e828de77-9716-42fe-81c5-a8449db51397/Microsoft.MinecraftWindowsBeta_1.21.13026.0_x64__8wekyb3d8bbwe.msixvc", Some("61f99ff02728afe0d087951c8cc428b1")),
-        ("1.21.130.25", "Minecraft 基岩预览版 1.21.13025", "2025-10-31", "preview", "http://assets1.xboxlive.cn/6/64211bc6-0531-47af-a59b-a75b7494923e/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13025.0.a9f5b019-e731-48c8-9da8-e19221c7d883/Microsoft.MinecraftWindowsBeta_1.21.13025.0_x64__8wekyb3d8bbwe.msixvc", Some("53eada2976fcbfb44b054298e4c79913")),
-        ("1.21.130.24", "Minecraft 基岩预览版 1.21.13024", "2025-10-30", "preview", "http://assets1.xboxlive.cn/1/d92e34c0-657c-4961-982e-15e547d7f401/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13024.0.5300c429-a5af-4d3e-878e-e52da402ff7a/Microsoft.MinecraftWindowsBeta_1.21.13024.0_x64__8wekyb3d8bbwe.msixvc", Some("d02c8bb9581b5fb22424ce71cbcabf2a")),
-        ("1.21.130.22", "Minecraft 基岩预览版 1.21.13022", "2025-10-22", "preview", "http://assets1.xboxlive.cn/3/9c302a78-01ec-4b9a-9d2e-bb845890deca/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13022.0.45387b4a-baa2-4b8c-857f-e254e54c2cdb/Microsoft.MinecraftWindowsBeta_1.21.13022.0_x64__8wekyb3d8bbwe.msixvc", Some("144d3b77577363894d44fd440d348807")),
-        ("1.21.130.20", "Minecraft 基岩预览版 1.21.13020", "2025-10-14", "preview", "http://assets1.xboxlive.cn/14/c6cf3fbf-1bcd-466c-89ad-815b1341c965/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13020.0.93bb5ef3-9fc8-434c-a090-af8304a87bb9/Microsoft.MinecraftWindowsBeta_1.21.13020.0_x64__8wekyb3d8bbwe.msixvc", Some("06e0d4d640167f8c07a7e2aaab55a55d")),
-        ("1.21.130", "Minecraft 基岩版 1.21.13004", "2025-12-09", "release", "http://assets1.xboxlive.cn/13/85f79956-c341-4ed5-a4b7-4a3eba7b4ef8/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13004.0.c5a9f4f8-403d-45da-a67e-e5c4b654cdb7/MICROSOFT.MINECRAFTUWP_1.21.13004.0_x64__8wekyb3d8bbwe.msixvc", Some("e37370b38347818ef98e32a0828d4e8a")),
-        ("1.21.124", "Minecraft 基岩版 1.21.12402", "2025-11-21", "release", "http://assets1.xboxlive.cn/5/94e39fde-e4b3-4b0c-9e4d-fc863879a8fa/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12402.0.d63d9c2d-45e3-4438-89fc-a823f8a2ef0f/MICROSOFT.MINECRAFTUWP_1.21.12402.0_x64__8wekyb3d8bbwe.msixvc", Some("b9394824b04154b3ffa421159db1172d")),
-        ("1.21.123", "Minecraft 基岩版 1.21.12302", "2025-11-13", "release", "http://assets1.xboxlive.cn/5/e7c3e87a-85c2-418c-80bf-24a8c18ef443/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12302.0.9652e398-729a-4268-bb97-f11894a52e59/MICROSOFT.MINECRAFTUWP_1.21.12302.0_x64__8wekyb3d8bbwe.msixvc", Some("ec24e82291cd218b446bccaa8fc63ab1")),
-        ("1.21.122", "Minecraft 基岩版 1.21.12201", "2025-11-10", "release", "http://assets1.xboxlive.cn/12/61b23c98-8461-4cd6-a537-863fa838948e/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12201.0.a08d9b9e-669e-4aab-a6d1-514bcd0a40cc/MICROSOFT.MINECRAFTUWP_1.21.12201.0_x64__8wekyb3d8bbwe.msixvc", Some("f1f96c9ab83e0b1407ea9d9845e306eb")),
-        ("1.21.121", "Minecraft 基岩版 1.21.12101", "2025-11-05", "release", "http://assets1.xboxlive.cn/15/7bf19a96-c045-4b55-b96e-faa32604781a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12101.0.7590152e-2320-4e06-9e85-8e458890e1e7/MICROSOFT.MINECRAFTUWP_1.21.12101.0_x64__8wekyb3d8bbwe.msixvc", Some("0c0b5df2b44bd24d105f22e2adf37c8a")),
-        ("1.21.120.25", "Minecraft 基岩预览版 1.21.12025", "2025-10-07", "preview", "http://assets1.xboxlive.cn/1/65893bb8-80db-4daa-800c-6cb274f4afab/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12025.0.ec675b18-cd7d-4207-8d37-c164f7e4fc70/Microsoft.MinecraftWindowsBeta_1.21.12025.0_x64__8wekyb3d8bbwe.msixvc", Some("fc101790d23161978cedd43fac01c9a3")),
-        ("1.21.120.24", "Minecraft 基岩预览版 1.21.12024", "2025-10-01", "preview", "http://assets1.xboxlive.cn/1/b8827b40-998d-4b15-b73f-ff7d70ae1e9c/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12024.0.b0ec0ab6-f9ab-41fa-b664-9091300e8f90/Microsoft.MinecraftWindowsBeta_1.21.12024.0_x64__8wekyb3d8bbwe.msixvc", Some("6a9e31c6d60d6fddebfe9a1998f6b80c")),
-        ("1.21.120.23", "Minecraft 基岩预览版 1.21.12023", "2025-09-23", "preview", "http://assets1.xboxlive.cn/4/c21d7589-ffaf-4544-b1c5-926d72752e6c/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12023.0.9f1b49ff-7011-4af2-bb8c-edc1de4b41df/Microsoft.MinecraftWindowsBeta_1.21.12023.0_x64__8wekyb3d8bbwe.msixvc", Some("13d7e750fd99f1b0a1b7f1a08e681f64")),
-        ("1.21.120.22", "Minecraft 基岩预览版 1.21.12022", "2025-09-16", "preview", "http://assets1.xboxlive.cn/14/b058fc9d-ce41-4d43-86a3-97d8690ab0b4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12022.0.bd8e701d-78fe-44ae-bb25-f15ac0001754/Microsoft.MinecraftWindowsBeta_1.21.12022.0_x64__8wekyb3d8bbwe.msixvc", Some("d21ff4f7937c9ad3f91711bba025cc6a")),
-        ("1.21.120.21", "Minecraft 基岩预览版 1.21.12021", "2025-09-09", "preview", "http://assets1.xboxlive.cn/12/66b02bc1-c4f1-4986-a183-c23e00cccecb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12021.0.e5cfeb9c-2eaa-4959-8a49-e82cde29702a/Microsoft.MinecraftWindowsBeta_1.21.12021.0_x64__8wekyb3d8bbwe.msixvc", Some("36b590a36446b1cfc677bd1fbfbed04d")),
-        ("1.21.120", "Minecraft 基岩版 1.21.12004", "2025-10-28", "release", "http://assets1.xboxlive.cn/1/7d219e7c-a46e-4afc-8176-cec808fc1e1b/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12004.0.0ed99274-787a-4d02-8344-7c6bd1ef77c8/MICROSOFT.MINECRAFTUWP_1.21.12004.0_x64__8wekyb3d8bbwe.msixvc", Some("d1a1c8526374596be545b046db3f6e47")),
+        (
+            "26.70.21",
+            "Minecraft 基岩预览版 1.26.7021",
+            "2026-10-20",
+            "preview",
+            "http://assets1.xboxlive.cn/4/2ec63a1c-595c-4b79-acec-8d13f783d395/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.7021.0.d5dbdada-38e9-474e-8f33-f2bb9d37aff8/Microsoft.MinecraftWindowsBeta_1.26.7021.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("7d6c6efe364426c0899b60607054fb3a"),
+        ),
+        (
+            "26.70.20",
+            "Minecraft 基岩预览版 1.26.7020",
+            "2026-10-13",
+            "preview",
+            "http://assets1.xboxlive.cn/1/2bffe360-a2f7-4fd4-ab62-cdb0cc85c535/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.7020.0.0a6991c3-7935-48eb-a853-04178fbac6e9/Microsoft.MinecraftWindowsBeta_1.26.7020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("9a43da62dbb0ae04dfc0cd5b421282b2"),
+        ),
+        (
+            "26.60.30",
+            "Minecraft 基岩预览版 1.26.6030",
+            "2026-10-06",
+            "preview",
+            "http://assets1.xboxlive.cn/8/ed0240a7-6a36-4676-a49c-ecaf4a80f982/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6030.0.b2297db8-27de-4a6d-91bf-8d751cdf17c2/Microsoft.MinecraftWindowsBeta_1.26.6030.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("8710a04f17d13850d51c2186d3e7acfd"),
+        ),
+        (
+            "26.60.29",
+            "Minecraft 基岩预览版 1.26.6029",
+            "2026-09-30",
+            "preview",
+            "http://assets1.xboxlive.cn/3/b8193333-7971-4a88-97a4-1427a7409238/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6029.0.5844aa77-d936-4fca-be4d-eebcb663f4fd/Microsoft.MinecraftWindowsBeta_1.26.6029.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2ae2a647dd5e1afea1197852aecb4349"),
+        ),
+        (
+            "26.60.28",
+            "Minecraft 基岩预览版 1.26.6028",
+            "2026-09-22",
+            "preview",
+            "http://assets1.xboxlive.cn/2/f19a5cb5-d3aa-44d0-bed0-1ae2225fe1c5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6028.0.4e2edfd9-aa74-4022-b39e-ec5877b72aa4/Microsoft.MinecraftWindowsBeta_1.26.6028.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("465b439fef1704b80ff28a1a8e2d4d53"),
+        ),
+        (
+            "26.60.24",
+            "Minecraft 基岩预览版 1.26.6024",
+            "2026-09-16",
+            "preview",
+            "http://assets1.xboxlive.cn/2/f0110d2e-8abe-4f4f-8d6b-cd629bcbe8b6/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6024.0.e0aceea1-5f55-4010-a1d8-d08a2a68411f/Microsoft.MinecraftWindowsBeta_1.26.6024.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("67562f5c5b097f7a29e94f7ca70b9b5f"),
+        ),
+        (
+            "26.60.22",
+            "Minecraft 基岩预览版 1.26.6022",
+            "2026-09-08",
+            "preview",
+            "http://assets1.xboxlive.cn/7/ee270b73-26e1-41f3-8715-997b4c460dc2/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6022.0.1a5c8da3-b363-4887-95ff-38da3add0837/Microsoft.MinecraftWindowsBeta_1.26.6022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("e63aff478924670f1c6289c6074b1e1b"),
+        ),
+        (
+            "26.60.21",
+            "Minecraft 基岩预览版 1.26.6021",
+            "2026-09-02",
+            "preview",
+            "http://assets1.xboxlive.cn/Z/847dd1ec-63c3-4d62-bc52-9869a94c6e8a/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.6021.0.33e14b09-4990-4484-8726-cde80dad7aeb/Microsoft.MinecraftWindowsBeta_1.26.6021.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("fb3e9b5bc32e1cda9a62b74cb903c226"),
+        ),
+        (
+            "26.52",
+            "Minecraft 基岩版 1.26.5203",
+            "2026-09-25",
+            "release",
+            "http://assets1.xboxlive.cn/Z/80c6fe1f-3d12-47fe-ace0-1406ce1bc3c6/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5203.0.8faf62df-3520-469d-9462-64acfbabde93/Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("bfa350ce68510f1263e308e5bcae369f"),
+        ),
+        (
+            "26.51",
+            "Minecraft 基岩版 1.26.5101",
+            "2026-09-15",
+            "release",
+            "http://assets1.xboxlive.cn/10/5e9a91e8-88d2-4e34-8751-0180989ce008/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5101.0.20150e80-9196-49cc-af90-b8cf9902a48a/Microsoft.MinecraftUWP_1.26.5101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ba41aee910a8579bd1f78e3297d07ab4"),
+        ),
+        (
+            "26.50.27",
+            "Minecraft 基岩预览版 1.26.5027",
+            "2026-08-25",
+            "preview",
+            "http://assets1.xboxlive.cn/Z/2d958585-77c7-411c-bac3-dac3e1d6bae4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5027.0.17615f0c-b7ed-42fa-b24e-1d9339eee1f4/Microsoft.MinecraftWindowsBeta_1.26.5027.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("b946cc57cc344d9a3e70ee10bf9b13bd"),
+        ),
+        (
+            "26.50.26",
+            "Minecraft 基岩预览版 1.26.5026",
+            "2026-08-18",
+            "preview",
+            "http://assets1.xboxlive.cn/1/a925bd0b-2b43-4ee5-8627-6b01424db621/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5026.0.db9f683a-2750-420f-9f4a-671779cf8e16/Microsoft.MinecraftWindowsBeta_1.26.5026.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("1fa5523b79b427c922ecf732514032d0"),
+        ),
+        (
+            "26.50.25",
+            "Minecraft 基岩预览版 1.26.5025",
+            "2026-08-11",
+            "preview",
+            "http://assets1.xboxlive.cn/2/11f8409a-f5ad-45c8-b948-e9303038072b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5025.0.e34bda0f-58d9-438f-b880-d566784d0960/Microsoft.MinecraftWindowsBeta_1.26.5025.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("70c109678dbcd836ee204f1a02d16c78"),
+        ),
+        (
+            "26.50.24",
+            "Minecraft 基岩预览版 1.26.5024",
+            "2026-08-05",
+            "preview",
+            "http://assets1.xboxlive.cn/13/004d6e48-ccbd-48df-a84b-a7e0f9701d63/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5024.0.03c4fb17-2396-469a-9332-a641028d55e1/Microsoft.MinecraftWindowsBeta_1.26.5024.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("a8d886b4fd2744f9c1b1c3e896c870b1"),
+        ),
+        (
+            "26.50.22",
+            "Minecraft 基岩预览版 1.26.5022",
+            "2026-07-28",
+            "preview",
+            "http://assets1.xboxlive.cn/6/f172ff25-7185-4237-96a1-ba5d2f76e4e8/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5022.0.0a7be581-3f98-4a7e-8ea6-fd3bb21ff55d/Microsoft.MinecraftWindowsBeta_1.26.5022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("990436628facc1a80236b4ed7d68a182"),
+        ),
+        (
+            "26.50.20",
+            "Minecraft 基岩预览版 1.26.5020",
+            "2026-07-21",
+            "preview",
+            "http://assets1.xboxlive.cn/4/2a7b3957-be08-4f41-8830-51ac401772ba/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.5020.0.a8c0f83b-1c78-4cb9-a5b4-a6a848545bac/Microsoft.MinecraftWindowsBeta_1.26.5020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("703e5b4e53dd3e9592aee7188e651903"),
+        ),
+        (
+            "26.50",
+            "Minecraft 基岩版 1.26.5004",
+            "2026-09-15",
+            "release",
+            "http://assets1.xboxlive.cn/15/889f0637-a9a1-481d-a019-789cfa3c8350/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.5004.0.4df08a0f-ae5b-4ad1-8260-c6e0294856ab/Microsoft.MinecraftUWP_1.26.5004.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("d10018a435dbe00a1da8cc411ebf309f"),
+        ),
+        (
+            "26.45",
+            "Minecraft 基岩版 1.26.4501",
+            "2026-08-28",
+            "release",
+            "http://assets1.xboxlive.cn/Z/8a3dfbab-b161-470f-8b42-c94f0b4f8f6f/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4501.0.8f39f343-cd87-4b76-8994-dc8310fc2f06/Microsoft.MinecraftUWP_1.26.4501.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("a0f488255a72400d20ae2203656f308f"),
+        ),
+        (
+            "26.44",
+            "Minecraft 基岩版 1.26.4403",
+            "2026-08-14",
+            "release",
+            "http://assets1.xboxlive.cn/Z/343b46e3-cf8d-4d07-b95d-97578788d4ff/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4403.0.c576ef1b-0106-4b07-82d9-441f5b2eb985/Microsoft.MinecraftUWP_1.26.4403.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("91a5abae9202d9746f5411a5fe4dfa97"),
+        ),
+        (
+            "26.42",
+            "Minecraft 基岩版 1.26.4201",
+            "2026-08-07",
+            "release",
+            "http://assets1.xboxlive.cn/13/c385ae75-5cc0-4140-9b1f-7c24b8ec799b/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4201.0.4c345687-4f56-4eb5-b66f-4460f2f0fa62/Microsoft.MinecraftUWP_1.26.4201.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2896d795878490d0eb6ef725c0dcde8e"),
+        ),
+        (
+            "26.40.31",
+            "Minecraft 基岩预览版 1.26.4031",
+            "2026-07-14",
+            "preview",
+            "http://assets1.xboxlive.cn/Z/226869fb-b691-4d44-bf42-e07a24fb9efb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4031.0.4b249979-15fc-47fa-96fa-53929cdc6267/Microsoft.MinecraftWindowsBeta_1.26.4031.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2a09745c992484da45bef545f1039a60"),
+        ),
+        (
+            "26.40.30",
+            "Minecraft 基岩预览版 1.26.4030",
+            "2026-07-07",
+            "preview",
+            "http://assets1.xboxlive.cn/7/6de89d20-a43b-4b1d-9e7c-6e570e9e1f74/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4030.0.0cb9011a-a256-459e-803f-c8c97ff2869c/Microsoft.MinecraftWindowsBeta_1.26.4030.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("9f4b40e9404f1c79f3f030cb469b4f12"),
+        ),
+        (
+            "26.40.27",
+            "Minecraft 基岩预览版 1.26.4027",
+            "2026-06-23",
+            "preview",
+            "http://assets1.xboxlive.cn/8/7c21123c-3eab-488e-9227-e61fd272a0f9/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4027.0.29737025-1779-436b-a042-7b1bc46a05df/Microsoft.MinecraftWindowsBeta_1.26.4027.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("8b789a4f197bd3ec9dc919df3769d9d3"),
+        ),
+        (
+            "26.40.26",
+            "Minecraft 基岩预览版 1.26.4026",
+            "2026-06-17",
+            "preview",
+            "http://assets1.xboxlive.cn/14/b971d9f7-85b2-4703-8495-f607b39ab2d2/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4026.0.a5d7d68d-b235-45d9-a631-c4e9dab78a54/Microsoft.MinecraftWindowsBeta_1.26.4026.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ad3c52bae7bdf8089fc0691918019096"),
+        ),
+        (
+            "26.40.22",
+            "Minecraft 基岩预览版 1.26.4022",
+            "2026-06-10",
+            "preview",
+            "http://assets1.xboxlive.cn/14/84273643-82d9-461c-97ec-92f42a785118/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4022.0.d1afad30-ca3c-4d2f-94b5-ab05c898cb98/Microsoft.MinecraftWindowsBeta_1.26.4022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("0af35178d4c508847384bdbe86e35205"),
+        ),
+        (
+            "26.40.20",
+            "Minecraft 基岩预览版 1.26.4020",
+            "2026-06-02",
+            "preview",
+            "http://assets1.xboxlive.cn/6/a60447f4-1922-4e8f-8540-411000a6ef52/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.4020.0.b658fe3c-0983-44e2-bea3-231ab1384313/Microsoft.MinecraftWindowsBeta_1.26.4020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("95092c66a0bc6b5d71d4c8ad6a3f3ee0"),
+        ),
+        (
+            "26.40",
+            "Minecraft 基岩版 1.26.4005",
+            "2026-08-04",
+            "release",
+            "http://assets1.xboxlive.cn/4/126a2a46-2f8e-407b-80f2-8560a63ce023/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.4005.0.4c2b83a6-6147-4006-aa1b-1f494f17e026/Microsoft.MinecraftUWP_1.26.4005.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ed596f043f77a602f0067bb97ede8899"),
+        ),
+        (
+            "26.33",
+            "Minecraft 基岩版 1.26.3301",
+            "2026-07-09",
+            "release",
+            "http://assets1.xboxlive.cn/10/1e7d62c3-960f-4386-81b1-1789edc683d1/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3301.0.2a4af946-1668-404e-8cc0-cb081f69103a/Microsoft.MinecraftUWP_1.26.3301.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("11dad2ffbb1612650ef5449fdb6a91e6"),
+        ),
+        (
+            "26.32",
+            "Minecraft 基岩版 1.26.3202",
+            "2026-06-25",
+            "release",
+            "http://assets1.xboxlive.cn/9/db5d4795-9b25-4cd1-989e-7024300cbe18/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3202.0.ec30be1b-5dc1-4b43-85a8-c717dcf363d9/Microsoft.MinecraftUWP_1.26.3202.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("13c5c890c639f822348d871976bfa5f5"),
+        ),
+        (
+            "26.31",
+            "Minecraft 基岩版 1.26.3101",
+            "2026-06-19",
+            "release",
+            "http://assets1.xboxlive.cn/6/d449f74e-9ff0-4ea6-82e5-21fc53f8d40d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3101.0.12b6a1df-e792-4168-b7ed-4ee580f26c7d/Microsoft.MinecraftUWP_1.26.3101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ad911c23cdb735a44d775c13c3531aac"),
+        ),
+        (
+            "26.30.32",
+            "Minecraft 基岩预览版 1.26.3032",
+            "2026-05-26",
+            "preview",
+            "http://assets1.xboxlive.cn/8/21d722cf-ec80-4f01-b806-51e7f620fcec/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3032.0.c6f09ba1-0569-4167-8349-27e9155949ad/Microsoft.MinecraftWindowsBeta_1.26.3032.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("fced02ad87c6c99ad441de4d681aeeae"),
+        ),
+        (
+            "26.30.29",
+            "Minecraft 基岩预览版 1.26.3029",
+            "2026-05-19",
+            "preview",
+            "http://assets1.xboxlive.cn/10/ef077752-be17-46ad-809f-fab7174a49a4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3029.0.38f295a8-df0a-4692-9d48-53af71dfccc0/Microsoft.MinecraftWindowsBeta_1.26.3029.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("5e93e7906fd4e262df4b37f0ed8e4532"),
+        ),
+        (
+            "26.30.28",
+            "Minecraft 基岩预览版 1.26.3028",
+            "2026-05-12",
+            "preview",
+            "http://assets1.xboxlive.cn/6/9382dd60-5f58-4738-8bc4-d0c2f128ea8b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3028.0.6948466a-9bff-4fa9-b2a4-be4c3f7fda02/Microsoft.MinecraftWindowsBeta_1.26.3028.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("104675cf76ae27d60faaad743d4a8054"),
+        ),
+        (
+            "26.30.27",
+            "Minecraft 基岩预览版 1.26.3027",
+            "2026-05-06",
+            "preview",
+            "http://assets1.xboxlive.cn/12/e8a63b9f-cf11-4321-a555-f2f0c7608678/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3027.0.24047402-b4a4-41c1-ad0f-7d7107fe9c81/Microsoft.MinecraftWindowsBeta_1.26.3027.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("126a14512860a6817b01e7a7948b6ad0"),
+        ),
+        (
+            "26.30.25",
+            "Minecraft 基岩预览版 1.26.3025",
+            "2026-04-30",
+            "preview",
+            "http://assets1.xboxlive.cn/11/1dcfebae-a93b-4f91-a04a-35ad02ea1c8e/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3025.0.3137c69c-0310-47b9-adfe-8068008e2a32/Microsoft.MinecraftWindowsBeta_1.26.3025.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("aec5db8a611e419ee4bbaa6e73cb0f84"),
+        ),
+        (
+            "26.30.20",
+            "Minecraft 基岩预览版 1.26.3020",
+            "2026-04-21",
+            "preview",
+            "http://assets1.xboxlive.cn/1/c612bb96-0cb8-4855-a922-3e8771fdc863/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.3020.0.00b7c5c1-b6ba-46fc-a0d7-36afc4a9956c/Microsoft.MinecraftWindowsBeta_1.26.3020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("9e68e792a83ef04dcbec4939d5701d7a"),
+        ),
+        (
+            "26.30",
+            "Minecraft 基岩版 1.26.3005",
+            "2026-06-16",
+            "release",
+            "http://assets1.xboxlive.cn/12/480484ea-7b1c-4443-b152-411e07e1329d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.3005.0.48bff00d-cff7-4432-8d1e-662d92be1b14/Microsoft.MinecraftUWP_1.26.3005.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("b58b9b8d19ba0b5e65309a8fad741a14"),
+        ),
+        (
+            "26.21",
+            "Minecraft 基岩版 1.26.2101",
+            "2026-05-14",
+            "release",
+            "http://assets1.xboxlive.cn/10/2e8b0dcb-b4db-43fa-b65e-115c50b2ecb9/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2101.0.a7c55ac8-a285-4f26-8c0c-42692fae7385/MICROSOFT.MINECRAFTUWP_1.26.2101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("463ec59ba177e156232b906fd5650a33"),
+        ),
+        (
+            "26.20.27",
+            "Minecraft 基岩预览版 1.26.2027",
+            "2026-04-14",
+            "preview",
+            "http://assets1.xboxlive.cn/Z/4215e89e-22ab-4be3-9e37-0ed8ff10f265/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2027.0.b190ee0d-e343-435a-b833-c6eddcb6c340/Microsoft.MinecraftWindowsBeta_1.26.2027.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("f83fb35d9a66dadede198d76c0637de5"),
+        ),
+        (
+            "26.20.26",
+            "Minecraft 基岩预览版 1.26.2026",
+            "2026-04-08",
+            "preview",
+            "http://assets1.xboxlive.cn/14/effc0e3a-5070-468a-8212-733e7fb4bec5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2026.0.f5da1a06-3175-4b56-be3b-971d2f6ba90a/Microsoft.MinecraftWindowsBeta_1.26.2026.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("f35b444f94df3b8732f174dbe6c3f2b9"),
+        ),
+        (
+            "26.20.23",
+            "Minecraft 基岩预览版 1.26.2023",
+            "2026-03-31",
+            "preview",
+            "http://assets1.xboxlive.cn/3/cf17f409-bf46-48ca-9b2d-d7b82bcb0b4d/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2023.0.f228e3b2-97f2-46af-aa2c-66830d53e828/Microsoft.MinecraftWindowsBeta_1.26.2023.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("79a7d1f4d6435a6821d5fb1727f470d3"),
+        ),
+        (
+            "26.20.22",
+            "Minecraft 基岩预览版 1.26.2022",
+            "2026-03-25",
+            "preview",
+            "http://assets1.xboxlive.cn/7/fdcd1bc9-328c-46d8-82b6-013b032ee927/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2022.0.3adf24eb-5003-4bc3-8475-6a3a4f228d04/Microsoft.MinecraftWindowsBeta_1.26.2022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("a9fc97c9be3c58868e4ded7e56d6f46b"),
+        ),
+        (
+            "26.20.21",
+            "Minecraft 基岩预览版 1.26.2021",
+            "2026-03-17",
+            "preview",
+            "http://assets1.xboxlive.cn/8/8b87fe8e-5634-4c87-bd34-0314e4e066b3/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2021.0.b446899f-6b80-44da-b907-ce4f2ce089ab/Microsoft.MinecraftWindowsBeta_1.26.2021.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("636167b24fa5db339891dbf6cd3b92bd"),
+        ),
+        (
+            "26.20.20",
+            "Minecraft 基岩预览版 1.26.2020",
+            "2026-03-10",
+            "preview",
+            "http://assets1.xboxlive.cn/Z/c8428042-5476-48ad-bf6d-46c76122d5ed/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.2020.0.d7b1b26a-ce59-4f6a-8ceb-e311b785a066/Microsoft.MinecraftWindowsBeta_1.26.2020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("0756ade3f9b67ea14f61bc5718d7452a"),
+        ),
+        (
+            "26.20",
+            "Minecraft 基岩版 1.26.2004",
+            "2026-05-05",
+            "release",
+            "http://assets1.xboxlive.cn/2/86daedd1-ddc7-44ef-99a3-112e2ccceb27/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2004.0.3328906d-f8ed-4fc5-936d-a59522fe5e8f/MICROSOFT.MINECRAFTUWP_1.26.2004.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("10c214dc667bf3d334eb82fd9f6ce5d0"),
+        ),
+        (
+            "26.13",
+            "Minecraft 基岩版 1.26.1301",
+            "2026-04-06",
+            "release",
+            "http://assets1.xboxlive.cn/4/3e8e0782-5c66-4d46-963e-f430fc88cd72/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1301.0.d7836dec-3a0f-48cd-b211-aeb7ec2b7cc3/MICROSOFT.MINECRAFTUWP_1.26.1301.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("b8c3bb7561e743980a3fd5ed93e2ec0f"),
+        ),
+        (
+            "26.12",
+            "Minecraft 基岩版 1.26.1202",
+            "2026-04-01",
+            "release",
+            "http://assets1.xboxlive.cn/3/c6f987ba-e97d-4759-b001-86a1e905fde1/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1202.0.5d6372fb-8149-4d5c-96b8-1ad1a0f039f5/MICROSOFT.MINECRAFTUWP_1.26.1202.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("8b62a806f69d1fa94ea31c5f38ee94ea"),
+        ),
+        (
+            "26.11",
+            "Minecraft 基岩版 1.26.1101",
+            "2026-03-26",
+            "release",
+            "http://assets1.xboxlive.cn/14/1ce08876-7829-4fe5-8f94-6e34636da6b8/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1101.0.fcbb70f6-904b-4da5-9236-30f4863c9bff/MICROSOFT.MINECRAFTUWP_1.26.1101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("334a6896b349173c175eb7106d2a1c81"),
+        ),
+        (
+            "26.10.26",
+            "Minecraft 基岩预览版 1.26.1026",
+            "2026-03-04",
+            "preview",
+            "http://assets1.xboxlive.cn/8/63eb397f-e60e-4851-b241-94029293ddeb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1026.0.f795f370-c349-455b-b332-57be7958dd39/Microsoft.MinecraftWindowsBeta_1.26.1026.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("f920f1b8ac76c1d2f4740e2d17f6c141"),
+        ),
+        (
+            "26.10.25",
+            "Minecraft 基岩预览版 1.26.1025",
+            "2026-02-24",
+            "preview",
+            "http://assets1.xboxlive.cn/9/e7c6a085-9edb-4b1d-ab70-cafde689042b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1025.0.8ed6a550-c1df-4c76-b90c-275613125eb4/Microsoft.MinecraftWindowsBeta_1.26.1025.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("c17153d7d5c1326bf1cb95d89c6cb330"),
+        ),
+        (
+            "26.10.24",
+            "Minecraft 基岩预览版 1.26.1024",
+            "2026-02-17",
+            "preview",
+            "http://assets1.xboxlive.cn/12/dd9d78e3-de88-424d-85d4-cffccd48010b/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1024.0.0061cdab-53a1-452d-8ee1-22b28b5cc13a/Microsoft.MinecraftWindowsBeta_1.26.1024.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2ebb78d498d510e1d445b6ba272dcf8a"),
+        ),
+        (
+            "26.10.23",
+            "Minecraft 基岩预览版 1.26.1023",
+            "2026-02-11",
+            "preview",
+            "http://assets1.xboxlive.cn/14/661b2941-351d-48b2-b4d9-464feb557481/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1023.0.6c998046-b308-4020-a651-592f6725d1ac/Microsoft.MinecraftWindowsBeta_1.26.1023.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("58971f6b4c4d46eb6b4fb1d15a9725dc"),
+        ),
+        (
+            "26.10.21",
+            "Minecraft 基岩预览版 1.26.1021",
+            "2026-02-03",
+            "preview",
+            "http://assets1.xboxlive.cn/15/1d69a3cf-d0a8-4a38-ab32-8910f481b568/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1021.0.e189f7d0-fa07-4ab1-9ecb-39f2f79ec6b0/Microsoft.MinecraftWindowsBeta_1.26.1021.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("3ee2f123a362b0f056397ca4253dce92"),
+        ),
+        (
+            "26.10.20",
+            "Minecraft 基岩预览版 1.26.1020",
+            "2026-01-28",
+            "preview",
+            "http://assets1.xboxlive.cn/5/30a64eba-581a-4b1f-acd6-ab303a27013d/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.1020.0.7e6df79b-3178-4b78-86ac-708d4c4b6bff/Microsoft.MinecraftWindowsBeta_1.26.1020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("f289a536d7e8d9bb941fd771a366ebb4"),
+        ),
+        (
+            "26.10",
+            "Minecraft 基岩版 1.26.1004",
+            "2026-03-24",
+            "release",
+            "http://assets1.xboxlive.cn/12/925750b8-ef63-4a06-88de-d6c4235589b0/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.1004.0.0c28a937-2f41-49ed-b641-a246abf8e0be/MICROSOFT.MINECRAFTUWP_1.26.1004.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("7e4d94673c98bea0f29168b8a8d4236e"),
+        ),
+        (
+            "26.3",
+            "Minecraft 基岩版 1.26.301",
+            "2026-03-02",
+            "release",
+            "http://assets1.xboxlive.cn/10/2ad96056-8398-4336-a406-38cc72765a4a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.301.0.2157d268-7f78-444c-9c38-00b1bd6c901c/MICROSOFT.MINECRAFTUWP_1.26.301.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("d957631857c3d2c6e23dcc1b101278c2"),
+        ),
+        (
+            "26.2",
+            "Minecraft 基岩版 1.26.201",
+            "2026-02-25",
+            "release",
+            "http://assets1.xboxlive.cn/1/d4026290-4784-446f-9823-8c46324b9a9c/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.201.0.3b9636eb-65a6-4347-a8cd-29cb04fb6d64/MICROSOFT.MINECRAFTUWP_1.26.201.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("672652c501b8c193ddee25e15aa31ef6"),
+        ),
+        (
+            "26.1",
+            "Minecraft 基岩版 1.26.101",
+            "2026-02-19",
+            "release",
+            "http://assets1.xboxlive.cn/5/818fd83b-d59c-4a16-a9ec-69035f29be7d/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.101.0.aa0c35a7-1e86-440d-a49b-55309f7ff9f3/MICROSOFT.MINECRAFTUWP_1.26.101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("a39d3d3016efbd44f8f08e72d53b4bfb"),
+        ),
+        (
+            "26.0.29",
+            "Minecraft 基岩预览版 1.26.29",
+            "2026-01-20",
+            "preview",
+            "http://assets1.xboxlive.cn/4/ffb7672a-2ae3-4e7a-8fa1-9bc12bcea4db/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.29.0.41f2f0ae-9cd8-42cf-9e60-6f83d57cc0d3/Microsoft.MinecraftWindowsBeta_1.26.29.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("18a7aa4babb0832834555a2ba3da572d"),
+        ),
+        (
+            "26.0.28",
+            "Minecraft 基岩预览版 1.26.28",
+            "2026-01-13",
+            "preview",
+            "http://assets1.xboxlive.cn/3/0a7b04ce-40f8-4abf-8a38-2b71c4a3d3f5/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.28.0.53c28bda-eb6d-47f7-a791-155c6bb27f68/Microsoft.MinecraftWindowsBeta_1.26.28.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("528964ecf0fa2cc329aba5ded1b76a26"),
+        ),
+        (
+            "26.0.27",
+            "Minecraft 基岩预览版 1.26.27",
+            "2026-01-07",
+            "preview",
+            "http://assets1.xboxlive.cn/3/832b5f58-fff0-46d7-afe3-62f3eada2d33/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.27.0.219a6a4d-b5ae-42a4-a557-f8e6dd240acc/Microsoft.MinecraftWindowsBeta_1.26.27.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("31f02662131e374ffd0bc704fa98c53b"),
+        ),
+        (
+            "26.0.26",
+            "Minecraft 基岩预览版 1.26.26",
+            "2025-12-17",
+            "preview",
+            "http://assets1.xboxlive.cn/3/86bb7d70-546f-4445-bd74-56de82ebbc99/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.26.0.18a224cd-1246-4304-a83c-7f68190c7423/Microsoft.MinecraftWindowsBeta_1.26.26.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("53106438adb98237b09ec2d0f54a2f6a"),
+        ),
+        (
+            "26.0.25",
+            "Minecraft 基岩预览版 1.26.25",
+            "2025-12-10",
+            "preview",
+            "http://assets1.xboxlive.cn/7/5cba9ea8-c8fe-4881-8c16-b512a92c3588/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.25.0.0a3996fe-521b-428f-b73f-c3fe5c11fd1e/Microsoft.MinecraftWindowsBeta_1.26.25.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("1f5b6a70e6e2d038af096abb9c47a60f"),
+        ),
+        (
+            "26.0.24",
+            "Minecraft 基岩预览版 1.26.24",
+            "2025-12-03",
+            "preview",
+            "http://assets1.xboxlive.cn/15/b9cdebf8-52b9-4d9b-83c6-1e1ca6a15f4f/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.26.24.0.61bfaa7b-f7cd-4cad-bb6a-783c07c3f7c5/Microsoft.MinecraftWindowsBeta_1.26.24.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("3c6116a5ca7806d3f7de7ae1dde08432"),
+        ),
+        (
+            "26.0",
+            "Minecraft 基岩版 1.26.2",
+            "2026-02-10",
+            "release",
+            "http://assets1.xboxlive.cn/1/d107af1a-5006-4455-b71a-b7395465a0b9/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.26.2.0.7b0bec04-ae0d-4136-82ec-29bb9751adc7/MICROSOFT.MINECRAFTUWP_1.26.2.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("0c620d717842fc3ba7069bfb62d54165"),
+        ),
+        (
+            "1.21.132",
+            "Minecraft 基岩版 1.21.13201",
+            "2026-01-08",
+            "release",
+            "http://assets1.xboxlive.cn/13/c59fd319-299a-40d1-bb2b-e6f1b96fb87a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13201.0.47219e94-fffa-4fea-b27b-b9a133750594/MICROSOFT.MINECRAFTUWP_1.21.13201.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ec7b5d1d8f3ad0a57b56032438adec8b"),
+        ),
+        (
+            "1.21.131",
+            "Minecraft 基岩版 1.21.13101",
+            "2025-12-16",
+            "release",
+            "http://assets1.xboxlive.cn/8/78fd651c-c534-4c5b-9aeb-bcc845993203/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13101.0.cb540108-7a26-4ec7-81d6-5c29e54c323d/MICROSOFT.MINECRAFTUWP_1.21.13101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2200e45813fcf53c3c64b3ee4d9a0bfa"),
+        ),
+        (
+            "1.21.130.28",
+            "Minecraft 基岩预览版 1.21.13028",
+            "2025-11-18",
+            "preview",
+            "http://assets1.xboxlive.cn/3/c96c8f5e-eec0-41b3-b9d5-7a6e260e1ae1/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13028.0.bb956973-67ec-4403-a7ff-451a3e2d0746/Microsoft.MinecraftWindowsBeta_1.21.13028.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("6cc0e7ed28bdd9a91792b8054985a94f"),
+        ),
+        (
+            "1.21.130.27",
+            "Minecraft 基岩预览版 1.21.13027",
+            "2025-11-11",
+            "preview",
+            "http://assets1.xboxlive.cn/7/9bcb9729-a886-4ff0-8a1b-2ea27294bdc6/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13027.0.4d3d7571-540b-4ebb-9968-a301639d6c0c/Microsoft.MinecraftWindowsBeta_1.21.13027.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("2a1c40e454628b31ac3adb189538ba49"),
+        ),
+        (
+            "1.21.130.26",
+            "Minecraft 基岩预览版 1.21.13026",
+            "2025-11-04",
+            "preview",
+            "http://assets1.xboxlive.cn/6/05fe140b-9d00-4bb0-9379-6060a7d87bbf/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13026.0.e828de77-9716-42fe-81c5-a8449db51397/Microsoft.MinecraftWindowsBeta_1.21.13026.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("61f99ff02728afe0d087951c8cc428b1"),
+        ),
+        (
+            "1.21.130.25",
+            "Minecraft 基岩预览版 1.21.13025",
+            "2025-10-31",
+            "preview",
+            "http://assets1.xboxlive.cn/6/64211bc6-0531-47af-a59b-a75b7494923e/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13025.0.a9f5b019-e731-48c8-9da8-e19221c7d883/Microsoft.MinecraftWindowsBeta_1.21.13025.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("53eada2976fcbfb44b054298e4c79913"),
+        ),
+        (
+            "1.21.130.24",
+            "Minecraft 基岩预览版 1.21.13024",
+            "2025-10-30",
+            "preview",
+            "http://assets1.xboxlive.cn/1/d92e34c0-657c-4961-982e-15e547d7f401/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13024.0.5300c429-a5af-4d3e-878e-e52da402ff7a/Microsoft.MinecraftWindowsBeta_1.21.13024.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("d02c8bb9581b5fb22424ce71cbcabf2a"),
+        ),
+        (
+            "1.21.130.22",
+            "Minecraft 基岩预览版 1.21.13022",
+            "2025-10-22",
+            "preview",
+            "http://assets1.xboxlive.cn/3/9c302a78-01ec-4b9a-9d2e-bb845890deca/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13022.0.45387b4a-baa2-4b8c-857f-e254e54c2cdb/Microsoft.MinecraftWindowsBeta_1.21.13022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("144d3b77577363894d44fd440d348807"),
+        ),
+        (
+            "1.21.130.20",
+            "Minecraft 基岩预览版 1.21.13020",
+            "2025-10-14",
+            "preview",
+            "http://assets1.xboxlive.cn/14/c6cf3fbf-1bcd-466c-89ad-815b1341c965/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.13020.0.93bb5ef3-9fc8-434c-a090-af8304a87bb9/Microsoft.MinecraftWindowsBeta_1.21.13020.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("06e0d4d640167f8c07a7e2aaab55a55d"),
+        ),
+        (
+            "1.21.130",
+            "Minecraft 基岩版 1.21.13004",
+            "2025-12-09",
+            "release",
+            "http://assets1.xboxlive.cn/13/85f79956-c341-4ed5-a4b7-4a3eba7b4ef8/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.13004.0.c5a9f4f8-403d-45da-a67e-e5c4b654cdb7/MICROSOFT.MINECRAFTUWP_1.21.13004.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("e37370b38347818ef98e32a0828d4e8a"),
+        ),
+        (
+            "1.21.124",
+            "Minecraft 基岩版 1.21.12402",
+            "2025-11-21",
+            "release",
+            "http://assets1.xboxlive.cn/5/94e39fde-e4b3-4b0c-9e4d-fc863879a8fa/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12402.0.d63d9c2d-45e3-4438-89fc-a823f8a2ef0f/MICROSOFT.MINECRAFTUWP_1.21.12402.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("b9394824b04154b3ffa421159db1172d"),
+        ),
+        (
+            "1.21.123",
+            "Minecraft 基岩版 1.21.12302",
+            "2025-11-13",
+            "release",
+            "http://assets1.xboxlive.cn/5/e7c3e87a-85c2-418c-80bf-24a8c18ef443/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12302.0.9652e398-729a-4268-bb97-f11894a52e59/MICROSOFT.MINECRAFTUWP_1.21.12302.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("ec24e82291cd218b446bccaa8fc63ab1"),
+        ),
+        (
+            "1.21.122",
+            "Minecraft 基岩版 1.21.12201",
+            "2025-11-10",
+            "release",
+            "http://assets1.xboxlive.cn/12/61b23c98-8461-4cd6-a537-863fa838948e/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12201.0.a08d9b9e-669e-4aab-a6d1-514bcd0a40cc/MICROSOFT.MINECRAFTUWP_1.21.12201.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("f1f96c9ab83e0b1407ea9d9845e306eb"),
+        ),
+        (
+            "1.21.121",
+            "Minecraft 基岩版 1.21.12101",
+            "2025-11-05",
+            "release",
+            "http://assets1.xboxlive.cn/15/7bf19a96-c045-4b55-b96e-faa32604781a/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12101.0.7590152e-2320-4e06-9e85-8e458890e1e7/MICROSOFT.MINECRAFTUWP_1.21.12101.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("0c0b5df2b44bd24d105f22e2adf37c8a"),
+        ),
+        (
+            "1.21.120.25",
+            "Minecraft 基岩预览版 1.21.12025",
+            "2025-10-07",
+            "preview",
+            "http://assets1.xboxlive.cn/1/65893bb8-80db-4daa-800c-6cb274f4afab/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12025.0.ec675b18-cd7d-4207-8d37-c164f7e4fc70/Microsoft.MinecraftWindowsBeta_1.21.12025.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("fc101790d23161978cedd43fac01c9a3"),
+        ),
+        (
+            "1.21.120.24",
+            "Minecraft 基岩预览版 1.21.12024",
+            "2025-10-01",
+            "preview",
+            "http://assets1.xboxlive.cn/1/b8827b40-998d-4b15-b73f-ff7d70ae1e9c/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12024.0.b0ec0ab6-f9ab-41fa-b664-9091300e8f90/Microsoft.MinecraftWindowsBeta_1.21.12024.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("6a9e31c6d60d6fddebfe9a1998f6b80c"),
+        ),
+        (
+            "1.21.120.23",
+            "Minecraft 基岩预览版 1.21.12023",
+            "2025-09-23",
+            "preview",
+            "http://assets1.xboxlive.cn/4/c21d7589-ffaf-4544-b1c5-926d72752e6c/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12023.0.9f1b49ff-7011-4af2-bb8c-edc1de4b41df/Microsoft.MinecraftWindowsBeta_1.21.12023.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("13d7e750fd99f1b0a1b7f1a08e681f64"),
+        ),
+        (
+            "1.21.120.22",
+            "Minecraft 基岩预览版 1.21.12022",
+            "2025-09-16",
+            "preview",
+            "http://assets1.xboxlive.cn/14/b058fc9d-ce41-4d43-86a3-97d8690ab0b4/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12022.0.bd8e701d-78fe-44ae-bb25-f15ac0001754/Microsoft.MinecraftWindowsBeta_1.21.12022.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("d21ff4f7937c9ad3f91711bba025cc6a"),
+        ),
+        (
+            "1.21.120.21",
+            "Minecraft 基岩预览版 1.21.12021",
+            "2025-09-09",
+            "preview",
+            "http://assets1.xboxlive.cn/12/66b02bc1-c4f1-4986-a183-c23e00cccecb/98bd2335-9b01-4e4c-bd05-ccc01614078b/1.21.12021.0.e5cfeb9c-2eaa-4959-8a49-e82cde29702a/Microsoft.MinecraftWindowsBeta_1.21.12021.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("36b590a36446b1cfc677bd1fbfbed04d"),
+        ),
+        (
+            "1.21.120",
+            "Minecraft 基岩版 1.21.12004",
+            "2025-10-28",
+            "release",
+            "http://assets1.xboxlive.cn/1/7d219e7c-a46e-4afc-8176-cec808fc1e1b/7792d9ce-355a-493c-afbd-768f4a77c3b0/1.21.12004.0.0ed99274-787a-4d02-8344-7c6bd1ef77c8/MICROSOFT.MINECRAFTUWP_1.21.12004.0_x64__8wekyb3d8bbwe.msixvc",
+            Some("d1a1c8526374596be545b046db3f6e47"),
+        ),
     ];
 
     let mut list = Vec::with_capacity(verified_builds.len());
@@ -1324,9 +1932,18 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
 
         let candidate_sources = [
             (primary_url, label),
-            ("https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json", "BedrockBoot 源 (Gitee 镜像)"),
-            ("https://api.chlna6666.com/api/v1/bedrock/mcappx", "BMCBL 源 ①"),
-            ("https://data.mcappx.com/v2/bedrock.json", "McAppx 源 (BedrockBoot 官方)"),
+            (
+                "https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json",
+                "BedrockBoot 源 (Gitee 镜像)",
+            ),
+            (
+                "https://api.chlna6666.com/api/v1/bedrock/mcappx",
+                "BMCBL 源 ①",
+            ),
+            (
+                "https://data.mcappx.com/v2/bedrock.json",
+                "McAppx 源 (BedrockBoot 官方)",
+            ),
         ];
 
         for (url, src_label) in candidate_sources {
@@ -2347,6 +2964,13 @@ fn winget_available() -> bool {
 
 #[cfg(target_os = "windows")]
 pub fn ensure_gaming_services_running(app: Option<&crate::bridge::AppHandle>) {
+    let app_clone = app.cloned();
+    std::thread::spawn(move || {
+        ensure_gaming_services_running_internal(app_clone.as_ref());
+    });
+}
+
+fn ensure_gaming_services_running_internal(app: Option<&crate::bridge::AppHandle>) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -3824,7 +4448,11 @@ pub fn launch_bedrock_edition(
                     if let Some(exe) = insp.main_executable {
                         let work_dir = exe.parent().unwrap_or(&target_dir);
                         spawn_bedrock_exe(&exe, work_dir, insp.is_server)?;
-                        let type_desc = if insp.is_server { "服务端核心" } else { "客户端" };
+                        let type_desc = if insp.is_server {
+                            "服务端核心"
+                        } else {
+                            "客户端"
+                        };
                         return Ok(format!("已启动基岩版{type_desc} ({clean_vid})"));
                     }
                 }
@@ -3847,7 +4475,11 @@ pub fn launch_bedrock_edition(
             candidates.sort_by(|a, b| b.3.cmp(&a.3));
             if let Some((exe, dir, is_server, name)) = candidates.into_iter().next() {
                 spawn_bedrock_exe(&exe, &dir, is_server)?;
-                let type_desc = if is_server { "服务端核心" } else { "客户端" };
+                let type_desc = if is_server {
+                    "服务端核心"
+                } else {
+                    "客户端"
+                };
                 return Ok(format!("已启动本地基岩版{type_desc} ({name})"));
             }
         }
@@ -3940,14 +4572,30 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
 
     // 5. Endstone metadata fallback (BDS versions only; see the guard below)
     let meta_endpoints = [
-        format!("https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/release/{version_id}/metadata.json"),
-        format!("https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/preview/{version_id}/metadata.json"),
-        format!("https://fastly.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/release/{version_id}/metadata.json"),
-        format!("https://fastly.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/preview/{version_id}/metadata.json"),
-        format!("https://raw.gitmirror.com/EndstoneMC/bedrock-server-data/master/release/{version_id}/metadata.json"),
-        format!("https://raw.gitmirror.com/EndstoneMC/bedrock-server-data/master/preview/{version_id}/metadata.json"),
-        format!("https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/master/release/{version_id}/metadata.json"),
-        format!("https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/master/preview/{version_id}/metadata.json"),
+        format!(
+            "https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/release/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://cdn.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/preview/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://fastly.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/release/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://fastly.jsdelivr.net/gh/EndstoneMC/bedrock-server-data@master/preview/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://raw.gitmirror.com/EndstoneMC/bedrock-server-data/master/release/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://raw.gitmirror.com/EndstoneMC/bedrock-server-data/master/preview/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/master/release/{version_id}/metadata.json"
+        ),
+        format!(
+            "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/master/preview/{version_id}/metadata.json"
+        ),
     ];
 
     // 5. Endstone metadata only resolves BDS (server) packages. Never append one
@@ -4001,7 +4649,7 @@ pub async fn install_bedrock_version(
     api_source: Option<&str>,
     threads: usize,
 ) -> Result<String, String> {
-    let threads = threads.clamp(1, 32);
+    let threads = threads.clamp(1, 64);
     let root = net::absolute_path(game_root);
     let cache_dir = root.join("bedrock").join("cache");
     let dest_dir = root.join("bedrock").join("versions").join(version_id);
@@ -5070,7 +5718,10 @@ fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
 fn launch_unix_client() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        for app_path in ["/Applications/MCPELauncher.app", "~/Applications/MCPELauncher.app"] {
+        for app_path in [
+            "/Applications/MCPELauncher.app",
+            "~/Applications/MCPELauncher.app",
+        ] {
             let p = if app_path.starts_with("~/") {
                 if let Ok(h) = std::env::var("HOME") {
                     PathBuf::from(h).join(&app_path[2..])
@@ -5088,7 +5739,13 @@ fn launch_unix_client() -> Option<String> {
         }
     }
 
-    for bin in ["mcpelauncher-client", "mcpelauncher-ui", "/usr/bin/mcpelauncher-client", "/usr/local/bin/mcpelauncher-client", "/opt/homebrew/bin/mcpelauncher-client"] {
+    for bin in [
+        "mcpelauncher-client",
+        "mcpelauncher-ui",
+        "/usr/bin/mcpelauncher-client",
+        "/usr/local/bin/mcpelauncher-client",
+        "/opt/homebrew/bin/mcpelauncher-client",
+    ] {
         if Command::new(bin).spawn().is_ok() {
             return Some("已启动 MCPELauncher 基岩版客户端".to_string());
         }
@@ -5096,7 +5753,11 @@ fn launch_unix_client() -> Option<String> {
 
     #[cfg(target_os = "linux")]
     {
-        if Command::new("flatpak").args(["run", "io.mrarm.mcpelauncher"]).spawn().is_ok() {
+        if Command::new("flatpak")
+            .args(["run", "io.mrarm.mcpelauncher"])
+            .spawn()
+            .is_ok()
+        {
             return Some("已通过 Flatpak 启动 MCPELauncher 基岩版客户端".to_string());
         }
     }
@@ -5110,10 +5771,32 @@ fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
         let home_path = PathBuf::from(home);
         let candidates = [
-            home_path.join(".local").join("share").join("mcpelauncher").join("games").join("com.mojang"),
-            home_path.join(".var").join("app").join("io.mrarm.mcpelauncher").join("data").join("mcpelauncher").join("games").join("com.mojang"),
-            home_path.join("Library").join("Application Support").join("mcpelauncher").join("games").join("com.mojang"),
-            home_path.join("Library").join("Application Support").join("MinecraftBedrock").join("games").join("com.mojang"),
+            home_path
+                .join(".local")
+                .join("share")
+                .join("mcpelauncher")
+                .join("games")
+                .join("com.mojang"),
+            home_path
+                .join(".var")
+                .join("app")
+                .join("io.mrarm.mcpelauncher")
+                .join("data")
+                .join("mcpelauncher")
+                .join("games")
+                .join("com.mojang"),
+            home_path
+                .join("Library")
+                .join("Application Support")
+                .join("mcpelauncher")
+                .join("games")
+                .join("com.mojang"),
+            home_path
+                .join("Library")
+                .join("Application Support")
+                .join("MinecraftBedrock")
+                .join("games")
+                .join("com.mojang"),
         ];
         for candidate in candidates {
             if candidate.is_dir() {
@@ -5122,9 +5805,19 @@ fn client_mojang_dirs(game_root: &Path, create: bool) -> Vec<PathBuf> {
         }
         if create && dirs.is_empty() {
             #[cfg(target_os = "macos")]
-            let target = home_path.join("Library").join("Application Support").join("mcpelauncher").join("games").join("com.mojang");
+            let target = home_path
+                .join("Library")
+                .join("Application Support")
+                .join("mcpelauncher")
+                .join("games")
+                .join("com.mojang");
             #[cfg(not(target_os = "macos"))]
-            let target = home_path.join(".local").join("share").join("mcpelauncher").join("games").join("com.mojang");
+            let target = home_path
+                .join(".local")
+                .join("share")
+                .join("mcpelauncher")
+                .join("games")
+                .join("com.mojang");
 
             if std::fs::create_dir_all(&target).is_ok() {
                 dirs.push(target);
@@ -5534,10 +6227,11 @@ fn install_archive(
     Ok(())
 }
 
-pub async fn install_bedrock_pack(
+pub async fn install_bedrock_pack<'a>(
     game_root: &Path,
     source_path_or_url: &str,
     filename: &str,
+    on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<InstallPackResult, String> {
     let root = net::absolute_path(game_root);
     let cache_dir = root.join("bedrock").join("cache").join("packs");
@@ -5563,7 +6257,7 @@ pub async fn install_bedrock_pack(
             None,
             net::download_threads(),
             None,
-            None,
+            on_progress,
         )
         .await
         .map_err(|e| format!("下载基岩版附加包失败: {e}"))?;
@@ -6775,7 +7469,9 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
             version: ver.to_string(),
             loader_type: "amethyst".to_string(),
             compatible_mc_version: clean_mc.to_string(),
-            download_url: format!("https://github.com/FreerGit/Amethyst/releases/download/v{ver}/Amethyst-Windows.zip"),
+            download_url: format!(
+                "https://github.com/FreerGit/Amethyst/releases/download/v{ver}/Amethyst-Windows.zip"
+            ),
             description: format!("Amethyst 原生 C++ 客户端模组加载器 v{ver}"),
             release_time: None,
             stable: true,
@@ -7332,7 +8028,9 @@ mod tests {
                 .as_millis()
         ));
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let error = tokio::runtime::Runtime::new().unwrap().block_on(delete_bedrock_version(&temp_dir, "uwp"))
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(delete_bedrock_version(&temp_dir, "uwp"))
             .expect_err("the Store client cannot be deleted from the launcher");
         assert!(error.contains("Microsoft Store"), "{error}");
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -7410,10 +8108,12 @@ mod tests {
             !catalog.levilamina.is_empty(),
             "LeviLamina catalog should not be empty"
         );
-        assert!(catalog
-            .levilamina
-            .iter()
-            .any(|l| l.loader_type == "levilamina"));
+        assert!(
+            catalog
+                .levilamina
+                .iter()
+                .any(|l| l.loader_type == "levilamina")
+        );
         assert!(
             !catalog.amethyst.is_empty(),
             "Amethyst catalog should not be empty"
@@ -7582,9 +8282,11 @@ mod tests {
         // Check get_bedrock_status
         let status = get_bedrock_status(&temp_dir);
         assert!(status.standalone_installed);
-        assert!(status
-            .installed_versions
-            .contains(&"1.21.60.25".to_string()));
+        assert!(
+            status
+                .installed_versions
+                .contains(&"1.21.60.25".to_string())
+        );
         assert!(status.installed_versions.contains(&"1.21.50".to_string()));
 
         let _ = force_remove_dir_all(&temp_dir);
@@ -7967,11 +8669,13 @@ mod pack_install_tests {
             nested_dir.display()
         );
         // The nested archive itself must not be left behind inside the pack.
-        assert!(!mojang
-            .join("behavior_packs")
-            .join("Main_BP_aaaaaaaa")
-            .join("packs/nested.mcpack")
-            .exists());
+        assert!(
+            !mojang
+                .join("behavior_packs")
+                .join("Main_BP_aaaaaaaa")
+                .join("packs/nested.mcpack")
+                .exists()
+        );
 
         let _ = force_remove_dir_all(&dir);
     }
@@ -8041,11 +8745,13 @@ mod pack_install_tests {
         install_archive(&archive, &[mojang.clone()], 0, &mut outcome).unwrap();
 
         assert_eq!(outcome.pack_names, vec!["Slime Pack".to_string()]);
-        assert!(mojang
-            .join("resource_packs")
-            .join("Slime_Pack_11111111")
-            .join("manifest.json")
-            .is_file());
+        assert!(
+            mojang
+                .join("resource_packs")
+                .join("Slime_Pack_11111111")
+                .join("manifest.json")
+                .is_file()
+        );
 
         let _ = force_remove_dir_all(&dir);
     }
@@ -8079,11 +8785,13 @@ mod pack_install_tests {
             .expect("world is listed");
         assert_eq!(listed.name, "Skyblock");
         assert_eq!(listed.location, "启动器便携目录");
-        assert!(listed
-            .icon
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("data:image/jpeg;base64,"));
+        assert!(
+            listed
+                .icon
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("data:image/jpeg;base64,")
+        );
 
         // A path outside `minecraftWorlds` is refused, not deleted.
         let outside = data_dir.join("resource_packs");
@@ -8093,9 +8801,11 @@ mod pack_install_tests {
 
         delete_bedrock_world(&dir, &listed.path).unwrap();
         assert!(!world_dir.exists());
-        assert!(get_bedrock_worlds(&dir)
-            .iter()
-            .all(|world| world.folder != "Skyblock123"));
+        assert!(
+            get_bedrock_worlds(&dir)
+                .iter()
+                .all(|world| world.folder != "Skyblock123")
+        );
 
         let _ = force_remove_dir_all(&dir);
     }
@@ -8137,11 +8847,13 @@ mod pack_install_tests {
         assert_eq!(listed.description, "A test pack");
         assert!(listed.enabled);
         assert_eq!(listed.location, "启动器便携目录");
-        assert!(listed
-            .icon
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("data:image/png;base64,"));
+        assert!(
+            listed
+                .icon
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("data:image/png;base64,")
+        );
 
         set_bedrock_pack_enabled(&dir, &listed.path, false).unwrap();
         let disabled = get_bedrock_packs(&dir)
@@ -8149,10 +8861,12 @@ mod pack_install_tests {
             .find(|pack| pack.id == listed.id)
             .expect("disabled pack stays listed");
         assert!(!disabled.enabled);
-        assert!(disabled
-            .path
-            .replace('\\', "/")
-            .contains("cobble_disabled_packs/resource_packs/TestPack_1111"));
+        assert!(
+            disabled
+                .path
+                .replace('\\', "/")
+                .contains("cobble_disabled_packs/resource_packs/TestPack_1111")
+        );
         assert!(!pack_dir.exists());
 
         set_bedrock_pack_enabled(&dir, &disabled.path, true).unwrap();
@@ -8245,16 +8959,20 @@ mod pack_install_tests {
         std::fs::write(world_dir.join("levelname.txt"), "Staged World").unwrap();
 
         assert_eq!(sync_portable_to_targets(&portable, &[client.clone()]), 2);
-        assert!(client
-            .join("resource_packs")
-            .join("Staged_Pack")
-            .join("manifest.json")
-            .is_file());
-        assert!(client
-            .join("minecraftWorlds")
-            .join("World123")
-            .join("level.dat")
-            .is_file());
+        assert!(
+            client
+                .join("resource_packs")
+                .join("Staged_Pack")
+                .join("manifest.json")
+                .is_file()
+        );
+        assert!(
+            client
+                .join("minecraftWorlds")
+                .join("World123")
+                .join("level.dat")
+                .is_file()
+        );
 
         // Running again copies nothing (the pack and world already exist).
         assert_eq!(sync_portable_to_targets(&portable, &[client.clone()]), 0);
@@ -8273,10 +8991,12 @@ mod pack_install_tests {
         )
         .unwrap();
         sync_portable_to_targets(&portable, &[other_client.clone()]);
-        assert!(!other_client
-            .join("resource_packs")
-            .join("Staged_Pack")
-            .exists());
+        assert!(
+            !other_client
+                .join("resource_packs")
+                .join("Staged_Pack")
+                .exists()
+        );
 
         let _ = force_remove_dir_all(&dir);
     }

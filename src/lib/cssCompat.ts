@@ -58,21 +58,39 @@ export function chromium108CssCompatPlugin(): Plugin {
     "--color-black": "0, 0, 0",
   };
 
+  const VAR_EXPR = /^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/;
+
+  /**
+   * 只接受精确的变量名。早先的 includes 匹配会让 `--muted-foreground`
+   * 先命中 `--muted`，把前景文字解析成接近黑色的背景色；
+   * `--sidebar-accent` 也会先命中 `--sidebar`。精确匹配才能让
+   * `/70`、`/80` 这类前景透明度使用正确的 `*-fg-rgb`。
+   */
+  function lookupRgb(token: string): string | undefined {
+    const direct = COLOR_RGB_MAP[token];
+    if (direct) return direct;
+
+    // @theme inline 在不同 Tailwind 版本里可能生成 `--color-muted-foreground`。
+    if (token.startsWith("--color-")) {
+      return COLOR_RGB_MAP[`--${token.slice("--color-".length)}`];
+    }
+
+    return undefined;
+  }
+
   function resolveRgba(colorExpr: string, pctStr: string): string | null {
     const alpha = (parseFloat(pctStr) / 100).toFixed(4).replace(/\.?0+$/, "");
     const cleanExpr = colorExpr.trim();
 
     if (cleanExpr === "currentcolor" || cleanExpr === "currentColor") {
-      return `rgba(currentColor, ${alpha})`;
+      // rgba() 不接受 currentColor；保留原色比生成非法声明更安全。
+      return null;
     }
 
-    for (const [token, rgb] of Object.entries(COLOR_RGB_MAP)) {
-      if (cleanExpr.includes(token)) {
-        return `rgba(${rgb}, ${alpha})`;
-      }
-    }
-
-    return null;
+    const varMatch = cleanExpr.match(VAR_EXPR);
+    const token = varMatch ? varMatch[1] : cleanExpr;
+    const rgb = lookupRgb(token);
+    return rgb ? `rgba(${rgb}, ${alpha})` : null;
   }
 
   function transformCss(code: string): string {
@@ -135,6 +153,15 @@ export function chromium108CssCompatPlugin(): Plugin {
   return {
     name: "vite-plugin-chromium108-css-compat",
     enforce: "post",
+    transform(code, id) {
+      if (id.endsWith(".css") || id.includes("tailwind") || id.includes(".css?")) {
+        return {
+          code: transformCss(code),
+          map: null,
+        };
+      }
+      return null;
+    },
     generateBundle(_options, bundle) {
       for (const file of Object.values(bundle)) {
         if (file.type === "asset" && file.fileName.endsWith(".css") && typeof file.source === "string") {

@@ -1,5 +1,5 @@
-use futures_util::future::try_join_all;
 use futures_util::StreamExt;
+use futures_util::future::try_join_all;
 use reqwest::header::RANGE;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -509,7 +509,7 @@ pub async fn download_file_multithreaded<'a>(
     }
 
     let part = part_path(dest);
-    let threads = threads.clamp(1, 16);
+    let threads = threads.clamp(1, 64);
 
     // Try segmented multi-threaded download for large files when multiple threads are allowed.
     // When expected_size is unknown (None), still probe HTTP Range so large downloads (Bedrock cores, etc.) auto-accelerate.
@@ -568,11 +568,7 @@ pub async fn download_file_multithreaded<'a>(
             }
             // 放弃分片时直接丢掉 future，连接会立刻释放；返回 None 表示
             // “这条线路不适合多线程”，交给下面的单连接流程。
-            if stalled {
-                None
-            } else {
-                outcome
-            }
+            if stalled { None } else { outcome }
         };
 
         match segmented_result {
@@ -646,6 +642,89 @@ pub async fn download_file_multithreaded<'a>(
 /// 分片布局与已完成的分片记在 `<dest>.part.meta` 里：关掉启动器、切换镜像或者
 /// 重新点一次下载，都只会补下没完成的那几段，而不是从 0 开始。线路限制并发连接
 /// 时（GitHub 加速镜像上很常见），会自动改成单连接把剩余分片顺序补完。
+#[derive(Debug, Clone)]
+pub struct RangeProbe {
+    pub final_url: String,
+    pub total: u64,
+}
+
+/// Probes whether the server supports HTTP Range requests and resolves the final URL
+/// (following redirects while preserving byte-range capabilities).
+pub async fn probe_range_support(
+    url: &str,
+    expected_size: Option<u64>,
+) -> Result<Option<RangeProbe>, String> {
+    let probe = client()
+        .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .header(RANGE, "bytes=0-0")
+        .send()
+        .await
+        .map_err(|e| format!("分片探测失败 ({url}): {e}"))?;
+
+    if probe.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("下载失败 ({url}): HTTP 404"));
+    }
+
+    let final_url = probe.url().to_string();
+
+    if probe.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        let total = probe
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_total)
+            .or(expected_size)
+            .unwrap_or(0);
+        drop(probe);
+        if total > 0 {
+            return Ok(Some(RangeProbe { final_url, total }));
+        }
+    } else {
+        // When reqwest follows cross-origin redirects (e.g. BMCLAPI, Mojang, Adoptium, Azure CDN),
+        // it strips the Range header per standard HTTP client security policy, causing the
+        // destination server to return 200 OK.
+        // If the URL was redirected, probe the terminal destination URL directly with Range.
+        let total_hint = probe
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(expected_size);
+        drop(probe);
+
+        if final_url != url {
+            let direct = client()
+                .get(&final_url)
+                .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                .header(RANGE, "bytes=0-0")
+                .send()
+                .await
+                .map_err(|e| format!("分片重定向探测失败 ({final_url}): {e}"))?;
+
+            let terminal_url = direct.url().to_string();
+            if direct.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                let total = direct
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_content_range_total)
+                    .or(total_hint)
+                    .unwrap_or(0);
+                drop(direct);
+                if total > 0 {
+                    return Ok(Some(RangeProbe {
+                        final_url: terminal_url,
+                        total,
+                    }));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 pub async fn download_file_resumable<'a>(
     url: &str,
     dest: &Path,
@@ -662,33 +741,14 @@ pub async fn download_file_resumable<'a>(
     }
 
     let part = part_path(dest);
-    let threads = threads.clamp(1, 16);
+    let threads = threads.clamp(1, 64);
 
-    // 先确认这条线路支不支持 Range，顺便拿到总长度：不支持的只能整体重下。
-    let probe = client()
-        .get(url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header(RANGE, "bytes=0-0")
-        .send()
-        .await
-        .map_err(|e| format!("分片探测失败 ({url}): {e}"))?;
-
-    if probe.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("下载失败 ({url}): HTTP 404"));
-    }
-
-    let total = if probe.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-        probe
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(parse_content_range_total)
-            .or(expected_size)
-            .unwrap_or(0)
-    } else {
-        0
+    // 先确认这条线路支不支持 Range，顺便拿到总长度与最终重定向目标
+    let probe_opt = probe_range_support(url, expected_size).await?;
+    let (total, target_url) = match probe_opt {
+        Some(probe) => (probe.total, probe.final_url),
+        None => (0, url.to_string()),
     };
-    drop(probe);
 
     let segments = if total >= MIN_MULTITHREAD_SIZE {
         compute_segments(total, threads)
@@ -766,14 +826,14 @@ pub async fn download_file_resumable<'a>(
 
         let mut tasks = tokio::task::JoinSet::new();
         for (index, start, end) in &pending {
-            let url = url.to_string();
+            let worker_url = target_url.clone();
             let part = part.clone();
             let downloaded = downloaded.clone();
             let tx = tx.clone();
             let done_tx = done_tx.clone();
             let (index, start, end) = (*index, *start, *end);
             tasks.spawn(async move {
-                fetch_range_into(&url, &part, start, end, &downloaded, &tx)
+                fetch_range_into(&worker_url, &part, start, end, &downloaded, &tx)
                     .await
                     .map(|attempts| {
                         let _ = done_tx.send((index, end - start + 1));
@@ -865,7 +925,7 @@ pub async fn download_file_resumable<'a>(
                 // 一边补这一片，一边把分片里的进度报出去：慢线路上单连接可能
                 // 要拉几分钟，不能等到整片结束才有动静。
                 let attempts = {
-                    let fetch = fetch_range_into(url, &part, start, end, &downloaded, &tx);
+                    let fetch = fetch_range_into(&target_url, &part, start, end, &downloaded, &tx);
                     tokio::pin!(fetch);
                     loop {
                         tokio::select! {
@@ -1049,6 +1109,23 @@ async fn fetch_range_into(
                 .await
                 .map_err(|e| format!("分片请求失败 ({url}): {e}"))?;
 
+            // If a redirect occurred and the target returned 200 (due to Range header being stripped on redirect),
+            // reissue the Range request directly to the redirected target.
+            let redirected_url = response.url().to_string();
+            let response = if response.status() == reqwest::StatusCode::OK && redirected_url != url
+            {
+                drop(response);
+                client()
+                    .get(&redirected_url)
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                    .header(RANGE, format!("bytes={start}-{end}"))
+                    .send()
+                    .await
+                    .map_err(|e| format!("分片重定向请求失败 ({redirected_url}): {e}"))?
+            } else {
+                response
+            };
+
             if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                 return Err(format!(
                     "服务器未返回分片数据 ({url}): HTTP {}",
@@ -1131,32 +1208,12 @@ async fn try_segmented_download<'a>(
     retry_counter: Option<&AtomicU64>,
     mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<Option<u64>, String> {
-    // Probe with a 1-byte range request to verify 206 Partial Content support and total length.
-    let probe = client()
-        .get(url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header(RANGE, "bytes=0-0")
-        .send()
-        .await
-        .map_err(|e| format!("分片探测失败 ({url}): {e}"))?;
-
-    if probe.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("下载失败 ({url}): HTTP 404"));
-    }
-
-    if probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+    let Some(probe) = probe_range_support(url, expected_size).await? else {
         return Ok(None);
-    }
+    };
 
-    let total = probe
-        .headers()
-        .get(reqwest::header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_content_range_total)
-        .or(expected_size)
-        .unwrap_or(0);
-
-    drop(probe);
+    let total = probe.total;
+    let final_url = probe.final_url;
 
     if total < MIN_MULTITHREAD_SIZE {
         return Ok(None);
@@ -1183,11 +1240,11 @@ async fn try_segmented_download<'a>(
     let segment_futures: Vec<_> = segments
         .into_iter()
         .map(|(start, end)| {
-            let url = url.to_string();
+            let worker_url = final_url.clone();
             let part = part.to_path_buf();
             let downloaded = downloaded.clone();
             let tx = tx.clone();
-            async move { fetch_range_into(&url, &part, start, end, &downloaded, &tx).await }
+            async move { fetch_range_into(&worker_url, &part, start, end, &downloaded, &tx).await }
         })
         .collect();
 
@@ -1276,7 +1333,7 @@ pub fn compute_segments(total: u64, max_threads: usize) -> Vec<(u64, u64)> {
         return Vec::new();
     }
     let max_by_size = (total / MIN_SEGMENT_SIZE).max(1) as usize;
-    let count = max_threads.clamp(1, 16).min(max_by_size);
+    let count = max_threads.clamp(1, 64).min(max_by_size);
     if count <= 1 {
         return vec![(0, total - 1)];
     }
@@ -1309,6 +1366,7 @@ pub fn recommended_segments(size: Option<u64>, max_threads: usize) -> u32 {
         Some(total) if total >= MIN_MULTITHREAD_SIZE && max_threads > 1 => {
             compute_segments(total, max_threads).len() as u32
         }
+        None if max_threads > 1 => max_threads.clamp(1, 16) as u32,
         _ => 1,
     }
 }

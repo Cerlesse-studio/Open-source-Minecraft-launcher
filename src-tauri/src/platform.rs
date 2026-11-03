@@ -93,7 +93,10 @@ pub fn os_label() -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("sw_vers").arg("-productVersion").output() {
+        if let Ok(output) = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+        {
             let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !ver.is_empty() {
                 return format!("macOS {ver}");

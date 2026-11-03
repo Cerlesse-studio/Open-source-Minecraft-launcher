@@ -11,7 +11,6 @@ import { isRoomPassword, ROOM_PASSWORD_MIN } from "../lib/multiplayer";
 
 interface HostPermissionPanelProps {
   config: MultiplayerConfig;
-  running: boolean;
   onChangeConfig: (patch: Partial<MultiplayerConfig>) => void;
 }
 
@@ -25,7 +24,6 @@ const BANDWIDTH_PRESETS = [
 
 export function HostPermissionPanel({
   config,
-  running,
   onChangeConfig,
 }: HostPermissionPanelProps) {
   const [showPassword, setShowPassword] = useState(false);
@@ -77,13 +75,11 @@ export function HostPermissionPanel({
               应用
             </Button>
           </div>
-          <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground/70">
-            {valid
-              ? running
-                ? "改密码会重启房间，旧分享码作废。"
-                : "改密码后旧分享码作废。"
-              : `密码需要 ${ROOM_PASSWORD_MIN}–32 位，仅限字母、数字和英文符号。`}
-          </p>
+          {!valid ? (
+            <p className="mt-1.5 text-[10px] leading-4 text-gold">
+              密码需要 {ROOM_PASSWORD_MIN}–32 位，仅限字母、数字和英文符号。
+            </p>
+          ) : null}
         </div>
 
         <div>
@@ -105,12 +101,7 @@ export function HostPermissionPanel({
               </button>
             ))}
           </div>
-
         </div>
-
-        <p className="border-t border-border/50 pt-3 text-[10px] leading-4 text-muted-foreground/70">
-          真正的门禁是房间密码，要立即清场就改密码。
-        </p>
       </div>
     </section>
   );
