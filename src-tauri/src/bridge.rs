@@ -124,6 +124,13 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
         "download_content_file" => {
             to_value(crate::download_content_file(app.clone(), argument(&args, "request")?).await?)
         }
+        "check_java_world_update" => to_value(
+            crate::check_java_world_update(
+                argument(&args, "projectId")?,
+                argument(&args, "currentFileId")?,
+            )
+            .await?,
+        ),
         "get_version_loaders" => {
             to_value(crate::get_version_loaders(argument(&args, "mcVersion")?).await?)
         }

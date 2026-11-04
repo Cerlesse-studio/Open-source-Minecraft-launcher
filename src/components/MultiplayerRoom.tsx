@@ -530,9 +530,7 @@ export function MultiplayerRoom({
                 </Button>
                 {autoLanPort ? (
                   <span className="text-[9px] text-primary">已自动从游戏日志检测</span>
-                ) : (
-                  <span className="text-[9px] text-muted-foreground">游戏内开放局域网后会自动读取</span>
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -709,7 +707,6 @@ export function MultiplayerRoom({
               {hosts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-1.5 py-7 text-center text-muted-foreground">
                   <Radio className="size-4 opacity-40" />
-                  <p className="text-[10.5px]">加入房间后，房主的世界会自动出现在这里</p>
                 </div>
               ) : (
                 <div className="space-y-1.5">

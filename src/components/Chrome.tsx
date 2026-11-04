@@ -183,7 +183,7 @@ export function Sidebar({
       ? t("正在检测 Java")
       : t("Java 未检测到");
   const javaDetail = javaMajor
-    ? t("启动时会再次校验版本")
+    ? ""
     : javaDetecting
       ? t("正在扫描本机与运行时")
       : t("首次启动会自动安装");
@@ -261,9 +261,6 @@ export function Sidebar({
                 >
                   {signedInName ? t("正版") : t("离线")}
                 </Badge>
-              </span>
-              <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                {signedInName ? t("Java 与基岩版共用此账户") : t("本地账户")}
               </span>
             </span>
             <Settings2 className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
@@ -367,7 +364,7 @@ export function Sidebar({
       {collapsed ? (
         <div
           className="mx-auto flex size-12 flex-col items-center justify-center gap-1 rounded-xl border border-sidebar-border bg-sidebar-accent/30"
-          title={`${javaLabel} — ${javaDetail}`}
+          title={javaDetail ? `${javaLabel} — ${javaDetail}` : javaLabel}
         >
           <Coffee className="size-4 text-gold" />
           <StatusDot
@@ -384,12 +381,14 @@ export function Sidebar({
               className="ml-auto"
             />
           </div>
-          <p
-            className="mt-1.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground"
-            title={javaPath || undefined}
-          >
-            {javaDetail}
-          </p>
+          {javaDetail ? (
+            <p
+              className="mt-1.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground"
+              title={javaPath || undefined}
+            >
+              {javaDetail}
+            </p>
+          ) : null}
         </div>
       )}
 

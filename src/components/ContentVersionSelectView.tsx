@@ -26,7 +26,7 @@ import {
   openExternalUrl,
   resolveMcmodEntry,
 } from "../lib/backend";
-import { formatBytes, formatRelativeDate } from "../lib/format";
+import { formatBytes, formatRelativeDate, pathUnderRoot } from "../lib/format";
 import type {
   ContentHit,
   ContentProjectType,
@@ -51,6 +51,11 @@ export interface ContentVersionSelectViewProps {
   project: ContentHit;
   projectType: ContentProjectType;
   gameRoot: string;
+  /** Selected Java version, so a map lands in that instance's saves folder. */
+  selectedVersion?: string;
+  isolation?: string;
+  /** Absolute saves folder for the selected version, shown in the target pill. */
+  worldSavesPath?: string;
   initialGameVersion?: string;
   initialLoader?: string;
   onBack: () => void;
@@ -76,6 +81,8 @@ function projectTypeLabel(type: ContentProjectType): string {
       return "资源包";
     case "modpack":
       return "整合包";
+    case "world":
+      return "地图";
     default:
       return "资源";
   }
@@ -94,6 +101,8 @@ function typeDestinationPath(type: ContentProjectType): string {
       return "resourcepacks/";
     case "modpack":
       return "modpacks/";
+    case "world":
+      return "saves/<地图名>";
     default:
       return "downloads/";
   }
@@ -125,6 +134,22 @@ function projectSiteLink(
   isBedrock: boolean,
 ): { label: string; url: string } {
   const slug = (project.slug || project.projectId).trim();
+  if (project.projectId.startsWith("cbw:")) {
+    return {
+      label: "CurseForge",
+      url: `https://www.curseforge.com/minecraft-bedrock/maps/${encodeURIComponent(
+        slug.replace(/^cbw:/, ""),
+      )}`,
+    };
+  }
+  if (projectType === "world") {
+    return {
+      label: "CurseForge",
+      url: `https://www.curseforge.com/minecraft/worlds/${encodeURIComponent(
+        slug.replace(/^cfw:/, ""),
+      )}`,
+    };
+  }
   if (isBedrock) {
     const section = projectType === "resourcepack" ? "texture-packs" : "addons";
     return {
@@ -231,6 +256,14 @@ interface LoaderMeta {
 
 function loaderMeta(raw?: string | null, bedrock = false): LoaderMeta {
   const key = (raw ?? "").trim().toLowerCase();
+  if (key === "world" || key === "地图") {
+    return {
+      key: "world",
+      label: "地图",
+      short: "MAP",
+      tile: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    };
+  }
   if (bedrock || key === "bedrock" || key === "基岩版") {
     return {
       key: "bedrock",
@@ -337,6 +370,9 @@ export function ContentVersionSelectView({
   project,
   projectType,
   gameRoot,
+  selectedVersion,
+  isolation,
+  worldSavesPath,
   initialGameVersion = "all",
   initialLoader = "all",
   onBack,
@@ -361,9 +397,15 @@ export function ContentVersionSelectView({
   const [wikiEntry, setWikiEntry] = useState<WikiEntry | null>(null);
   const [wikiLoading, setWikiLoading] = useState(false);
 
+  // Bedrock worlds use their own id prefix: their archive is unpacked into
+  // `minecraftWorlds`, not `resource_packs`/`behavior_packs` or Java `saves/`.
+  const isBedrockWorld = project.projectId.startsWith("cbw:");
   // Bedrock projects come from CurseForge; their files are pack archives that
   // the installer unpacks into the game data folder, not a Java instance.
-  const isCurseForgeBedrock = project.projectId.startsWith("cfb:");
+  const isCurseForgeBedrock =
+    project.projectId.startsWith("cfb:") || isBedrockWorld;
+  const isCurseForgeWorld =
+    projectType === "world" && !isBedrockWorld;
 
   // CurseForge hits carry a `cfb:` id; the category check keeps older cached
   // entries (and the demo dataset) on the same code path.
@@ -630,7 +672,7 @@ export function ContentVersionSelectView({
     try {
       const res = await downloadContentFile({
         root: gameRoot,
-        instanceId: matched?.id,
+        instanceId: isCurseForgeWorld ? selectedVersion : matched?.id,
         projectType,
         url: file.url,
         filename: file.filename,
@@ -638,7 +680,11 @@ export function ContentVersionSelectView({
         size: file.size,
         title: project.title,
         gameVersions: versionItem.gameVersions,
-        loader: versionItem.loaders[0],
+        loader: isBedrockWorld ? "bedrock" : versionItem.loaders[0],
+        isolation: isCurseForgeWorld ? isolation : undefined,
+        sourceProjectId: isCurseForgeWorld ? project.projectId : undefined,
+        sourceFileId: isCurseForgeWorld ? versionItem.id : undefined,
+        sourceVersion: isCurseForgeWorld ? versionItem.name : undefined,
       });
       setDownloadedSet((prev) => new Set(prev).add(versionItem.id));
       const matchedNote =
@@ -686,16 +732,30 @@ export function ContentVersionSelectView({
     ? `versions/${defaultModInstance.id}/mods`
     : null;
 
-  const destinationFolder = isCurseForgeBedrock
-    ? "bedrock/games/com.mojang"
-    : isJavaMod
-      ? (modTargetPath ?? "versions/<对应版本>/mods")
-      : typeDestinationPath(projectType);
-  const folderToOpen = isCurseForgeBedrock
-    ? destinationFolder
-    : isJavaMod
-      ? modTargetPath
-      : typeDestinationPath(projectType);
+  const worldSavesRelative = isCurseForgeWorld
+    ? worldSavesPath
+      ? pathUnderRoot(worldSavesPath, gameRoot)
+      : "saves"
+    : "";
+  const bedrockWorldFolder = "bedrock/games/com.mojang/minecraftWorlds";
+  const destinationFolder = isBedrockWorld
+    ? "com.mojang/minecraftWorlds/<地图名>"
+    : isCurseForgeBedrock
+      ? "bedrock/games/com.mojang"
+      : isCurseForgeWorld
+        ? `${worldSavesRelative}/<地图名>`
+        : isJavaMod
+          ? (modTargetPath ?? "versions/<对应版本>/mods")
+          : typeDestinationPath(projectType);
+  const folderToOpen = isBedrockWorld
+    ? bedrockWorldFolder
+    : isCurseForgeBedrock
+      ? destinationFolder
+      : isCurseForgeWorld
+        ? worldSavesRelative
+        : isJavaMod
+          ? modTargetPath
+          : typeDestinationPath(projectType);
 
   const showLoaderFilter =
     !isCurseForgeBedrock &&
@@ -743,6 +803,10 @@ export function ContentVersionSelectView({
                 {isCurseForgeBedrock ? (
                   <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
                     CurseForge · 基岩版
+                  </Badge>
+                ) : isCurseForgeWorld ? (
+                  <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
+                    CurseForge · 地图
                   </Badge>
                 ) : null}
               </div>
@@ -971,15 +1035,23 @@ export function ContentVersionSelectView({
             <span>
               {isJavaMod
                 ? "模组只会安装到游戏版本一致的本地实例"
-                : isCurseForgeBedrock
-                  ? "附加包会解包安装到游戏数据目录"
-                  : "文件将保存到目标目录"}
+                : isBedrockWorld
+                  ? "地图会解包到 minecraftWorlds，启动基岩版后直接出现在世界列表"
+                  : isCurseForgeWorld
+                    ? "地图会解压安装到 saves，完成后直接出现在单人游戏列表"
+                    : isCurseForgeBedrock
+                      ? "附加包会解包安装到游戏数据目录"
+                      : "文件将保存到目标目录"}
             </span>
             {folderToOpen ? (
               <button
                 type="button"
                 onClick={() => {
-                  onOpenFolder(`${gameRoot}/${folderToOpen}`);
+                  onOpenFolder(
+                    isCurseForgeWorld && worldSavesPath
+                      ? worldSavesPath
+                      : `${gameRoot}/${folderToOpen}`,
+                  );
                 }}
                 title="点击打开对应存储文件夹"
                 className="group flex items-center gap-1.5 rounded-lg border border-border/50 bg-background/40 px-2.5 py-1 text-[10.5px] text-muted-foreground transition hover:border-primary/40 hover:bg-primary/5 hover:text-foreground"
@@ -1042,9 +1114,13 @@ export function ContentVersionSelectView({
               未找到匹配的可用构建
             </p>
             <p className="mt-1 text-[11px]">
-              {isCurseForgeBedrock
-                ? "该附加包在 CurseForge 上暂无可用下载文件，或网络无法连接镜像源。"
-                : "尝试切换到「全部」版本、调整加载器，或清除搜索关键词。"}
+              {isBedrockWorld
+                ? "该地图在 CurseForge 上暂无可用下载文件，或网络无法连接镜像源。"
+                : isCurseForgeBedrock
+                  ? "该附加包在 CurseForge 上暂无可用下载文件，或网络无法连接镜像源。"
+                  : isCurseForgeWorld
+                  ? "该地图在 CurseForge 上暂无可用下载文件，或网络无法连接镜像源。"
+                  : "尝试切换到「全部」版本、调整加载器，或清除搜索关键词。"}
             </p>
           </Card>
         ) : (

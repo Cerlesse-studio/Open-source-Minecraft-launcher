@@ -4,18 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Open-source-Minecraft-launcher · 开源 Minecraft 启动器</title>
-  <meta name="description" content="Open-source-Minecraft-launcher 是一个基于 Electron + Rust + React 19 的开源 Minecraft 启动器，支持 Java 版与基岩版、多线程下载、模组加载器、内容市场与 EasyTier 联机。" />
+  <meta name="description" content="Open-source-Minecraft-launcher 是一个基于 Electron + Rust + React 19 的开源 Minecraft 启动器：Java 版与基岩版、扩展系统、中英双语、纯 P2P / 公益节点联机、OTA 更新与多线程下载。" />
   <meta name="theme-color" content="#060a07" />
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Open-source-Minecraft-launcher · 开源 Minecraft 启动器" />
-  <meta property="og:description" content="Java 版与基岩版统一管理，内置下载、模组、账户与 IPv6 P2P 联机。" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:description" content="Java 版与基岩版统一管理，内置扩展系统、中英双语、P2P / 公益节点联机、OTA 更新、下载、模组与账户。" />
+  <meta property="og:image" content="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/assets/og.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" as="image" href="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" />
   <link rel="stylesheet" href="assets/site.css" />
   <script src="assets/site.js" defer></script>
 </head>
@@ -75,16 +76,16 @@
 
   <main id="main">
     <section class="hero">
-      <div class="container">
+      <div class="container hero-grid">
         <div class="hero-copy">
-          <span class="eyebrow">OPEN SOURCE · v0.0.7</span>
+          <span class="eyebrow"><span class="eyebrow-dot"></span> OPEN SOURCE · v0.1.4</span>
           <h1 class="hero-title">
             轻量、现代、<span class="gradient-text">开源</span><br />
             <span class="gradient-text">Minecraft 启动器</span>
           </h1>
           <p class="hero-lede">
             把 <strong>Java 版与基岩版</strong> 的版本、模组、账户、下载与联机收进一个界面。
-            基于 Electron + Rust + React，Windows 上开箱可用。
+            基于 Electron + Rust + React；0.1.4 带来扩展系统、中英双语、P2P / 公益节点联机与 OTA 更新。
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary btn-lg" href="download.html">
@@ -97,10 +98,25 @@
             </a>
           </div>
           <div class="hero-meta">
-            <span class="hero-meta-item">Windows 10 / 11</span>
+            <span class="hero-meta-item">Windows · macOS · Linux</span>
+            <span class="hero-meta-item">扩展 · 中英双语 · OTA</span>
             <span class="hero-meta-item">MIT License</span>
             <span class="hero-meta-item">无广告 · 本地优先</span>
           </div>
+        </div>
+
+        <div class="hero-visual" data-reveal>
+          <div class="hero-shot">
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-title">Open-source-Minecraft-launcher · 主页</span>
+              <span>v0.1.4</span>
+            </div>
+            <img src="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" data-local-src="images/home.png" onerror="if(this.src!==this.dataset.localSrc){this.src=this.dataset.localSrc;}" width="1440" height="900" alt="Open-source-Minecraft-launcher 主页界面：版本选择、账户状态与启动控制" fetchpriority="high" />
+          </div>
+          <div class="float-chip chip-1"><span class="dot"></span> Java 21 · 自动匹配</div>
+          <div class="float-chip chip-2"><span class="dot"></span> EasyTier · P2P / 公益节点</div>
+          <div class="float-chip chip-3"><span class="dot"></span> 扩展 · Chrome MV2/MV3</div>
         </div>
       </div>
     </section>
@@ -122,11 +138,11 @@
         <div class="feature-grid">
           <article class="feature-card" data-reveal>
             <h3>Java 与基岩版</h3>
-            <p>Java 正式版、快照、愚人节与远古版本，Windows 基岩版核心共用一套版本库。</p>
+            <p>Java 正式版、快照、愚人节与远古版本共用版本库；Windows 基岩版、Linux BDS 与 macOS MCPELauncher 分平台覆盖。</p>
           </article>
           <article class="feature-card" data-reveal>
             <h3>账户与皮肤</h3>
-            <p>微软 OAuth 与离线账户并存，支持正版皮肤和离线皮肤包。</p>
+            <p>微软 OAuth 与离线账户并存，支持正版皮肤、离线皮肤包与基岩版授权检测。</p>
           </article>
           <article class="feature-card" data-reveal>
             <h3>下载与镜像</h3>
@@ -134,16 +150,121 @@
           </article>
           <article class="feature-card" data-reveal>
             <h3>加载器与内容</h3>
-            <p>Forge、NeoForge、Fabric、Quilt、OptiFine；Modrinth 与 CurseForge 的模组、光影、资源包和数据包。</p>
+            <p>Forge、NeoForge、Fabric、Quilt、OptiFine；Modrinth 与 CurseForge 的模组、光影、资源包、数据包、Java / 基岩版地图与整合包。</p>
           </article>
           <article class="feature-card" data-reveal>
-            <h3>IPv6 P2P 联机</h3>
-            <p>EasyTier 虚拟局域网，默认不依赖 STUN、信令或中继；无需公网 IPv6 时可切换公益节点。</p>
+            <h3>联机双模式</h3>
+            <p>默认纯 IPv6 P2P 直连，不经过 STUN / 信令 / 中继；没有公网 IPv6 时可切换公益节点，由协助节点打洞与多线路中继。</p>
           </article>
           <article class="feature-card" data-reveal>
             <h3>实例与个性化</h3>
-            <p>每个版本独立内存、JVM 参数与隔离；支持主题、壁纸、字体、多语言和 PCL2 主页。</p>
+            <p>每个版本独立内存、JVM 参数与隔离；可设置图标、分类、别名、描述与收藏，并支持主题、壁纸、字体与 PCL2 主页。</p>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="whats-new">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">WHAT'S NEW · 0.1.4</span>
+            <h2 class="section-title">0.1.4，多了这些。</h2>
+            <p class="section-desc">这一版把启动器从「版本工具」推进到可扩展的桌面平台：扩展、双语、双模式联机、OTA 更新与跨平台基岩版路径都已就位。</p>
+          </div>
+          <a class="link-arrow section-link" href="docs.html#extensions">
+            查看 0.1.4 文档
+            <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+          </a>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card" data-reveal>
+            <h3>扩展系统</h3>
+            <p>原生扩展支持 JavaScript + Rust/WASM；同时兼容 Chrome Manifest V2 / V3，支持 ZIP / CRX / 已解压目录、启停、导出与卸载。</p>
+            <div class="feature-tags"><span class="feature-tag">Chrome MV2/MV3</span><span class="feature-tag">Rust/WASM</span><span class="feature-tag">NEW</span></div>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>中英双语</h3>
+            <p>界面语言可在简体中文与 English 之间即时切换，设置会持久保存，不需要重启启动器。</p>
+            <div class="feature-tags"><span class="feature-tag">zh-CN</span><span class="feature-tag">en-US</span><span class="feature-tag">NEW</span></div>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>纯 P2P / 公益节点</h3>
+            <p>纯 IPv6 P2P 使用分享码 + 回执码交换入口；公益节点模式通过 EasyTier 协助节点打洞与中继，支持自动优选、手动指定、社区节点同步与自建节点。</p>
+            <div class="feature-tags"><span class="feature-tag">IPv6 P2P</span><span class="feature-tag">Relay</span><span class="feature-tag">NEW</span></div>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>房间资源克隆</h3>
+            <p>访客可以按房主的版本与资源清单，一键克隆游戏版本、模组、光影与数据包，减少版本差异导致的世界进不去。</p>
+            <div class="feature-tags"><span class="feature-tag">Room</span><span class="feature-tag">Clone</span><span class="feature-tag">NEW</span></div>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>OTA 自动更新</h3>
+            <p>在设置中检查 GitHub Releases、查看说明、下载并安装；Windows 单文件 / 安装包与 Linux AppImage 可自动替换，macOS 打开 DMG 安装。</p>
+            <div class="feature-tags"><span class="feature-tag">GitHub Releases</span><span class="feature-tag">OTA</span><span class="feature-tag">NEW</span></div>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>跨平台基岩版</h3>
+            <p>Windows 支持 UWP / GDK / 商店与 BDS；Linux 支持官方 <code>bin-linux</code> BDS；macOS 可接管已安装的 MCPELauncher 客户端。</p>
+            <div class="feature-tags"><span class="feature-tag">Linux BDS</span><span class="feature-tag">macOS</span><span class="feature-tag">NEW</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tight" id="preview">
+      <div class="container">
+        <div class="section-head" data-reveal>
+          <div class="section-head-main">
+            <span class="eyebrow section-kicker">PREVIEW</span>
+            <h2 class="section-title">启动器界面预览</h2>
+            <p class="section-desc">深色现代界面、清晰层级、流畅操作。核心功能统一在一个原生窗口内。</p>
+          </div>
+          <a class="link-arrow section-link" href="download.html">
+            立即下载体验
+            <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+          </a>
+        </div>
+
+        <div class="gallery" data-gallery data-reveal>
+          <div class="gallery-tabs" role="group" aria-label="选择界面截图">
+            <button class="gallery-tab is-active" type="button" data-shot data-src="images/home.png" data-alt="主页界面：版本选择、账户面板与启动控制" data-caption="主页 · 官方动态、当前游戏版本、账户状态与一键启动" aria-pressed="true">
+              <span class="gallery-tab-label">主页总览</span>
+              <span class="gallery-tab-desc">资讯动态与一键启动</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/download.png" data-alt="版本下载中心：Java 版、基岩版、各加载器与快照版本" data-caption="下载中心 · 支持 Java 全版本、基岩版核心与 Forge / Fabric / NeoForge 模组加载器" aria-pressed="false">
+              <span class="gallery-tab-label">版本下载</span>
+              <span class="gallery-tab-desc">全版本与模组加载器</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/settings.png" data-alt="全局设置：下载镜像、并发线程、Java 运行时与界面外观" data-caption="全局设置 · 官方源 / BMCLAPI 镜像切换、并发线程与 JRE 自动配置" aria-pressed="false">
+              <span class="gallery-tab-label">全局设置</span>
+              <span class="gallery-tab-desc">镜像源、线程与 Java 配置</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/version-settings.png" data-alt="实例特异化设置：独立游戏目录、内存分配与 JVM 参数" data-caption="实例设置 · 独立运行隔离、自定义内存大小与 JVM 启动参数" aria-pressed="false">
+              <span class="gallery-tab-label">实例隔离</span>
+              <span class="gallery-tab-desc">独立目录与 JVM 参数</span>
+            </button>
+            <button class="gallery-tab" type="button" data-shot data-src="images/running.png" data-alt="运行监控：游戏进程实时状态、CPU 与内存占用监控" data-caption="运行监控 · 游戏进程实时追踪、资源占用监控与控制台输出" aria-pressed="false">
+              <span class="gallery-tab-label">运行监控</span>
+              <span class="gallery-tab-desc">进程状态与实时日志</span>
+            </button>
+          </div>
+
+          <div class="gallery-stage">
+            <figure class="gallery-frame">
+              <div class="window-bar">
+                <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="window-title">Open-source-Minecraft-launcher · 界面预览</span>
+                <span>v0.1.4</span>
+              </div>
+              <img src="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" width="1440" height="900" alt="主页界面：版本选择、账户面板与启动控制" data-gallery-image data-local-src="images/home.png" onerror="if(this.src!==this.dataset.localSrc){this.src=this.dataset.localSrc;}" loading="lazy" />
+              <figcaption class="gallery-caption">
+                <span data-gallery-caption>主页 · 官方动态、当前游戏版本、账户状态与一键启动</span>
+                <a class="gallery-link" href="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" target="_blank" rel="noopener" data-gallery-link>查看原图</a>
+              </figcaption>
+            </figure>
+          </div>
         </div>
       </div>
     </section>
@@ -207,9 +328,9 @@
           <aside class="about-aside" data-reveal aria-label="项目摘要">
             <h3>项目摘要</h3>
             <div class="fact-list">
-              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.0.7</span></div>
+              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.1.4</span></div>
               <div class="fact"><span class="fact-label">开源协议</span><span class="fact-value">MIT</span></div>
-              <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows 10 / 11</span></div>
+              <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows / macOS / Linux</span></div>
               <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Electron</span></div>
               <div class="fact"><span class="fact-label">后端</span><span class="fact-value">Rust 2024</span></div>
               <div class="fact"><span class="fact-label">仓库</span><span class="fact-value">Cerlesse-studio</span></div>
@@ -262,7 +383,9 @@
         <div class="footer-col">
           <h3>产品</h3>
           <div class="footer-links">
+            <a href="index.html#whats-new">0.1.4 新功能</a>
             <a href="index.html#capabilities">功能</a>
+            <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>
@@ -282,6 +405,7 @@
           <h3>文档</h3>
           <div class="footer-links">
             <a href="docs.html">技术文档</a>
+            <a href="docs.html#extensions">扩展系统</a>
             <a href="docs.html#architecture">架构设计</a>
             <a href="docs.html#downloads">下载引擎</a>
             <a href="docs.html#faq">常见问题</a>

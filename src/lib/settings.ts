@@ -86,7 +86,7 @@ export const defaultSettings: LauncherSettings = {
   letterSpacing: "normal",
   statusText: "",
   launchButtonText: "",
-  enableExtensions: true,
+  enableExtensions: false,
   enableDevTools: false,
   showBackendConsole: false,
   easyTierRelayMode: "auto",
@@ -218,7 +218,7 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.launchButtonText === "string"
           ? parsed.launchButtonText.slice(0, 20)
           : "",
-      enableExtensions: parsed.enableExtensions !== false,
+      enableExtensions: parsed.enableExtensions === true,
       enableDevTools: parsed.enableDevTools === true,
       showBackendConsole: parsed.showBackendConsole === true,
       easyTierRelayMode: parsed.easyTierRelayMode === "manual" ? "manual" : "auto",

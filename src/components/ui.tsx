@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Archive, Boxes, Package, Sparkles } from "lucide-react";
+import { Archive, Boxes, Map, Package, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "cn";
-import { progressPercent, stageLabel } from "../lib/format";
+import { progressPercent, stageLabel, toJsdelivrUrl } from "../lib/format";
 import type {
   ContentProjectType,
   InstallProgress,
@@ -38,6 +38,7 @@ const CONTENT_TYPE_ICONS: Record<
   shader: Sparkles,
   datapack: Archive,
   resourcepack: Package,
+  world: Map,
 };
 
 /**
@@ -65,7 +66,7 @@ export function ContentIcon({
 }) {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const TypeIcon = CONTENT_TYPE_ICONS[projectType] ?? Package;
-  const url = src?.trim() ?? "";
+  const url = toJsdelivrUrl(src);
   const showImage = url.length > 0 && failedSrc !== url;
 
   return (

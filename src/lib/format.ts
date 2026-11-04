@@ -95,6 +95,10 @@ export function stageLabel(stage: string): string {
       return "Java";
     case "launch":
       return "启动";
+    case "downloading":
+      return "下载中";
+    case "extracting":
+      return "解压";
     case "done":
       return "完成";
     default:
@@ -128,4 +132,67 @@ export function joinPath(root: string, ...parts: string[]): string {
 
 export function classNames(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
+}
+
+/** Game directory the launcher uses for a Java version under the current
+ * isolation mode. Mirrors the backend resolver so folder hints and downloads
+ * point at the same `saves/` the game reads. */
+export function resolveJavaGameDir(
+  gameRoot: string,
+  versionId: string,
+  isolation: string | undefined,
+  isModded: boolean,
+): string {
+  const mode = isolation || "all";
+  if (mode === "none") return gameRoot;
+  if (mode === "modded" && !isModded) return gameRoot;
+  if (!versionId) return gameRoot;
+  return joinPath(gameRoot, "versions", versionId);
+}
+
+export function pathUnderRoot(path: string, root: string): string {
+  const normalizedRoot = root.replace(/[\\/]+$/, "");
+  if (!normalizedRoot) return path;
+  if (path === normalizedRoot) return ".";
+  const prefix = `${normalizedRoot}/`;
+  const windowsPrefix = `${normalizedRoot}\\`;
+  if (path.startsWith(prefix)) return path.slice(prefix.length).replace(/\\/g, "/");
+  if (path.startsWith(windowsPrefix)) return path.slice(windowsPrefix.length).replace(/\\/g, "/");
+  return path;
+}
+
+/**
+ * Rewrite GitHub and GitHub Raw URLs to jsDelivr CDN URLs to accelerate image/asset loading.
+ * Supports:
+ * - https://raw.githubusercontent.com/:owner/:repo/:branch/:path
+ * - https://github.com/:owner/:repo/raw/:branch/:path
+ * - https://github.com/:owner/:repo/blob/:branch/:path?raw=true
+ */
+export function toJsdelivrUrl(url: string | null | undefined): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+
+  // https://raw.githubusercontent.com/:owner/:repo/:branch/:path
+  const rawMatch = trimmed.match(/^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i);
+  if (rawMatch) {
+    const [, owner, repo, branch, path] = rawMatch;
+    return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`;
+  }
+
+  // https://github.com/:owner/:repo/raw/:branch/:path
+  const ghRawMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\/([^/]+)\/(.+)$/i);
+  if (ghRawMatch) {
+    const [, owner, repo, branch, path] = ghRawMatch;
+    return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`;
+  }
+
+  // https://github.com/:owner/:repo/blob/:branch/:path?raw=true
+  const ghBlobMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/([^?#]+)(?:\?.*raw=true.*)?$/i);
+  if (ghBlobMatch && trimmed.includes("raw=true")) {
+    const [, owner, repo, branch, path] = ghBlobMatch;
+    return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`;
+  }
+
+  return trimmed;
 }

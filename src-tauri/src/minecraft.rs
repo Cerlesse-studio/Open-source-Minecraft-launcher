@@ -80,6 +80,23 @@ pub struct ActiveDownloadTask {
     pub segments: u32,
 }
 
+/// 单个文件的下载结果。前端据此渲染持续的下载日志，而不是只看到
+/// 被节流后的最后一行进度摘要。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallFileLog {
+    pub stage: String,
+    pub file: String,
+    /// `ok` / `skip` / `fail`
+    pub status: String,
+    pub bytes: u64,
+    pub total_bytes: u64,
+    pub threads: u32,
+    pub elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageProgress {
@@ -109,6 +126,9 @@ pub struct InstallProgress {
     pub retried_files: u64,
     pub active_tasks: Vec<ActiveDownloadTask>,
     pub stages: Vec<StageProgress>,
+    /// 自上次进度事件以来完成的文件；为空时不参与序列化。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_logs: Vec<InstallFileLog>,
 }
 
 impl InstallProgress {
@@ -134,6 +154,7 @@ impl InstallProgress {
             retried_files: 0,
             active_tasks: Vec::new(),
             stages: Vec::new(),
+            file_logs: Vec::new(),
         }
     }
 }
@@ -1214,6 +1235,7 @@ struct DownloadTracker {
     retried_files: AtomicU64,
     active_tasks: Mutex<HashMap<usize, ActiveDownloadTask>>,
     stages: Mutex<Vec<StageProgress>>,
+    pending_file_logs: Mutex<Vec<InstallFileLog>>,
     speed_samples: Mutex<VecDeque<(Instant, u64)>>,
     last_emit: Mutex<Instant>,
 }
@@ -1282,6 +1304,7 @@ impl DownloadTracker {
             retried_files: AtomicU64::new(0),
             active_tasks: Mutex::new(HashMap::new()),
             stages: Mutex::new(stages),
+            pending_file_logs: Mutex::new(Vec::new()),
             speed_samples: Mutex::new(samples),
             last_emit: Mutex::new(now - Duration::from_secs(1)),
         })
@@ -1320,6 +1343,25 @@ impl DownloadTracker {
             }
         }
         (0, 0)
+    }
+
+    fn push_file_log(&self, log: InstallFileLog) {
+        if let Ok(mut logs) = self.pending_file_logs.lock() {
+            logs.push(log);
+            // 资源索引可能有几千个文件，避免一次进度事件携带过大的负载；
+            // 前端日志也只保留最近的一组。
+            let overflow = logs.len().saturating_sub(500);
+            if overflow > 0 {
+                logs.drain(0..overflow);
+            }
+        }
+    }
+
+    fn take_file_logs(&self) -> Vec<InstallFileLog> {
+        self.pending_file_logs
+            .lock()
+            .map(|mut logs| std::mem::take(&mut *logs))
+            .unwrap_or_default()
     }
 
     fn set_worker_task(&self, worker_id: usize, task: Option<ActiveDownloadTask>) {
@@ -1422,6 +1464,7 @@ impl DownloadTracker {
         let total_bytes: u64 = stages_snapshot.iter().map(|s| s.total_bytes).sum();
         let speed_bps = self.sample_speed();
         active_list.truncate(32);
+        let file_logs = self.take_file_logs();
 
         InstallProgress {
             version_id: self.version_id.clone(),
@@ -1438,6 +1481,7 @@ impl DownloadTracker {
             retried_files: self.retried_files.load(Ordering::Relaxed),
             active_tasks: active_list,
             stages: stages_snapshot,
+            file_logs,
         }
     }
 
@@ -1513,6 +1557,7 @@ async fn download_jobs_with_tracker(
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
+                let started_at = Instant::now();
                 let mut was_skipped = false;
                 if net::looks_complete(&job.dest, job.size) {
                     was_skipped = true;
@@ -1532,10 +1577,17 @@ async fn download_jobs_with_tracker(
 
                 let file_bytes: u64;
                 if !was_skipped {
-                    let file_threads = if job.size.map(|s| s >= 1_048_576).unwrap_or(true) {
-                        (worker_count / 2).clamp(2, 6)
-                    } else {
+                    // 单个文件的线程预算：小文件无法切片，交给并发文件池；
+                    // 大文件或未知大小的文件按“用户线程数 / 当前并发文件数”
+                    // 分配分片，只有一个任务时可以吃满全部线程。
+                    let configured_threads = net::per_file_threads(job.size);
+                    let file_threads = if configured_threads <= 1 {
                         1
+                    } else {
+                        configured_threads
+                            .div_ceil(worker_count.max(1))
+                            .max(2)
+                            .min(configured_threads)
                     };
                     let segments = net::recommended_segments(job.size, file_threads);
                     tracker.set_worker_task(
@@ -1577,7 +1629,34 @@ async fn download_jobs_with_tracker(
                     .await;
 
                     tracker.set_worker_task(worker_id, None);
-                    file_bytes = downloaded_res?;
+                    match downloaded_res {
+                        Ok(bytes) => {
+                            file_bytes = bytes;
+                            tracker.push_file_log(InstallFileLog {
+                                stage: stage.clone(),
+                                file: name.clone(),
+                                status: "ok".to_string(),
+                                bytes,
+                                total_bytes: job.size.unwrap_or(bytes),
+                                threads: file_threads as u32,
+                                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                                error: None,
+                            });
+                        }
+                        Err(err) => {
+                            tracker.push_file_log(InstallFileLog {
+                                stage: stage.clone(),
+                                file: name.clone(),
+                                status: "fail".to_string(),
+                                bytes: 0,
+                                total_bytes: job.size.unwrap_or(0),
+                                threads: file_threads as u32,
+                                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                                error: Some(err.clone()),
+                            });
+                            return Err(err);
+                        }
+                    }
                 } else {
                     skipped.fetch_add(1, Ordering::Relaxed);
                     tracker.skipped_files.fetch_add(1, Ordering::Relaxed);
@@ -1585,6 +1664,16 @@ async fn download_jobs_with_tracker(
                         .size
                         .or_else(|| std::fs::metadata(&job.dest).ok().map(|m| m.len()))
                         .unwrap_or(0);
+                    tracker.push_file_log(InstallFileLog {
+                        stage: stage.clone(),
+                        file: name.clone(),
+                        status: "skip".to_string(),
+                        bytes: file_bytes,
+                        total_bytes: file_bytes,
+                        threads: 0,
+                        elapsed_ms: started_at.elapsed().as_millis() as u64,
+                        error: None,
+                    });
                 }
 
                 let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1602,6 +1691,14 @@ async fn download_jobs_with_tracker(
 
     if let Err(err) = try_join_all(workers).await {
         tracker.set_stage_status(stage, "error");
+        // 失败时也把刚记录的文件日志（含具体错误）送出去，否则用户只能看到
+        // 一个笼统的失败提示，无法知道是哪个文件、哪个镜像出错。
+        tracker.emit_now(
+            stage,
+            done.load(Ordering::Relaxed),
+            total,
+            format!("下载失败: {err}"),
+        );
         return Err(err);
     }
 
@@ -1909,6 +2006,7 @@ async fn download_client_with_tracker(
 
     let dest = version_dir(root, &version.id).join(format!("{}.jar", version.id));
     let total = client.size.unwrap_or(0);
+    let started_at = Instant::now();
 
     if net::looks_complete(&dest, client.size) {
         let valid = if let Some(expected) = &client.sha1 {
@@ -1923,6 +2021,16 @@ async fn download_client_with_tracker(
             tracker.skipped_files.fetch_add(1, Ordering::Relaxed);
             tracker.add_stage_completed("client", 1, total);
             tracker.set_stage_status("client", "done");
+            tracker.push_file_log(InstallFileLog {
+                stage: "client".to_string(),
+                file: format!("{}.jar", version.id),
+                status: "skip".to_string(),
+                bytes: total,
+                total_bytes: total,
+                threads: 0,
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                error: None,
+            });
             tracker.emit_now("client", total.max(1), total.max(1), "客户端已存在（跳过）");
             return Ok(());
         }
@@ -2014,10 +2122,30 @@ async fn download_client_with_tracker(
         Ok(b) => b,
         Err(err) => {
             tracker.set_stage_status("client", "error");
+            tracker.push_file_log(InstallFileLog {
+                stage: "client".to_string(),
+                file: jar_name.clone(),
+                status: "fail".to_string(),
+                bytes: 0,
+                total_bytes: total,
+                threads: client_threads as u32,
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                error: Some(err.clone()),
+            });
             return Err(err);
         }
     };
 
+    tracker.push_file_log(InstallFileLog {
+        stage: "client".to_string(),
+        file: jar_name,
+        status: "ok".to_string(),
+        bytes: downloaded,
+        total_bytes: total.max(downloaded),
+        threads: client_threads as u32,
+        elapsed_ms: started_at.elapsed().as_millis() as u64,
+        error: None,
+    });
     tracker.add_stage_completed("client", 1, downloaded.max(total));
     tracker.set_stage_status("client", "done");
     tracker.emit_now("client", total.max(1), total.max(1), "客户端下载完成");
@@ -3679,10 +3807,20 @@ fn build_launch_spec(
     features.insert("is_quick_play_realms".to_string(), false);
 
     let skin_type = request.skin_type.as_deref().unwrap_or("random");
+    // Custom skins still use vanilla's UUID-parity model selection, so map the
+    // chosen arm model onto the model the offline UUID must resolve to.
+    let uuid_skin_type = if skin_type == "custom" {
+        match request.custom_skin_model.as_deref() {
+            Some("slim") => "alex",
+            _ => "steve",
+        }
+    } else {
+        skin_type
+    };
     let uuid = match request.auth.as_ref().map(|auth| auth.uuid.trim()) {
         Some(online_uuid) if !online_uuid.is_empty() => format_uuid_with_hyphens(online_uuid),
         _ => mojang_uuid_override
-            .unwrap_or_else(|| offline_uuid_with_skin(&player_name, Some(skin_type))),
+            .unwrap_or_else(|| offline_uuid_with_skin(&player_name, Some(uuid_skin_type))),
     };
     let assets_index_name = version
         .asset_index
@@ -5123,6 +5261,47 @@ pub struct JavaPackItem {
     pub is_dir: bool,
 }
 
+/// Sidecar written by the content installer when a world came from a catalog.
+///
+/// It lives inside the save folder so it moves, copies and deletes with the
+/// world. Without it an installed map cannot be traced back to the project file
+/// it came from, and update detection would have nothing to compare against.
+const WORLD_SOURCE_FILE: &str = ".open-minecraft-launcher.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaWorldSource {
+    /// Catalog the world was downloaded from (currently `curseforge`).
+    pub provider: String,
+    pub project_id: String,
+    /// Version item id, e.g. `307740:5123456` (project:file).
+    pub file_id: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub installed_at: u64,
+}
+
+pub fn write_java_world_source(world_dir: &Path, source: &JavaWorldSource) -> Result<(), String> {
+    let path = world_dir.join(WORLD_SOURCE_FILE);
+    let json = serde_json::to_string_pretty(source)
+        .map_err(|e| format!("序列化地图来源失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写入地图来源失败: {e}"))
+}
+
+fn read_java_world_source(world_dir: &Path) -> Option<JavaWorldSource> {
+    let text = std::fs::read_to_string(world_dir.join(WORLD_SOURCE_FILE)).ok()?;
+    let source = serde_json::from_str::<JavaWorldSource>(&text).ok()?;
+    if source.project_id.trim().is_empty() || source.file_id.trim().is_empty() {
+        return None;
+    }
+    Some(source)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JavaWorldItem {
@@ -5135,6 +5314,10 @@ pub struct JavaWorldItem {
     pub modified_time: String,
     #[serde(default)]
     pub icon_data_url: Option<String>,
+    /// Present when the save was installed from a catalog and still carries
+    /// its source metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<JavaWorldSource>,
 }
 
 fn file_modified_text(meta: &std::fs::Metadata) -> String {
@@ -5645,6 +5828,7 @@ pub fn get_java_worlds(
                 .map(file_modified_text)
                 .unwrap_or_else(|| "未知时间".to_string()),
             icon_data_url: image_file_data_url(&path.join("icon.png")),
+            source: read_java_world_source(&path),
         });
     }
 
@@ -6344,6 +6528,36 @@ description="A minimap."
             resolve_java_game_dir(&temp, "1.20.1", Some("modded")),
             net::absolute_path(&temp)
         );
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// The world list exposes the sidecar so the UI can offer update checks
+    /// only for saves that were actually downloaded from a catalog.
+    #[test]
+    fn downloaded_world_source_round_trips_through_the_save_folder() {
+        let temp = temp_test_dir("oml_test_world_source");
+        let saves = temp.join("saves");
+        let world = saves.join("Skyblock");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"level").unwrap();
+
+        let source = JavaWorldSource {
+            provider: "curseforge".to_string(),
+            project_id: "cfw:307740".to_string(),
+            file_id: "307740:5123456".to_string(),
+            version: "1.20.1".to_string(),
+            title: "Skyblock".to_string(),
+            url: "https://example.invalid/world.zip".to_string(),
+            installed_at: 1,
+        };
+        write_java_world_source(&world, &source).unwrap();
+
+        let worlds = get_java_worlds(&temp, "1.20.1", Some("none"));
+        let listed = worlds.iter().find(|entry| entry.folder == "Skyblock").unwrap();
+        let stored = listed.source.as_ref().unwrap();
+        assert_eq!(stored.project_id, source.project_id);
+        assert_eq!(stored.file_id, source.file_id);
 
         let _ = std::fs::remove_dir_all(&temp);
     }

@@ -30,6 +30,7 @@
  * 启动器会把它们显示在主页标题旁。
  */
 import { getEffectivePrimaryColor, accentHue } from "./theme";
+import { toJsdelivrUrl } from "./format";
 
 export interface PclHomepageContext {
   /** 启动器当前的强调色，用于 `{DynamicResource ColorBrush*}`。 */
@@ -1111,7 +1112,9 @@ ${bodyHtml}
 
     let resolved = source;
     const isRemote = /^(https?:|data:|about:)/i.test(source);
-    if (!isRemote && this.ctx.resolveLocalResource) {
+    if (isRemote) {
+      resolved = toJsdelivrUrl(source);
+    } else if (this.ctx.resolveLocalResource) {
       const dataUrl = await this.ctx.resolveLocalResource(source);
       if (dataUrl) {
         resolved = dataUrl;

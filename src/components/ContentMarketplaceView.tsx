@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "cn";
 import {
   ArrowDownToLine,
@@ -24,7 +24,9 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@/lib/desktop";
 import { installBedrockPack, isDesktop, searchContent } from "../lib/backend";
+import { joinPath, pathUnderRoot, resolveJavaGameDir } from "../lib/format";
 import { ContentVersionSelectView } from "./ContentVersionSelectView";
+import { WorldManager } from "./WorldManager";
 import type {
   ContentHit,
   ContentProjectType,
@@ -48,6 +50,7 @@ export interface ContentMarketplaceViewProps {
   installed?: InstalledVersion[];
   selectedVersion: string;
   gameRoot: string;
+  isolation?: string;
   onOpenFolder: (path: string) => void;
   onNotify: (
     tone: "success" | "error" | "info",
@@ -107,6 +110,8 @@ function typeDestinationLabel(type: ContentProjectType, bedrock: boolean): strin
       return "resourcepacks/";
     case "modpack":
       return "modpacks/";
+    case "world":
+      return "saves/<地图名>";
     default:
       return "downloads/";
   }
@@ -135,10 +140,86 @@ function getPaginationRange(current: number, total: number, maxVisible = 7): Arr
   return range;
 }
 
+type WorldSourceMode = "online" | "local";
+type WorldEdition = "java" | "bedrock";
+
+function WorldEditionTabs({
+  edition,
+  onChange,
+}: {
+  edition: WorldEdition;
+  onChange: (edition: WorldEdition) => void;
+}) {
+  return (
+    <div className="flex w-fit items-center gap-1 rounded-xl border border-border/70 bg-card/55 p-1">
+      {(
+        [
+          { id: "java", label: "Java 版" },
+          { id: "bedrock", label: "基岩版" },
+        ] as const
+      ).map((entry) => (
+        <button
+          key={entry.id}
+          type="button"
+          onClick={() => onChange(entry.id)}
+          className={cn(
+            "flex h-8 items-center rounded-lg px-3 text-[12px] font-medium transition-colors",
+            edition === entry.id
+              ? "border border-primary/35 bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+          )}
+        >
+          {entry.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function WorldSourceTabs({
+  mode,
+  onChange,
+}: {
+  mode: WorldSourceMode;
+  onChange: (mode: WorldSourceMode) => void;
+}) {
+  return (
+    <div className="flex w-fit items-center gap-1 rounded-xl border border-border/70 bg-card/55 p-1">
+      {(
+        [
+          { id: "online", label: "在线地图" },
+          { id: "local", label: "本地地图" },
+        ] as const
+      ).map((entry) => (
+        <button
+          key={entry.id}
+          type="button"
+          onClick={() => onChange(entry.id)}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors",
+            mode === entry.id
+              ? "border border-primary/35 bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+          )}
+        >
+          {entry.id === "online" ? (
+            <ArrowDownToLine className="size-3.5" />
+          ) : (
+            <FolderOpen className="size-3.5" />
+          )}
+          {entry.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ContentMarketplaceView({
   projectType,
+  installed,
   selectedVersion,
   gameRoot,
+  isolation,
   onOpenFolder,
   onNotify,
 }: ContentMarketplaceViewProps) {
@@ -150,7 +231,12 @@ export function ContentMarketplaceView({
   const [importing, setImporting] = useState(false);
   // Bedrock add-ons come from CurseForge instead of Modrinth.
   const [bedrockOnly, setBedrockOnly] = useState(false);
-  const isBedrockSource = bedrockOnly || loader === "bedrock";
+  const isWorldSource = projectType === "world";
+  const [worldSourceMode, setWorldSourceMode] =
+    useState<WorldSourceMode>("online");
+  const [worldEdition, setWorldEdition] = useState<WorldEdition>("java");
+  const isBedrockWorld = isWorldSource && worldEdition === "bedrock";
+  const isBedrockSource = bedrockOnly || loader === "bedrock" || isBedrockWorld;
 
   // Java mods are installed into the instance they were built for, so the
   // destination pill follows the selected version instead of a shared folder.
@@ -160,6 +246,22 @@ export function ContentMarketplaceView({
   const modDestinationOpen = selectedVersion
     ? `${gameRoot}/${modDestinationPath}`
     : `${gameRoot}/versions`;
+
+  // The game reads `saves/` from the *resolved* game directory, not always the
+  // root. With version isolation on that folder lives under versions/<id>.
+  const selectedInstalled = installed?.find((entry) => entry.id === selectedVersion);
+  const versionLooksModded = Boolean(
+    selectedInstalled?.loader ||
+      selectedInstalled?.optifineVersion ||
+      selectedInstalled?.fabricApiVersion ||
+      /fabric|forge|quilt|neoforge|optifine/i.test(selectedVersion),
+  );
+  const javaGameDir = useMemo(
+    () => resolveJavaGameDir(gameRoot, selectedVersion, isolation, versionLooksModded),
+    [gameRoot, selectedVersion, isolation, versionLooksModded],
+  );
+  const worldSavesPath = joinPath(javaGameDir, "saves");
+  const worldSavesRelative = pathUnderRoot(worldSavesPath, gameRoot);
 
   const [hits, setHits] = useState<ContentHit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -179,6 +281,7 @@ export function ContentMarketplaceView({
     loader,
     sort,
     bedrockOnly,
+    worldEdition,
   });
 
   const totalPages = Math.max(1, Math.ceil(totalHits / pageSize));
@@ -195,9 +298,17 @@ export function ContentMarketplaceView({
     return () => clearTimeout(timer);
   }, [query]);
 
-  // Reset selected project when switching project type tab
+  // Reset selected project when switching project type tab, and clear Bedrock
+  // filters so they do not leak into the next catalogue. Maps have their own
+  // Java/Bedrock selector and default back to Java.
   useEffect(() => {
     setSelectedProject(null);
+    setWorldSourceMode("online");
+    setWorldEdition("java");
+    if (projectType === "world") {
+      setBedrockOnly(false);
+      setLoader("all");
+    }
   }, [projectType]);
 
   const handleImportLocal = async () => {
@@ -266,7 +377,8 @@ export function ContentMarketplaceView({
       pf.gameVersion !== gameVersion ||
       pf.loader !== loader ||
       pf.sort !== sort ||
-      pf.bedrockOnly !== bedrockOnly;
+      pf.bedrockOnly !== bedrockOnly ||
+      pf.worldEdition !== worldEdition;
 
     if (filterChanged) {
       prevFilterRef.current = {
@@ -276,6 +388,7 @@ export function ContentMarketplaceView({
         loader,
         sort,
         bedrockOnly,
+        worldEdition,
       };
       if (page !== 1) {
         setPage(1);
@@ -284,7 +397,40 @@ export function ContentMarketplaceView({
     }
 
     void doSearch(page, pageSize);
-  }, [projectType, debouncedQuery, gameVersion, loader, sort, bedrockOnly, page, pageSize]);
+  }, [
+    projectType,
+    debouncedQuery,
+    gameVersion,
+    loader,
+    sort,
+    bedrockOnly,
+    worldEdition,
+    page,
+    pageSize,
+  ]);
+
+  // Local maps are managed in the same tab as downloads, so importing a zip,
+  // opening its folder, deleting it and checking updates never requires a
+  // detour through version settings.
+  if (isWorldSource && worldSourceMode === "local") {
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <WorldSourceTabs mode={worldSourceMode} onChange={setWorldSourceMode} />
+          <WorldEditionTabs edition={worldEdition} onChange={setWorldEdition} />
+        </div>
+        <WorldManager
+          edition={worldEdition}
+          versionId={selectedVersion}
+          gameRoot={gameRoot}
+          gameDir={javaGameDir}
+          isolation={isolation}
+          onOpenFolder={onOpenFolder}
+          onNotify={onNotify}
+        />
+      </div>
+    );
+  }
 
   // If a project is selected, render the dedicated Standalone Page (No Floating Popup!)
   if (selectedProject) {
@@ -293,8 +439,19 @@ export function ContentMarketplaceView({
         project={selectedProject}
         projectType={projectType}
         gameRoot={gameRoot}
+        selectedVersion={selectedVersion}
+        isolation={isolation}
+        worldSavesPath={worldSavesPath}
         initialGameVersion={gameVersion}
-        initialLoader={isBedrockSource ? "bedrock" : loader}
+        initialLoader={
+          isBedrockWorld
+            ? "bedrock"
+            : isWorldSource
+              ? "world"
+              : isBedrockSource
+                ? "bedrock"
+                : loader
+        }
         onBack={() => setSelectedProject(null)}
         onOpenFolder={onOpenFolder}
         onNotify={onNotify}
@@ -304,6 +461,12 @@ export function ContentMarketplaceView({
 
   return (
     <div className="space-y-4">
+      {isWorldSource ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <WorldSourceTabs mode={worldSourceMode} onChange={setWorldSourceMode} />
+          <WorldEditionTabs edition={worldEdition} onChange={setWorldEdition} />
+        </div>
+      ) : null}
       {/* Search & Filter Toolbar */}
       <Card className="flex flex-col gap-3 border-border/70 bg-card/65 p-3.5 shadow-sm">
         {/* Row 1: Search & Action Controls */}
@@ -314,19 +477,23 @@ export function ContentMarketplaceView({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={
-                isBedrockSource
-                  ? "在 CurseForge 搜索基岩版附加包 (支持中文，如 家具/枪械/空岛)…"
-                  : `在 Modrinth 搜索${
-                      projectType === "mod"
-                        ? "模组 (JEI、Sodium，支持中文，如 钠/机械动力)…"
-                        : projectType === "shader"
-                          ? "光影包 (Complementary、BSL，支持中文，如 光影)…"
-                          : projectType === "datapack"
-                            ? "数据包 (Terralith、Incendium，支持中文)…"
-                            : projectType === "modpack"
-                              ? "整合包 (支持中文，如 空岛/科技)…"
-                              : "资源包 (支持中文，如 材质/卡通)…"
-                    }`
+                isWorldSource
+                  ? isBedrockWorld
+                    ? "在 CurseForge 搜索基岩版地图 (支持中文，如 空岛/跑酷/生存)…"
+                    : "在 CurseForge 搜索 Java 地图 (支持中文，如 空岛/跑酷/生存)…"
+                  : isBedrockSource
+                    ? "在 CurseForge 搜索基岩版附加包 (支持中文，如 家具/枪械/空岛)…"
+                    : `在 Modrinth 搜索${
+                        projectType === "mod"
+                          ? "模组 (JEI、Sodium，支持中文，如 钠/机械动力)…"
+                          : projectType === "shader"
+                            ? "光影包 (Complementary、BSL，支持中文，如 光影)…"
+                            : projectType === "datapack"
+                              ? "数据包 (Terralith、Incendium，支持中文)…"
+                              : projectType === "modpack"
+                                ? "整合包 (支持中文，如 空岛/科技)…"
+                                : "资源包 (支持中文，如 材质/卡通)…"
+                      }`
               }
               className="h-10 rounded-xl border-border/70 bg-background/60 pl-9 pr-9 text-xs shadow-xs focus-visible:ring-1"
             />
@@ -342,20 +509,22 @@ export function ContentMarketplaceView({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <Button
-              variant="outline"
-              className="h-10 gap-1.5 rounded-xl border-border/70 px-3.5 text-xs text-muted-foreground shadow-xs hover:text-foreground"
-              onClick={handleImportLocal}
-              disabled={importing}
-              title="导入本地 .mcpack / .mcaddon / .zip"
-            >
-              {importing ? (
-                <LoaderCircle className="size-3.5 animate-spin" />
-              ) : (
-                <Upload className="size-3.5 text-primary" />
-              )}
-              <span>导入本地包</span>
-            </Button>
+            {!isWorldSource ? (
+              <Button
+                variant="outline"
+                className="h-10 gap-1.5 rounded-xl border-border/70 px-3.5 text-xs text-muted-foreground shadow-xs hover:text-foreground"
+                onClick={handleImportLocal}
+                disabled={importing}
+                title="导入本地 .mcpack / .mcaddon / .zip"
+              >
+                {importing ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Upload className="size-3.5 text-primary" />
+                )}
+                <span>导入本地包</span>
+              </Button>
+            ) : null}
 
             <Button
               variant="outline"
@@ -374,25 +543,27 @@ export function ContentMarketplaceView({
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2.5">
           <div className="flex flex-wrap items-center gap-2">
             {/* Bedrock catalogue toggle: CurseForge instead of Modrinth */}
-            <Button
-              variant={isBedrockSource ? "default" : "outline"}
-              size="sm"
-              className={cn(
-                "h-8 gap-1.5 rounded-lg px-2.5 text-xs",
-                !isBedrockSource &&
-                  "border-border/70 bg-background/50 font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-              )}
-              onClick={() => {
-                setBedrockOnly((current) => !current);
-                setLoader("all");
-                setGameVersion("all");
-                setPage(1);
-              }}
-              title="切换基岩版资源库 (CurseForge)"
-            >
-              <Boxes className="size-3.5" />
-              基岩版
-            </Button>
+            {!isWorldSource ? (
+              <Button
+                variant={isBedrockSource ? "default" : "outline"}
+                size="sm"
+                className={cn(
+                  "h-8 gap-1.5 rounded-lg px-2.5 text-xs",
+                  !isBedrockSource &&
+                    "border-border/70 bg-background/50 font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+                onClick={() => {
+                  setBedrockOnly((current) => !current);
+                  setLoader("all");
+                  setGameVersion("all");
+                  setPage(1);
+                }}
+                title="切换基岩版资源库 (CurseForge)"
+              >
+                <Boxes className="size-3.5" />
+                基岩版
+              </Button>
+            ) : null}
 
             {/* Game Version Filter */}
             {!isBedrockSource ? (
@@ -431,7 +602,9 @@ export function ContentMarketplaceView({
                 variant="outline"
                 className="h-8 gap-1.5 rounded-lg border-primary/35 bg-primary/10 px-2.5 text-[11px] font-normal text-primary"
               >
-                CurseForge · 基岩版全版本
+                {isBedrockWorld
+                  ? "CurseForge · 基岩版地图"
+                  : "CurseForge · 基岩版全版本"}
               </Badge>
             )}
 
@@ -520,10 +693,14 @@ export function ContentMarketplaceView({
             onClick={() =>
               onOpenFolder(
                 isBedrockSource
-                  ? `${gameRoot}/bedrock/games/com.mojang`
-                  : projectType === "mod"
-                    ? modDestinationOpen
-                    : `${gameRoot}/${typeDestinationLabel(projectType, false)}`,
+                  ? isWorldSource
+                    ? `${gameRoot}/bedrock/games/com.mojang/minecraftWorlds`
+                    : `${gameRoot}/bedrock/games/com.mojang`
+                  : projectType === "world"
+                    ? worldSavesPath
+                    : projectType === "mod"
+                      ? modDestinationOpen
+                      : `${gameRoot}/${typeDestinationLabel(projectType, false)}`,
               )
             }
             title="点击打开对应存储文件夹"
@@ -533,10 +710,14 @@ export function ContentMarketplaceView({
             <span>目标:</span>
             <code className="font-mono text-[10.5px] text-foreground/85 transition-colors group-hover:text-primary">
               {isBedrockSource
-                ? typeDestinationLabel(projectType, true)
-                : projectType === "mod"
-                  ? modDestinationPath
-                  : typeDestinationLabel(projectType, false)}
+                ? isWorldSource
+                  ? "com.mojang/minecraftWorlds"
+                  : typeDestinationLabel(projectType, true)
+                : projectType === "world"
+                  ? `${worldSavesRelative}/`
+                  : projectType === "mod"
+                    ? modDestinationPath
+                    : typeDestinationLabel(projectType, false)}
             </code>
           </button>
         </div>
@@ -561,7 +742,13 @@ export function ContentMarketplaceView({
           找到约 <strong className="font-mono text-foreground">{totalHits}</strong> 个资源
           {isBedrockSource ? (
             <span className="ml-1.5 text-primary/85">
-              · 数据来源 CurseForge（基岩版 gameId 78022）
+              {isWorldSource
+                ? "· 数据来源 CurseForge（基岩版地图）"
+                : "· 数据来源 CurseForge（基岩版 gameId 78022）"}
+            </span>
+          ) : isWorldSource ? (
+            <span className="ml-1.5 text-primary/85">
+              · 数据来源 CurseForge（Java 地图）
             </span>
           ) : null}
           {totalHits > 0 ? (
@@ -630,7 +817,15 @@ export function ContentMarketplaceView({
                       {hit.author}
                     </span>
                     {hit.categories
-                      .filter((c) => c !== "bedrock" && c !== "基岩版")
+                      .filter(
+                        (c) =>
+                          c !== "bedrock" &&
+                          c !== "基岩版" &&
+                          !(
+                            projectType === "world" &&
+                            (c === "world" || c === "地图")
+                          ),
+                      )
                       .slice(0, 3)
                       .map((c) => (
                         <Badge

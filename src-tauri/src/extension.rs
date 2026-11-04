@@ -639,8 +639,7 @@ pub fn extensions_dir(app: &AppHandle, root: Option<&str>) -> PathBuf {
     if let Some(r) = root.filter(|s| !s.trim().is_empty()) {
         PathBuf::from(r).join("extensions")
     } else {
-        let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-        home.join(".cobble").join("extensions")
+        crate::default_root(app).unwrap_or_else(|_| PathBuf::from(".minecraft")).join("extensions")
     }
 }
 

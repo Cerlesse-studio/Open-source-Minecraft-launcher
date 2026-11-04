@@ -98,6 +98,18 @@ pub struct DownloadContentRequest {
     /// Loader family of the file ("fabric", "forge", …) when known.
     #[serde(default)]
     pub loader: Option<String>,
+    /// Version isolation used by the selected instance. Worlds must be unpacked
+    /// into the same `saves/` folder the game will read, which isolation moves.
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// Catalog metadata for a downloaded world, persisted next to the save so
+    /// update detection can compare the installed file with the newest one.
+    #[serde(default)]
+    pub source_project_id: Option<String>,
+    #[serde(default)]
+    pub source_file_id: Option<String>,
+    #[serde(default)]
+    pub source_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +197,64 @@ pub async fn search_content(
     // Chinese and the glossary must not hide it.
     let translated = crate::search_i18n::translate_query(&query);
     let effective = translated.as_deref().unwrap_or(&query);
+
+    if project_type == "world" {
+        // Maps live on CurseForge, never Modrinth: Java in gameId 432 and
+        // Bedrock in gameId 78022. The UI sends `loader=bedrock` to request the
+        // Bedrock catalogue. `game_version` only applies to Java builds.
+        let world_version = game_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "all");
+        let mut result = if is_bedrock {
+            crate::bedrock_store::search_bedrock_worlds(
+                effective,
+                offset,
+                limit,
+                sort.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("搜索基岩版地图失败: {e}"))?
+        } else {
+            crate::bedrock_store::search_worlds(
+                effective,
+                world_version,
+                offset,
+                limit,
+                sort.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("搜索 Java 地图失败: {e}"))?
+        };
+
+        if result.total_hits == 0 && translated.is_some() {
+            if let Ok(fallback) = if is_bedrock {
+                crate::bedrock_store::search_bedrock_worlds(
+                    &query,
+                    offset,
+                    limit,
+                    sort.as_deref(),
+                )
+                .await
+            } else {
+                crate::bedrock_store::search_worlds(
+                    &query,
+                    world_version,
+                    offset,
+                    limit,
+                    sort.as_deref(),
+                )
+                .await
+            } {
+                if fallback.total_hits > 0 {
+                    return Ok(fallback);
+                }
+            }
+        }
+
+        result.translated_query = translated;
+        return Ok(result);
+    }
 
     if is_bedrock {
         // Bedrock content is browsed through CurseForge, the catalogue
@@ -371,6 +441,62 @@ pub async fn get_content_versions(
     game_version: Option<String>,
     loader: Option<String>,
 ) -> Result<Vec<ContentVersionItem>, String> {
+    // Java worlds live on CurseForge too: their id carries the `cfw:` prefix
+    // and their file list is the set of downloadable save archives.
+    if let Some(raw_id) = project_id_or_slug.strip_prefix(crate::bedrock_store::WORLD_PREFIX) {
+        let mod_id: u32 = raw_id
+            .trim()
+            .parse()
+            .map_err(|_| format!("无效的地图项目 ID: {project_id_or_slug}"))?;
+        let cache_key = format!("cfw:{mod_id}");
+        if let Ok(cache) = version_list_cache().lock() {
+            if let Some((fetched_at, cached)) = cache.get(&cache_key) {
+                if fetched_at.elapsed() < VERSION_LIST_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+        let items = crate::bedrock_store::world_project_files(mod_id)
+            .await
+            .map_err(|e| format!("获取地图文件失败: {e}"))?;
+        if let Ok(mut cache) = version_list_cache().lock() {
+            if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(cache_key, (Instant::now(), items.clone()));
+        }
+        return Ok(items);
+    }
+
+    // Bedrock worlds live on CurseForge: their id carries the `cbw:` prefix
+    // and their files are `.mcworld` save archives.
+    if let Some(raw_id) =
+        project_id_or_slug.strip_prefix(crate::bedrock_store::BEDROCK_WORLD_PREFIX)
+    {
+        let mod_id: u32 = raw_id
+            .trim()
+            .parse()
+            .map_err(|_| format!("无效的基岩版地图项目 ID: {project_id_or_slug}"))?;
+        let cache_key = format!("cbw:{mod_id}");
+        if let Ok(cache) = version_list_cache().lock() {
+            if let Some((fetched_at, cached)) = cache.get(&cache_key) {
+                if fetched_at.elapsed() < VERSION_LIST_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+        let items = crate::bedrock_store::bedrock_world_project_files(mod_id)
+            .await
+            .map_err(|e| format!("获取基岩版地图文件失败: {e}"))?;
+        if let Ok(mut cache) = version_list_cache().lock() {
+            if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(cache_key, (Instant::now(), items.clone()));
+        }
+        return Ok(items);
+    }
+
     // Bedrock projects live on CurseForge: their id carries the `cfb:` prefix
     // and their file list is the set of downloadable pack archives.
     if let Some(raw_id) = project_id_or_slug.strip_prefix(crate::bedrock_store::PROJECT_PREFIX) {
@@ -537,6 +663,7 @@ fn content_target_dir(
         "datapack" => per_instance("datapacks"),
         "resourcepack" => per_instance("resourcepacks"),
         "modpack" => Some(root.join("modpacks")),
+        "world" => Some(root.join("saves")),
         _ => Some(root.join("downloads")),
     }
 }
@@ -613,6 +740,197 @@ pub fn pick_mod_instance(
         .cloned()
 }
 
+/// Turn a project title into a folder name the OS accepts.
+fn world_folder_name(title: &str) -> String {
+    let cleaned: String = title
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    let mut name: String = trimmed.chars().take(60).collect();
+    if name.is_empty() {
+        name = "世界".to_string();
+    }
+    name
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaMapUpdate {
+    pub project_id: String,
+    pub current_file_id: String,
+    pub latest_file_id: String,
+    pub latest_name: String,
+    pub latest_version: String,
+    pub latest_filename: String,
+    pub download_url: String,
+    pub sha1: Option<String>,
+    pub size: u64,
+    pub update_available: bool,
+}
+
+/// Compare the file a map was installed from with the newest file the project
+/// publishes. Only catalogs with a stable file API can support this, which is
+/// why the check is limited to CurseForge worlds.
+pub async fn check_java_world_update(
+    project_id: String,
+    current_file_id: String,
+) -> Result<JavaMapUpdate, String> {
+    let raw_id = project_id
+        .trim()
+        .strip_prefix(crate::bedrock_store::WORLD_PREFIX)
+        .ok_or_else(|| format!("无效的地图项目 ID: {project_id}"))?;
+    let mod_id: u32 = raw_id
+        .trim()
+        .parse()
+        .map_err(|_| format!("无效的地图项目 ID: {project_id}"))?;
+
+    let latest = crate::bedrock_store::world_project_files(mod_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "该地图没有可下载的文件".to_string())?;
+    let file = latest
+        .files
+        .iter()
+        .find(|file| file.primary)
+        .or_else(|| latest.files.first())
+        .ok_or_else(|| "该地图最新版本没有下载链接".to_string())?;
+    let latest_file_id = latest.id.clone();
+    let current = current_file_id.trim();
+
+    Ok(JavaMapUpdate {
+        project_id,
+        current_file_id: current.to_string(),
+        update_available: !current.is_empty() && !latest_file_id.eq_ignore_ascii_case(current),
+        latest_file_id,
+        latest_name: latest.name,
+        latest_version: latest.version_number,
+        latest_filename: file.filename.clone(),
+        download_url: file.url.clone(),
+        sha1: file.sha1.clone(),
+        size: file.size,
+    })
+}
+
+/// `saves/` folder a downloaded map must use for the selected instance.
+/// Isolated versions read `versions/<id>/saves`; "none" shares the root.
+fn world_saves_dir(
+    root: &Path,
+    instance_id: Option<&str>,
+    isolation: Option<&str>,
+) -> PathBuf {
+    match instance_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(version_id) => {
+            crate::minecraft::resolve_java_game_dir(root, version_id, isolation).join("saves")
+        }
+        None => root.join("saves"),
+    }
+}
+
+/// Find the `level.dat` folder inside an extracted archive, at most two
+/// levels deep. A save is often shipped inside a wrapper folder, and zipping
+/// on macOS adds a `__MACOSX` sibling that must not count as a world.
+fn collect_world_roots(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if dir.join("level.dat").is_file() {
+        out.push(dir.to_path_buf());
+        return;
+    }
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "__MACOSX" || name.starts_with('.') {
+            continue;
+        }
+        collect_world_roots(&path, depth - 1, out);
+    }
+}
+
+/// Extract a downloaded save archive into `saves/<title>`, refusing archives
+/// that do not contain exactly one `level.dat` world.
+fn extract_world_archive(archive: &Path, saves: &Path, title: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(saves).map_err(|e| format!("创建 saves 目录失败: {e}"))?;
+    let temp = saves.join(format!(
+        ".extracting-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    if temp.exists() {
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+    std::fs::create_dir_all(&temp).map_err(|e| format!("创建临时目录失败: {e}"))?;
+
+    let result = (|| {
+        let file = std::fs::File::open(archive).map_err(|e| format!("无法打开地图压缩包: {e}"))?;
+        let mut zip =
+            zip::ZipArchive::new(file).map_err(|e| format!("不是有效的地图压缩文件: {e}"))?;
+        for index in 0..zip.len() {
+            let mut entry = zip
+                .by_index(index)
+                .map_err(|e| format!("读取地图压缩包失败: {e}"))?;
+            let Some(path) = entry.enclosed_name() else {
+                continue;
+            };
+            let out = temp.join(path);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out).map_err(|e| format!("创建目录失败: {e}"))?;
+            } else {
+                if let Some(parent) = out.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+                }
+                let mut writer =
+                    std::fs::File::create(&out).map_err(|e| format!("写入地图文件失败: {e}"))?;
+                std::io::copy(&mut entry, &mut writer).map_err(|e| format!("解压地图失败: {e}"))?;
+            }
+        }
+
+        let mut roots = Vec::new();
+        collect_world_roots(&temp, 2, &mut roots);
+        let source = match roots.len() {
+            0 => {
+                return Err(
+                    "压缩包里没有找到 level.dat，这不是有效的 Minecraft 地图存档".to_string(),
+                );
+            }
+            1 => roots.remove(0),
+            _ => return Err("压缩包里包含多个世界，无法确定要安装哪一个".to_string()),
+        };
+
+        let base = world_folder_name(title);
+        let mut target = saves.join(&base);
+        let mut suffix = 2;
+        while target.exists() {
+            target = saves.join(format!("{base} ({suffix})"));
+            suffix += 1;
+        }
+
+        std::fs::rename(&source, &target).map_err(|e| format!("移动到 saves 失败: {e}"))?;
+        Ok(target)
+    })();
+
+    let _ = std::fs::remove_dir_all(&temp);
+    result
+}
+
 pub async fn download_content_file(
     app: Option<&AppHandle>,
     request: DownloadContentRequest,
@@ -663,6 +981,196 @@ pub async fn download_content_file(
         &format!("准备下载 {filename}"),
         None,
     );
+
+    // Worlds are unpacked, never dropped as files: Java maps go to `saves/`,
+    // Bedrock maps go to every `com.mojang/minecraftWorlds` the game reads.
+    let is_bedrock_world =
+        request.project_type == "world" && request.loader.as_deref() == Some("bedrock");
+    if request.project_type == "world" {
+        let download_dir = if is_bedrock_world {
+            root.join("bedrock").join("cache").join("worlds")
+        } else {
+            root.join("downloads")
+        };
+        if let Err(e) = tokio::fs::create_dir_all(&download_dir).await {
+            let err_msg = format!("创建下载目录失败: {e}");
+            emit("error", 0, total_bytes, 0, &err_msg, Some(err_msg.clone()));
+            return Err(err_msg);
+        }
+        let archive = download_dir.join(&filename);
+
+        let mut last_emit = Instant::now();
+        let mut last_bytes = 0u64;
+        let mut current_speed = 0u64;
+        let mut progress_cb = |done: u64, total: u64, _delta: u64| {
+            let now = Instant::now();
+            let elapsed_ms = now.duration_since(last_emit).as_millis();
+            if elapsed_ms >= 120 || (total > 0 && done >= total) {
+                if elapsed_ms > 0 {
+                    current_speed = (done.saturating_sub(last_bytes) * 1000) / (elapsed_ms as u64);
+                }
+                last_emit = now;
+                last_bytes = done;
+                let display_total = if total > 0 { total } else { total_bytes };
+                emit(
+                    "downloading",
+                    done,
+                    display_total,
+                    current_speed,
+                    &format!("正在下载地图 {filename}"),
+                    None,
+                );
+            }
+        };
+
+        let bytes = match net::download_file_with_mirrors(
+            &request.url,
+            &archive,
+            request.sha1.as_deref(),
+            request.size,
+            threads,
+            None,
+            Some(&mut progress_cb),
+        )
+        .await
+        {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                emit(
+                    "error",
+                    last_bytes,
+                    total_bytes,
+                    0,
+                    &format!("下载地图失败: {e}"),
+                    Some(e.clone()),
+                );
+                return Err(e);
+            }
+        };
+
+        if is_bedrock_world {
+            emit(
+                "extracting",
+                bytes,
+                bytes,
+                0,
+                "正在解压基岩版地图到 minecraftWorlds",
+                None,
+            );
+            let archive_for_task = archive.clone();
+            let root_for_task = root.clone();
+            let install_result = tokio::task::spawn_blocking(move || {
+                crate::bedrock::install_downloaded_bedrock_world(
+                    &root_for_task,
+                    &archive_for_task.to_string_lossy(),
+                )
+            })
+            .await;
+            let installed = match install_result {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => {
+                    emit(
+                        "error",
+                        bytes,
+                        total_bytes,
+                        0,
+                        &format!("安装基岩版地图失败: {error}"),
+                        Some(error.clone()),
+                    );
+                    return Err(error);
+                }
+                Err(error) => {
+                    let message = format!("基岩版地图解压任务失败: {error}");
+                    emit(
+                        "error",
+                        bytes,
+                        total_bytes,
+                        0,
+                        &message,
+                        Some(message.clone()),
+                    );
+                    return Err(message);
+                }
+            };
+            // The archive is reproducible from CurseForge; do not keep a second
+            // copy of a potentially large world in the cache.
+            let _ = tokio::fs::remove_file(&archive).await;
+            emit("done", bytes, bytes, 0, &installed.message, None);
+            return Ok(DownloadContentResult {
+                success: true,
+                file_path: installed.target_path,
+                bytes,
+                instance_id: None,
+                auto_matched: false,
+            });
+        }
+
+        // A world downloaded for a selected version belongs to that instance's
+        // game directory. With isolation "all" that is `versions/<id>/saves`,
+        // not the shared root; unpacking into the wrong folder made the map
+        // invisible in game.
+        let saves = world_saves_dir(
+            &root,
+            request.instance_id.as_deref(),
+            request.isolation.as_deref(),
+        );
+        emit("extracting", bytes, bytes, 0, "正在解压地图到 saves", None);
+        let archive_for_task = archive.clone();
+        let title_for_task = title.clone();
+        let target = tokio::task::spawn_blocking(move || {
+            extract_world_archive(&archive_for_task, &saves, &title_for_task)
+        })
+        .await
+        .map_err(|e| format!("地图解压任务失败: {e}"))?
+        .map_err(|e| {
+            emit(
+                "error",
+                bytes,
+                total_bytes,
+                0,
+                &format!("安装地图失败: {e}"),
+                Some(e.clone()),
+            );
+            e
+        })?;
+
+        if let (Some(project_id), Some(file_id)) = (
+            request.source_project_id.clone(),
+            request.source_file_id.clone(),
+        ) {
+            let source = crate::minecraft::JavaWorldSource {
+                provider: "curseforge".to_string(),
+                project_id,
+                file_id,
+                version: request.source_version.clone().unwrap_or_default(),
+                title: request.title.clone(),
+                url: request.url.clone(),
+                installed_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0),
+            };
+            // Losing update metadata must not discard a completed world.
+            let _ = crate::minecraft::write_java_world_source(&target, &source);
+        }
+
+        emit(
+            "done",
+            bytes,
+            bytes,
+            0,
+            &format!("已安装到 {}", target.to_string_lossy()),
+            None,
+        );
+
+        return Ok(DownloadContentResult {
+            success: true,
+            file_path: target.to_string_lossy().to_string(),
+            bytes,
+            instance_id: None,
+            auto_matched: false,
+        });
+    }
 
     // Check if it's a bedrock pack or targeted for bedrock
     let lower_name = filename.to_lowercase();
@@ -954,6 +1462,93 @@ mod tests {
         let picked = pick_mod_instance(&installed, &[" 1.20.1 ".to_string()], None)
             .expect("labels are normalized before comparing");
         assert_eq!(picked.id, "1.20.1-fabric");
+    }
+
+    #[test]
+    fn world_folder_names_are_safe() {
+        assert_eq!(world_folder_name("  Sky/Block: 2  "), "Sky_Block_ 2");
+        assert_eq!(world_folder_name("..."), "世界");
+        assert_eq!(world_folder_name("").chars().count(), 2);
+    }
+
+    #[test]
+    fn world_archive_install_extracts_the_wrapper_and_dedupes_names() {
+        use std::io::Write;
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base =
+            std::env::temp_dir().join(format!("cobble-world-{}-{stamp}", std::process::id()));
+        let saves = base.join("saves");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("world.zip");
+
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("My World/level.dat", options).unwrap();
+            writer.write_all(b"level").unwrap();
+            writer
+                .start_file("My World/region/r.0.0.mca", options)
+                .unwrap();
+            writer.write_all(b"region").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let first = extract_world_archive(&archive, &saves, "测试地图").unwrap();
+        assert_eq!(first, saves.join("测试地图"));
+        assert!(first.join("level.dat").is_file());
+        assert!(first.join("region/r.0.0.mca").is_file());
+
+        let second = extract_world_archive(&archive, &saves, "测试地图").unwrap();
+        assert_eq!(second, saves.join("测试地图 (2)"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn downloaded_maps_use_the_selected_versions_saves_folder() {
+        let root = crate::net::absolute_path(Path::new("launcher-root"));
+        let isolated = world_saves_dir(&root, Some("1.20.1"), Some("all"));
+        assert!(isolated.ends_with(Path::new("versions").join("1.20.1").join("saves")));
+
+        let shared = world_saves_dir(&root, Some("1.20.1"), Some("none"));
+        assert_eq!(shared, root.join("saves"));
+
+        assert_eq!(world_saves_dir(&root, None, None), root.join("saves"));
+    }
+
+    #[test]
+    fn world_archive_rejects_a_zip_without_level_dat() {
+        use std::io::Write;
+
+        let base = std::env::temp_dir().join(format!(
+            "cobble-world-invalid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("not-a-world.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            writer
+                .start_file("readme.txt", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"not a world").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let err = extract_world_archive(&archive, &base.join("saves"), "坏包").unwrap_err();
+        assert!(err.contains("level.dat"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

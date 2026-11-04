@@ -285,12 +285,7 @@ export function PlayView({
             <div className="rounded-2xl border border-border/80 bg-background/60 p-4">
               <GrassBlock size={92} />
             </div>
-            <div>
-              <h2 className="text-lg font-semibold">还没有可启动的版本</h2>
-              <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">
-                先从版本选择页下载一份游戏文件。客户端、依赖和资源都会自动处理。
-              </p>
-            </div>
+            <h2 className="text-lg font-semibold">还没有可启动的版本</h2>
             <Button onClick={onOpenVersions}>
               <Download />
               打开版本选择

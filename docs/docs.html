@@ -4,14 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>技术文档 · Open-source-Minecraft-launcher</title>
-  <meta name="description" content="Open-source-Minecraft-launcher 技术文档：环境要求、快速开始、架构设计、下载引擎、账户体系、EasyTier 联机、基岩版、项目结构、数据目录、构建测试与常见问题。" />
+  <meta name="description" content="Open-source-Minecraft-launcher 0.1.4 技术文档：环境要求、快速开始、架构设计、下载引擎、扩展系统、中英双语、OTA 更新、EasyTier 双模式联机、基岩版、项目结构与常见问题。" />
   <meta name="theme-color" content="#060a07" />
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="技术文档 · Open-source-Minecraft-launcher" />
-  <meta property="og:description" content="从源码结构到下载引擎、账户、联机与基岩版的完整技术文档。" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:description" content="从源码结构到下载引擎、扩展、双语、OTA 更新、P2P / 公益节点联机与基岩版的完整技术文档。" />
+  <meta property="og:image" content="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/assets/og.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="assets/site.css" />
@@ -80,13 +80,13 @@
           <span>技术文档</span>
         </nav>
         <h1 class="page-title">技术文档</h1>
-        <p class="page-lede">从环境准备、源码结构到下载引擎、账户体系、EasyTier 联机与基岩版核心。这里记录启动器实际如何工作，而不只是功能清单。</p>
+        <p class="page-lede">从环境准备、源码结构到下载引擎、账户体系、扩展系统、EasyTier 双模式联机、自动更新与基岩版核心。这里记录启动器实际如何工作，而不只是功能清单。</p>
         <div class="page-meta">
-          <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
+          <span class="badge badge-primary"><span class="badge-dot"></span> v0.1.4</span>
           <span class="badge">Electron</span>
           <span class="badge">Rust 2024</span>
           <span class="badge">React 19</span>
-          <span class="badge">Windows 10 / 11</span>
+          <span class="badge">Windows · macOS · Linux</span>
         </div>
       </div>
     </section>
@@ -104,6 +104,8 @@
           <a href="#architecture">架构设计</a>
           <a href="#downloads">下载引擎</a>
           <a href="#accounts">账户体系</a>
+          <a href="#extensions">扩展系统</a>
+          <a href="#language-updates">多语言与更新</a>
           <a href="#multiplayer">联机</a>
           <a href="#bedrock">基岩版</a>
         </div>
@@ -118,7 +120,7 @@
 
       <div class="docs-main">
         <div class="doc-toolbar">
-          <span>文档适用于 v0.0.7 · 以仓库当前代码为准</span>
+          <span>文档适用于 v0.1.4 · 以仓库当前代码为准</span>
           <div class="doc-toolbar-links">
             <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/README.md" target="_blank" rel="noopener">GitHub README</a>
             <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/issues" target="_blank" rel="noopener">问题反馈</a>
@@ -128,11 +130,14 @@
         <section class="doc-section" id="overview">
           <h2><span class="h2-index">01</span>概览</h2>
           <p>Open-source-Minecraft-launcher 是一个基于 <strong>Electron</strong> 的桌面 Minecraft 启动器：前端使用 React 19 + TypeScript，后端使用 Rust 2024。界面通过 Electron IPC 调用后端能力，下载、解包、校验、启动与 EasyTier 进程都由 Rust 持有。</p>
-          <p>项目主要面向 Windows 10 / 11 做完整适配；Java 版核心保持跨平台，可在 macOS / Linux 尝试构建运行，基岩版与 Xbox 运行时相关能力目前仅限 Windows。</p>
+          <p>Windows 10 / 11 提供最完整的基岩版路径与系统集成；Linux 额外支持 Mojang 官方 <code>bin-linux</code> BDS 服务端，EasyTier 联机在 macOS / Linux 上以无 TUN、无管理员权限的方式运行；macOS 以 Java 版和已安装的 MCPELauncher 客户端为主，没有官方基岩版运行时。</p>
+          <p>0.1.4 增加了可扩展的运行时：原生 JavaScript + Rust/WASM 扩展、Chrome Manifest V2 / V3 兼容扩展、中英双语界面、纯 IPv6 P2P / 公益节点双模式，以及基于 GitHub Releases 的 OTA 更新。</p>
 
           <div class="doc-grid">
             <div class="doc-mini-card"><strong>双版本</strong><span>Java 版与基岩版共用一套版本库与启动入口。</span></div>
             <div class="doc-mini-card"><strong>原生后端</strong><span>下载、安装、启动、账户、联机都在 Rust 侧完成。</span></div>
+            <div class="doc-mini-card"><strong>可扩展</strong><span>Chrome MV2/MV3 兼容与原生 Rust/WASM 扩展系统。</span></div>
+            <div class="doc-mini-card"><strong>可更新</strong><span>GitHub Releases 检查、下载与平台化安装。</span></div>
             <div class="doc-mini-card"><strong>本地优先</strong><span>账户令牌、下载断点与游戏数据默认保存在本机。</span></div>
             <div class="doc-mini-card"><strong>可替换</strong><span>内容源、下载源、Java、主题与主页都可以自行配置。</span></div>
           </div>
@@ -145,7 +150,9 @@
                 <tr><td>桌面容器</td><td>Electron</td><td>原生窗口、进程管理、IPC、打包</td></tr>
                 <tr><td>前端</td><td>React 19 · TypeScript · Vite</td><td>页面、状态与交互</td></tr>
                 <tr><td>UI</td><td>Tailwind CSS 4 · Radix UI · Lucide · Sonner</td><td>样式、组件原语、图标、通知</td></tr>
-                <tr><td>后端</td><td>Rust 2024 · tokio · reqwest · serde</td><td>下载、安装、启动、账户、联机</td></tr>
+                <tr><td>扩展</td><td>Chrome MV2/MV3 · Rust/WASM</td><td>扩展 UI、后台脚本与高性能协处理器</td></tr>
+                <tr><td>后端</td><td>Rust 2024 · tokio · reqwest · serde</td><td>下载、安装、启动、账户、联机、扩展解析</td></tr>
+                <tr><td>更新</td><td>GitHub Releases · Electron 主进程</td><td>版本比较、更新包下载与平台安装</td></tr>
                 <tr><td>存储</td><td>本地文件系统 + JSON</td><td>版本、配置、账户、存档与缓存</td></tr>
               </tbody>
             </table>
@@ -160,19 +167,20 @@
             <table>
               <thead><tr><th>项目</th><th>要求</th></tr></thead>
               <tbody>
-                <tr><td>操作系统</td><td><strong>Windows 10 / 11 x64</strong>（推荐，功能完整）；macOS / Linux 可尝试构建运行 Java 版</td></tr>
+                <tr><td>操作系统</td><td><strong>Windows 10 / 11 x64</strong>（推荐）；Linux x86_64 / aarch64；macOS Intel / Apple Silicon。三者都可运行 Java 版与 EasyTier 联机</td></tr>
                 <tr><td>Node.js</td><td>20.19+ 或 22.12+</td></tr>
                 <tr><td>Rust</td><td>stable，1.85+（项目使用 edition 2024）</td></tr>
                 <tr><td>桌面运行时</td><td>Electron 内置 Chromium，不依赖 WebView2 或 WebKitGTK。</td></tr>
                 <tr><td>网络</td><td>首次安装版本、依赖和 Java 需要联网</td></tr>
-                <tr><td>其他</td><td>基岩版需要 Windows 10 / 11；联机默认使用 IPv6 双向直连，不联系 STUN、信令或中继；需要双方有公网 IPv6，并放行本机 TCP/UDP 11010</td></tr>
+                <tr><td>其他</td><td>基岩版客户端需要 Windows 10 / 11；Linux 可运行官方 BDS 服务端（Ubuntu x86_64）；联机默认使用 IPv6 双向直连，需要双方公网 IPv6 并放行 TCP/UDP 11010；没有公网 IPv6 时可切换公益节点模式，由 EasyTier 协助节点打洞 / 中继</td></tr>
+                <tr><td>扩展 / 更新</td><td>扩展不需要额外运行时；OTA 更新需要访问 GitHub Releases。扩展不是安全沙箱，只应安装可信来源。</td></tr>
               </tbody>
             </table>
           </div>
 
           <div class="callout callout-note">
             <svg class="icon" aria-hidden="true"><use href="#icon-info"></use></svg>
-            <p><span class="callout-title">平台说明</span>Windows 是完整功能平台；macOS / Linux 目前以 Java 版构建运行为主，基岩版、Xbox 运行时、winget 与 Windows 防火墙集成不可用。</p>
+            <p><span class="callout-title">平台说明</span>Windows 支持 UWP / GDK / BDS、Xbox 运行时与防火墙集成；Linux 支持 Java 版、EasyTier 与 BDS（<code>bin-linux</code>）；macOS 支持 Java 版、EasyTier 与 MCPELauncher 客户端，不提供官方 BDS 与 Xbox 运行时。</p>
           </div>
         </section>
 
@@ -184,7 +192,7 @@
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
             <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
-npm install
+npm ci
 npm run start</code></pre>
           </div>
 
@@ -193,17 +201,22 @@ npm run start</code></pre>
             <p><span class="callout-title">Windows PowerShell</span>如果提示「无法加载 npm.ps1，因为在此系统上禁止运行脚本」，改用 <code>npm.cmd run start</code>，或在 <code>cmd</code> 中执行 <code>npm run start</code>。</p>
           </div>
 
-          <h3>构建单文件与安装包</h3>
-          <p>项目支持一键打包 Windows 独立单文件可执行文件（免安装版）或安装包：</p>
+          <h3>一键打包与 OTA 文件</h3>
+          <p>一条命令完成安装包、OTA 元数据与校验文件：</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
-            <pre><code># 一键打包单文件（免安装独立 EXE）
-npm run electron:build:portable
+            <pre><code># 当前平台：安装包 + OTA 文件
+npm run package
 
-# 一键打包安装包（NSIS Setup 安装程序）
-npm run electron:build:nsis</code></pre>
+# 指定平台（必须在该系统上执行）
+npm run package:win      # NSIS + 免安装版
+npm run package:mac      # DMG + ZIP
+npm run package:linux    # AppImage
+
+# 只重建 latest.json / SHA256SUMS.txt
+npm run package:ota</code></pre>
           </div>
-          <p>单文件免安装产物输出在 <code>release/Open-source-Minecraft-launcher.exe</code>。首次构建需要编译全部 Rust 依赖，耗时较长。</p>
+          <p>产物位于 <code>release/v&lt;版本&gt;/</code>，包含安装包、<code>latest*.yml</code>、<code>latest.json</code> 与 <code>SHA256SUMS.txt</code>。安装包会内嵌对应平台的 Rust 核心，因此三个系统需分别构建；将整个目录上传到同名 GitHub Release 即可供 OTA 更新使用。</p>
 
           <h3>测试</h3>
           <div class="code-block">
@@ -211,8 +224,14 @@ npm run electron:build:nsis</code></pre>
             <pre><code># 前端类型检查 + 生产构建
 npm run build
 
+# 联机健康检查 / P2P 单元测试
+npm test
+
 # Rust 单元测试
-cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
+cargo test --manifest-path src-tauri/Cargo.toml
+
+# 可选：真实下载 / 启动冒烟测试
+cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></pre>
           </div>
         </section>
 
@@ -228,18 +247,18 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
             </div>
             <div class="arch-arrow" aria-hidden="true">→</div>
             <div class="arch-node">
-              <span class="arch-node-kicker">BRIDGE</span>
-              <strong>Electron IPC</strong>
-              <p>Command 调用 · Event 推送 · 窗口与进程</p>
+              <span class="arch-node-kicker">MAIN + BRIDGE</span>
+              <strong>Electron 主进程 + preload</strong>
+              <p>窗口 · IPC · stdio 桥 · 更新器 · 登录窗口</p>
             </div>
-            <div class="arch-arrow" aria-hidden="true">→</div>
+            <div class="arch-arrow" aria-hidden="true">↔</div>
             <div class="arch-node">
               <span class="arch-node-kicker">BACKEND</span>
               <strong>Rust 2024</strong>
-              <p>版本、下载、账户、基岩版、EasyTier</p>
+              <p>版本、下载、账户、基岩版、EasyTier、扩展解析</p>
             </div>
           </div>
-          <div class="arch-external"><strong>外部服务：</strong>Mojang / BMCLAPI / Betacraft · Modrinth / CurseForge / MC百科 · Microsoft / Xbox Live · EasyTier</div>
+          <div class="arch-external"><strong>外部服务：</strong>Mojang / BMCLAPI / Betacraft · Modrinth / CurseForge / MC百科 · Microsoft / Xbox Live · EasyTier · GitHub Releases</div>
 
           <h3>设计取舍</h3>
           <ul>
@@ -247,6 +266,8 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
             <li><strong>原子写入</strong>：下载先写 <code>.part</code>，校验 SHA-1 后再提交到目标路径；失败不会留下半成品文件。</li>
             <li><strong>下载源透明</strong>：镜像失败会自动回退，用户不需要知道每个文件来自哪个源。</li>
             <li><strong>账户令牌不经过前端</strong>：启动时会话由后端账户存储直接读取，减少令牌在 UI 层暴露的机会。</li>
+            <li><strong>进程隔离</strong>：Electron 主进程负责窗口、更新与 IPC，Rust 核心进程通过逐行 JSON stdio 通信；下载与启动逻辑不依赖渲染进程存活。</li>
+            <li><strong>可扩展但不假装沙箱</strong>：扩展在渲染进程执行，启动器会明确展示能力与风险；只安装可信扩展。</li>
           </ul>
         </section>
 
@@ -305,34 +326,115 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
           </div>
         </section>
 
-        <section class="doc-section" id="multiplayer">
-          <h2><span class="h2-index">07</span>联机</h2>
-          <p>联机以内置的 <a href="https://easytier.cn" target="_blank" rel="noopener">EasyTier</a> v2.6.4 为内核。默认是 <strong>IPv6 双向直连</strong>：房主发分享码，访客回执码，双方同时向对方的 IPv6 发包；启动器不联系 STUN、信令或中继，数据只经过两台电脑。</p>
+        <section class="doc-section" id="extensions">
+          <h2><span class="h2-index">07</span>扩展系统</h2>
+          <p>0.1.4 新增扩展页面与运行时。扩展安装到同一个目录，可统一启用、停用、导出和卸载；目前支持启动器原生扩展与 Chrome Manifest V2 / V3 兼容扩展。</p>
 
-          <h3>三步开房</h3>
+          <div class="doc-grid">
+            <div class="doc-mini-card"><strong>原生扩展</strong><span>JavaScript 后台脚本 + 可选 Rust/WASM 协处理器 + popup / tab UI。</span></div>
+            <div class="doc-mini-card"><strong>Chrome 扩展</strong><span>读取 MV2 / MV3 的 popup、background、权限与 _locales 字段。</span></div>
+            <div class="doc-mini-card"><strong>安装方式</strong><span>ZIP / CRX / 已解压目录；也支持生成内置示例扩展。</span></div>
+            <div class="doc-mini-card"><strong>运行位置</strong><span>扩展脚本在启动器界面进程执行；Rust/WASM 负责计算型协处理。</span></div>
+          </div>
+
+          <h3>目录与安装</h3>
+          <p>扩展位于 <code>&lt;游戏目录&gt;/extensions/</code>，没有配置游戏目录时使用 <code>~/.cobble/extensions/</code>。启用状态保存在 <code>extensions.json</code>，安装时会先写入临时目录再替换旧目录。</p>
+          <div class="code-block">
+            <div class="code-head"><span class="code-lang">text</span><button class="copy-btn" type="button">复制</button></div>
+            <pre><code>&lt;游戏目录&gt;/extensions/
+├── extensions.json          # 启用状态
+├── my-native-extension/     # 原生扩展
+│   ├── manifest.json
+│   ├── background.js
+│   ├── plugin.wasm
+│   └── popup.html
+└── chrome-hello-world/      # Chrome 扩展
+    ├── manifest.json
+    ├── background.js
+    ├── popup.html
+    └── _locales/</code></pre>
+          </div>
+
+          <h3>Chrome API 子集</h3>
+          <p>兼容层覆盖 <code>chrome.storage.local/sync</code>、<code>chrome.runtime.id/getManifest/sendMessage/onMessage</code>、<code>chrome.notifications.create</code> 与 <code>chrome.i18n.getMessage</code> 等常用能力。没有网页上下文，因此不提供 content script、tabs / windows、scripting、网络拦截或页面注入。</p>
+
+          <div class="callout callout-warn">
+            <svg class="icon" aria-hidden="true"><use href="#icon-warning"></use></svg>
+            <p><span class="callout-title">扩展不是安全沙箱</span>后台脚本在启动器渲染进程中通过 <code>new Function</code> 执行，可访问 <code>window</code>、<code>document</code> 与启动器 API；<code>.crx</code> 只剥离容器头，不校验 Chrome 签名链。请只安装可信来源的扩展，权限字段仅作展示。</p>
+          </div>
+          <p>完整清单字段、Chrome 兼容范围、示例与限制见 <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/docs/extensions.md" target="_blank" rel="noopener">扩展开发指南</a>。</p>
+        </section>
+
+        <section class="doc-section" id="language-updates">
+          <h2><span class="h2-index">08</span>多语言与自动更新</h2>
+
+          <h3>界面语言</h3>
+          <p>界面支持简体中文（<code>zh-CN</code>）与 English（<code>en-US</code>）。语言设置保存在本机设置中，切换后立即生效；Minecraft 游戏内语言仍由版本设置单独控制。</p>
+
+          <h3>OTA 更新</h3>
+          <p>「设置 → 关于启动器 → 软件更新」会检查 GitHub Releases，比较版本并展示发布说明、更新包大小与下载进度。更新包缓存位于 Electron 用户数据目录的 <code>updates/</code>。</p>
+          <ul>
+            <li>Windows 安装包 / NSIS 会启动安装程序；单文件免安装版会替换当前可执行文件并重新打开。</li>
+            <li>Linux AppImage 会在下载完成后替换当前 AppImage 并重启。</li>
+            <li>macOS 会打开 DMG，由用户完成安装。</li>
+            <li>只接受由启动器从官方 Releases 下载的更新包路径，避免任意文件替换。</li>
+          </ul>
+
+          <div class="callout callout-note">
+            <svg class="icon" aria-hidden="true"><use href="#icon-info"></use></svg>
+            <p><span class="callout-title">版本可能滞后</span>当前仓库源码版本为 0.1.4，但 GitHub Releases 的安装包可能尚未同步到同一版本；需要最新功能时请从源码构建，或在更新器中查看 Releases 的实际版本。</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="multiplayer">
+          <h2><span class="h2-index">09</span>联机</h2>
+          <p>联机以内置的 <a href="https://easytier.cn" target="_blank" rel="noopener">EasyTier</a> v2.6.4 为内核，创建房间时可选择两种连接方式。</p>
+
+          <div class="doc-grid">
+            <div class="doc-mini-card"><strong>纯 IPv6 P2P（默认）</strong><span>房主分享码 + 访客回执码，双方直接向对方公网 IPv6 发包；不联系 STUN、信令或中继。</span></div>
+            <div class="doc-mini-card"><strong>公益节点模式（可选）</strong><span>通过 EasyTier 协助节点打洞，必要时多线路中继；没有公网 IPv6 也能联机。</span></div>
+          </div>
+
+          <h3>纯 IPv6 P2P：三步开房</h3>
           <ol>
             <li><strong>装内核</strong>：双方进入「联机」页安装 EasyTier 内核。任务由后端持有，切页、重启启动器都可继续下载。</li>
             <li><strong>创建房间</strong>：保持「IPv6 直连（默认）」；进入游戏后点「对局域网开放」，启动器会从本次 <code>logs/latest.log</code> 自动读取端口并生成分享码。访客加入后把房间页的回执码发回房主，房主在「纯 IPv6 P2P」面板粘贴并点「登记」。</li>
             <li><strong>加入房间</strong>：好友粘贴整段分享码加入，打开游戏「多人游戏 → 局域网」即可看到世界；也可以手动直连房间页给出的 <code>10.126.126.x:端口</code>。</li>
           </ol>
 
+          <h3>公益节点模式</h3>
+          <p>切换到「公益节点模式」后，房主以 <code>--no-listener</code> 启动，不需要对外开放入站端口；双方通过 EasyTier 协助节点完成 P2P 打洞，无法直连时走多线路中继。节点选择支持：</p>
+          <ul>
+            <li><strong>自动选择</strong>：按节点延迟测速结果自动优选，默认策略。</li>
+            <li><strong>手动指定</strong>：从节点卡片中固定一个协助节点。</li>
+            <li><strong>社区同步</strong>：从 <code>info.qtet.cn</code> 社区监控同步最新上线的中继节点。</li>
+            <li><strong>自建节点</strong>：添加自己的 EasyTier 节点并参与延迟检测。</li>
+          </ul>
+          <p>纯 P2P 与公益节点模式不会自动互相切换；纯 P2P 失败时应明确选择公益节点模式，避免误以为仍在直连。</p>
+
           <h3>分享码与局域网发现</h3>
-          <p>分享码格式为 <code>cobble-mp://join?name=…&amp;secret=…&amp;peer=…&amp;ip=…&amp;port=…</code>，访客回执码格式为 <code>cobble-mp://reply?name=…&amp;peer=…</code>。直连模式监听 <code>tcp://[::]:11010</code> / <code>udp://[::]:11010</code>，并以 <code>--p2p-only</code> 运行；中继模式只有手动切换并填节点才启用，以 <code>--no-listener</code> 启动。</p>
+          <p>分享码格式为 <code>cobble-mp://join?name=…&amp;secret=…&amp;peer=…&amp;ip=…&amp;port=…</code>，访客回执码格式为 <code>cobble-mp://reply?name=…&amp;peer=…</code>。纯 P2P 监听 <code>tcp://[::]:11010</code> / <code>udp://[::]:11010</code> 并以 <code>--p2p-only</code> 运行；公益节点模式由协助节点与 <code>--no-listener</code> 路径处理。</p>
           <p>点「显示到局域网」后，后端会在 <code>127.0.0.1</code> 上开一个 TCP 代理，并持续向 <code>224.0.2.60:4445</code> 与 <code>127.0.0.1:4445</code> 发送 <code>[MOTD]…[/MOTD][AD]…[/AD]</code>，好友的世界会直接出现在「多人游戏 → 局域网」里。</p>
+
+          <h3>房间资源克隆</h3>
+          <p>房间页会读取房主版本的资源清单，按模组、光影、数据包与资源包分组展示。访客可以勾选游戏版本、模组、光影与数据包，一键把房主环境克隆到本机对应实例；同名文件会被覆盖。版本差异是联机进不去世界最常见的原因之一，先克隆资源再连接通常更省事。</p>
+
+          <h3>房间健康与断线</h3>
+          <p>启动器会持续检查房间连接与房主状态。房主离开或网络断开时，访客会收到提示并退出无效房间，而不是停在一个永远连不上的页面；重新加入需要房主仍在线。</p>
 
           <div class="callout">
             <svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg>
-            <p><span class="callout-title">路由器限制</span>启动器会自动放行 Windows 防火墙的本机 TCP/UDP <code>11010</code>，不需要端口映射。但如果路由器的 IPv6 防火墙直接丢弃入站包，直连仍会失败，软件无法远程修改路由器；此时需要在路由器 IPv6 防火墙放行 UDP <code>11010</code>，或改用自建中继。公共共享节点是可选第三方路径，默认关闭，不会自动切换。完整说明见 <a href="multiplayer-network.md">联机网络方案</a>。</p>
+            <p><span class="callout-title">路由器限制</span>启动器会自动放行 Windows 防火墙的本机 TCP/UDP <code>11010</code>，不需要端口映射。但如果路由器的 IPv6 防火墙直接丢弃入站包，纯 P2P 仍会失败，软件无法远程修改路由器；此时需要在路由器 IPv6 防火墙放行 UDP <code>11010</code>，或切换到公益节点模式。完整说明见 <a href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/blob/main/docs/multiplayer-network.md" target="_blank" rel="noopener">联机网络方案</a>。</p>
           </div>
         </section>
 
         <section class="doc-section" id="bedrock">
-          <h2><span class="h2-index">08</span>基岩版</h2>
-          <p>基岩版模块面向 Windows 10 / 11，支持商店客户端、<code>.msixvc</code> GDK 加密包、UWP / AppX 与 BDS 独立核心。</p>
+          <h2><span class="h2-index">10</span>基岩版</h2>
+          <p>基岩版客户端面向 Windows 10 / 11，支持商店客户端、<code>.msixvc</code> GDK 加密包与 UWP / AppX 核心。Linux 走另一条路径：版本列表直接读取官方 <code>bin-linux</code> BDS 源，下载后保留可执行位并自动设置 <code>LD_LIBRARY_PATH</code> 启动服务端；macOS 没有官方运行时，只接管系统已安装的 MCPELauncher 客户端。</p>
 
           <h3>核心与依赖</h3>
           <p>所有基岩版启动路径都会在启动前自检运行依赖；Xbox GDK 路径会通过 winget 自动补齐「Xbox 应用」与「游戏服务」。UWP / AppX 核心由启动器自行解包，并以开发模式注册，不经过 Microsoft Store。</p>
-          <p>集成 90+ 条官方 Xbox Live CDN 直链，覆盖正式版与预览版；BDS 版本源可在 EndstoneMC、MCServerJars 与 Azure CDN 镜像之间切换。</p>
+          <p>集成 90+ 条官方 Xbox Live CDN 直链，覆盖正式版与预览版；基岩版下载源可在 McAppx 官方源、BedrockBoot Gitee 源、BMCBL、EndstoneMC 社区源与 Azure CDN 镜像之间切换。Linux BDS 读取 Mojang 官方 <code>bin-linux</code>，当前仅覆盖 Ubuntu x86_64。</p>
 
           <h3>附加包与存档</h3>
           <p>原生支持 <code>.mcpack</code> / <code>.mcaddon</code> / <code>.mcworld</code>。安装时读取包内 <code>manifest.json</code>，按模块类型分区解压；<code>.mcaddon</code> 内嵌的 <code>.mcpack</code> 会递归安装，<code>.mcworld</code> 通过 <code>level.dat</code> 识别并导入 <code>minecraftWorlds</code>。安装结果会写入所有已存在的游戏数据目录。</p>
@@ -347,7 +449,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
         </section>
 
         <section class="doc-section" id="structure">
-          <h2><span class="h2-index">09</span>项目结构</h2>
+          <h2><span class="h2-index">11</span>项目结构</h2>
           <p>前端与后端按职责拆分，下载、账户、基岩版与联机各自有独立模块。</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">text</span><button class="copy-btn" type="button">复制</button></div>
@@ -359,12 +461,14 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 │   │   ├── VersionSelectView.tsx # Java + 基岩统一版本库
 │   │   ├── DownloadCatalogView.tsx # 下载中心
 │   │   ├── DownloadsView.tsx     # 下载管理与实时进度
-│   │   ├── Multiplayer*.tsx      # EasyTier 联机与房间
-│   │   ├── SettingsView.tsx      # 全局设置
+│   │   ├── Multiplayer*.tsx      # EasyTier、P2P、房间与资源
+│   │   ├── ExtensionsView.tsx    # 扩展管理与控制台
+│   │   ├── PersonalizationCard.tsx # 版本级图标 / 分类 / 收藏
+│   │   ├── SettingsView.tsx      # 全局设置与更新
 │   │   ├── VersionSettingsView.tsx # 实例设置
 │   │   ├── Bedrock*.tsx          # 基岩版包 / 加载器管理
 │   │   └── ui/                   # shadcn/ui 基础组件
-│   └── lib/                      # 类型、IPC、设置、主题、PCL2 主页
+│   └── lib/                      # 类型、IPC、设置、主题、i18n、扩展运行时
 ├── src-tauri/                    # Rust 后端
 │   ├── src/
 │   │   ├── lib.rs                # Rust 命令与共享状态
@@ -377,11 +481,14 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 │   │   ├── bedrock.rs            # 基岩版核心、依赖、包与加载器
 │   │   ├── bedrock_store.rs      # CurseForge 基岩版目录
 │   │   ├── mcmod.rs              # MC 百科条目解析
-│   │   ├── multiplayer.rs        # EasyTier、虚拟网络与局域网广播
+│   │   ├── multiplayer.rs        # EasyTier、P2P / 公益节点、局域网广播
+│   │   ├── extension.rs          # 扩展安装、Chrome 兼容与 WASM
+│   │   ├── bridge.rs             # Electron ↔ Rust 的 stdio JSON 桥
+│   │   ├── platform.rs           # 平台识别与系统兼容检查
 │   │   └── search_i18n.rs        # 多语言搜索词表
 │   ├── examples/smoke.rs         # 无头下载 / 启动冒烟测试
 │   └── resources/                # EasyTier 资源
-├── electron/                     # Electron 主进程与预加载桥接
+├── electron/                     # Electron 主进程、preload、更新器与打包
 ├── docs/                         # 官网与截图资源
 ├── public/                       # 图标、字体与静态资源
 ├── package.json
@@ -391,7 +498,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
         </section>
 
         <section class="doc-section" id="data">
-          <h2><span class="h2-index">10</span>数据目录</h2>
+          <h2><span class="h2-index">12</span>数据目录</h2>
           <p>默认游戏目录为 <code>~/.cobble</code>（Windows 下通常是 <code>C:\Users\&lt;用户名&gt;\.cobble</code>），可以在设置中修改。</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">text</span><button class="copy-btn" type="button">复制</button></div>
@@ -405,11 +512,12 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
 │       ├── resourcepacks/
 │       ├── saves/
 │       └── logs/
-├── saves/                   # 未启用版本隔离时的共享存档
+├── saves/                   # 共享 Java 存档与从内容市场安装的地图
 ├── resourcepacks/           # 共享资源包
 ├── shaderpacks/
 ├── datapacks/
 ├── modpacks/                # 从内容市场下载的整合包
+├── extensions/              # 扩展与 extensions.json
 ├── runtime/                 # 自动下载的 Temurin JRE
 │   └── temurin-&lt;major&gt;/
 ├── easytier/                # EasyTier 内核、安装状态与断点
@@ -418,7 +526,7 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
     ├── games/com.mojang/    # 便携数据目录
     └── cache/               # 基岩版下载缓存</code></pre>
           </div>
-          <p>账户文件不在游戏目录里，而是位于应用配置目录（Windows 通常为 <code>%APPDATA%\com.opensource.minecraft.launcher\account.json</code>），因此切换游戏目录不会退出登录。</p>
+          <p>账户文件不在游戏目录里，而是位于应用配置目录（Windows 通常为 <code>%APPDATA%\com.opensource.minecraft.launcher\account.json</code>），因此切换游戏目录不会退出登录。OTA 更新缓存位于 Electron 用户数据目录的 <code>updates/</code>，同样不在游戏目录内。</p>
 
           <div class="callout callout-note">
             <svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>
@@ -427,26 +535,31 @@ cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
         </section>
 
         <section class="doc-section" id="build">
-          <h2><span class="h2-index">11</span>构建与测试</h2>
+          <h2><span class="h2-index">13</span>构建与测试</h2>
           <p>日常开发、构建与测试命令如下。提交 PR 前建议至少运行前端构建与 Rust 测试。</p>
           <div class="code-block">
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
             <pre><code># 前端类型检查 + 生产构建
 npm run build
 
+# 联机健康检查 / P2P 单元测试
+npm test
+
 # Rust 单测
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# 一键打包单文件免安装独立 EXE（输出至 release/Open-source-Minecraft-launcher.exe）
-npm run electron:build:portable
+# 当前平台：安装包 + OTA 文件
+npm run package
 
-# 一键打包 NSIS 安装包
-npm run electron:build:nsis
+# Windows NSIS + 免安装版 / macOS DMG + ZIP / Linux AppImage
+npm run package:win
+npm run package:mac
+npm run package:linux
 
 # 可选的下载 / 启动冒烟测试（会真实下载并尝试启动游戏）
 cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></pre>
           </div>
-          <p>打包单文件推荐运行 <code>npm run electron:build:portable</code>，生成单个免安装的 <code>Open-source-Minecraft-launcher.exe</code> 文件。首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
+          <p>构建产物位于 <code>release/v&lt;版本&gt;/</code>，包含带版本号的安装包、标准 <code>latest*.yml</code>、汇总清单 <code>latest.json</code> 与 <code>SHA256SUMS.txt</code>。Windows 生成 NSIS 与免安装版，macOS 生成 DMG 与 ZIP，Linux 生成 AppImage；首次构建会编译全部 Rust 依赖，耗时会明显更长。</p>
 
           <div class="doc-grid">
             <div class="doc-mini-card"><strong>格式化</strong><span><code>cargo fmt --manifest-path src-tauri/Cargo.toml -- --check</code></span></div>
@@ -455,7 +568,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
         </section>
 
         <section class="doc-section" id="faq">
-          <h2><span class="h2-index">12</span>常见问题</h2>
+          <h2><span class="h2-index">14</span>常见问题</h2>
           <div class="faq-list">
             <details class="faq">
               <summary>需要正版账号吗？</summary>
@@ -467,11 +580,19 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
             </details>
             <details class="faq">
               <summary>基岩版一定要安装 Microsoft Store 吗？</summary>
-              <div class="faq-body"><p>不必须。启动器支持 UWP / AppX 以开发模式注册、<code>.msixvc</code> GDK 核心与 BDS 独立核心；商店客户端只是其中一种来源。GDK 路径会通过 winget 补齐 Xbox 应用与游戏服务。</p></div>
+              <div class="faq-body"><p>不必须。启动器支持 UWP / AppX 以开发模式注册、<code>.msixvc</code> GDK 核心与 BDS 独立核心；商店客户端只是其中一种来源。GDK 路径会通过 winget 补齐 Xbox 应用与游戏服务。Linux x86_64 可直接从版本列表安装 Mojang 官方 <code>bin-linux</code> BDS，无需商店或 Xbox 运行时；macOS 没有官方运行时，只接管系统已安装的 MCPELauncher 客户端。</p></div>
             </details>
             <details class="faq">
               <summary>联机需要公网 IPv6 吗？</summary>
               <div class="faq-body"><p>默认的 IPv6 双向直连需要双方都有公网 IPv6，并放行本机 TCP/UDP <code>11010</code>。启动器不联系 STUN、信令或中继；路由器通常不需要端口映射，但如果其 IPv6 防火墙直接丢弃入站包，仍需在路由器放行或改用自建中继。没有公网 IPv6 时，可在创建页切换到公益节点或自建中继模式。</p></div>
+            </details>
+            <details class="faq">
+              <summary>扩展安全吗？</summary>
+              <div class="faq-body"><p>扩展在启动器渲染进程中执行 JavaScript，<strong>不是浏览器级沙箱</strong>，并且 <code>.crx</code> 不会校验 Chrome 签名链。请只安装可信来源的扩展；Chrome 扩展只支持 popup、background、storage、runtime 消息、notifications 与 i18n 等子集，不提供 content script、tabs、网络拦截或页面注入。</p></div>
+            </details>
+            <details class="faq">
+              <summary>如何更新启动器？</summary>
+              <div class="faq-body"><p>在「设置 → 关于启动器 → 软件更新」中检查 GitHub Releases。Windows 单文件 / NSIS 与 Linux AppImage 可以自动替换并重新打开，macOS 会打开 DMG 由用户完成安装。当前源码版本为 0.1.4，Releases 安装包可能滞后。</p></div>
             </details>
             <details class="faq">
               <summary>下载慢、镜像 404 或经常中断怎么办？</summary>
@@ -516,6 +637,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
             <a href="index.html#capabilities">功能</a>
+            <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>
@@ -533,6 +655,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
           <h3>文档</h3>
           <div class="footer-links">
             <a href="docs.html">技术文档</a>
+            <a href="docs.html#extensions">扩展系统</a>
             <a href="docs.html#architecture">架构设计</a>
             <a href="docs.html#downloads">下载引擎</a>
             <a href="docs.html#faq">常见问题</a>

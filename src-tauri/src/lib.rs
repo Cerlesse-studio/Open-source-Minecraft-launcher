@@ -119,12 +119,39 @@ fn emit_progress(app: &AppHandle) -> ProgressFn {
     })
 }
 
-fn default_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let home = app
-        .path()
-        .home_dir()
-        .map_err(|e| format!("无法获取用户目录: {e}"))?;
-    let root = home.join(".cobble");
+pub fn default_root_path() -> PathBuf {
+    if let Ok(game_dir) = std::env::var("OSML_GAME_DIR") {
+        let trimmed = game_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if let Ok(launcher_dir) = std::env::var("OSML_LAUNCHER_DIR") {
+        let trimmed = launcher_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join(".minecraft");
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.file_name().and_then(|n| n.to_str()) == Some("core") {
+                if let Some(grandparent) = parent.parent() {
+                    if grandparent.file_name().and_then(|n| n.to_str()) == Some("resources") {
+                        if let Some(app_root) = grandparent.parent() {
+                            return app_root.join(".minecraft");
+                        }
+                    }
+                    return grandparent.join(".minecraft");
+                }
+            }
+            return parent.join(".minecraft");
+        }
+    }
+    PathBuf::from(".minecraft")
+}
+
+pub fn default_root(_app: &AppHandle) -> Result<PathBuf, String> {
+    let root = default_root_path();
     let _ = std::fs::create_dir_all(&root);
     Ok(root)
 }
@@ -146,10 +173,11 @@ async fn get_version_manifest(
     force: Option<bool>,
 ) -> Result<VersionManifest, String> {
     let root = if root.trim().is_empty() {
-        PathBuf::from(".cobble")
+        default_root_path()
     } else {
         PathBuf::from(root)
     };
+    let _ = std::fs::create_dir_all(&root);
     minecraft::fetch_manifest(&root, force.unwrap_or(false)).await
 }
 
@@ -158,10 +186,11 @@ async fn get_betacraft_manifest(
     force: Option<bool>,
 ) -> Result<VersionManifest, String> {
     let root = if root.trim().is_empty() {
-        PathBuf::from(".cobble")
+        default_root_path()
     } else {
         PathBuf::from(root)
     };
+    let _ = std::fs::create_dir_all(&root);
     minecraft::fetch_betacraft_manifest(&root, force.unwrap_or(false)).await
 }
 
@@ -312,6 +341,13 @@ async fn download_content_file(
     request: content::DownloadContentRequest,
 ) -> Result<content::DownloadContentResult, String> {
     content::download_content_file(Some(&app), request).await
+}
+
+async fn check_java_world_update(
+    project_id: String,
+    current_file_id: String,
+) -> Result<content::JavaMapUpdate, String> {
+    content::check_java_world_update(project_id, current_file_id).await
 }
 
 async fn get_version_loaders(mc_version: String) -> Result<loaders::VersionLoadersCatalog, String> {
@@ -1205,6 +1241,7 @@ async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Resul
                 retried_files: 0,
                 active_tasks: vec![],
                 stages: vec![],
+                file_logs: vec![],
             },
         );
     }

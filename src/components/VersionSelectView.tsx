@@ -589,15 +589,6 @@ export function VersionSelectView({
                           ? "还没有下载任何 Java 或基岩版游戏"
                           : "该分类下暂无已下载的版本"}
                 </h3>
-                <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-                  {query
-                    ? "换一个关键词，或清除搜索查看全部版本。"
-                    : filter === "bedrock"
-                      ? "启动器支持通过第三方全版本 API 一键下载 Windows 基岩版 BDS 独立核心，开箱即玩无需 Microsoft Store。前往下载中心可快速安装各版本基岩版！"
-                      : filter === "april_fools"
-                        ? "支持一键多线程极速下载 2024 毒马铃薯、2020 21.4亿随机维度、2022 一次一个方块、3D软盘版等历年脑洞神作！前往下载中心即可高速获取并游玩。"
-                        : "版本选择页聚合展示本地已安装的所有 Java 与基岩版版本。如需新版本，请前往下载中心。"}
-                </p>
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                   {query ? (
                     <Button variant="outline" size="sm" onClick={() => setQuery("")}>

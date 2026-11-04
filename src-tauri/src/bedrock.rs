@@ -720,6 +720,9 @@ struct BdsRegistryResponse {
     preview: Option<EndstoneGroup>,
     #[serde(default)]
     windows: Option<BdsPlatformGroup>,
+    /// Mojang also publishes a native Ubuntu x86_64 BDS build.
+    #[serde(default)]
+    linux: Option<BdsPlatformGroup>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -738,10 +741,39 @@ struct BdsPlatformGroup {
     versions: Option<Vec<String>>,
 }
 
+/// Mojang's BDS download directory for the platform this binary runs on.
+/// Empty when the platform has no official server build (macOS).
+fn bds_binary_dir() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "bin-win"
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        // Mojang only ships an Ubuntu x86_64 server build.
+        "bin-linux"
+    } else {
+        ""
+    }
+}
+
+/// The curated catalog carries Windows Store packages. On other platforms only
+/// native BDS entries can actually be installed and launched.
+fn platform_bedrock_items(items: Vec<BedrockVersionItem>) -> Vec<BedrockVersionItem> {
+    if cfg!(target_os = "windows") {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| item.build_type.as_deref() == Some("BDS"))
+        .collect()
+}
+
 impl BdsRegistryResponse {
     fn into_items(self, source_name: &str) -> Vec<BedrockVersionItem> {
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let bin = bds_binary_dir();
+        if bin.is_empty() {
+            return items;
+        }
 
         if let Some(rel) = self.release {
             if let Some(versions) = rel.versions {
@@ -753,7 +785,7 @@ impl BdsRegistryResponse {
                             version: v.clone(),
                             release_type: "release".to_string(),
                             download_url: format!(
-                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
+                                "https://minecraft.azureedge.net/{bin}/bedrock-server-{v}.zip"
                             ),
                             store_url: Some(
                                 "ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string(),
@@ -780,7 +812,7 @@ impl BdsRegistryResponse {
                             version: v.clone(),
                             release_type: "preview".to_string(),
                             download_url: format!(
-                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
+                                "https://minecraft.azureedge.net/{bin}/bedrock-server-{v}.zip"
                             ),
                             store_url: Some(
                                 "ms-windows-store://pdp/?ProductId=9P5X4QVLC2XR".to_string(),
@@ -798,36 +830,66 @@ impl BdsRegistryResponse {
         }
 
         if let Some(win) = self.windows {
-            if let Some(versions) = win.versions {
-                for v in versions {
-                    if seen.insert(v.clone()) {
-                        let is_preview = v.contains("preview") || v.starts_with("1.21.70");
-                        items.push(BedrockVersionItem {
-                            id: v.clone(),
-                            name: if is_preview {
-                                format!("Minecraft 基岩预览版 {v}")
-                            } else {
-                                format!("Minecraft 基岩版 {v}")
-                            },
-                            version: v.clone(),
-                            release_type: if is_preview {
-                                "preview".to_string()
-                            } else {
-                                "release".to_string()
-                            },
-                            download_url: format!(
-                                "https://minecraft.azureedge.net/bin-win/bedrock-server-{v}.zip"
-                            ),
-                            store_url: Some(
-                                "ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string(),
-                            ),
-                            date: "BDS-Versions 同步".to_string(),
-                            size: 85_983_232,
-                            sha256: None,
-                            api_source: Some("Bedrock-OSS BDS".to_string()),
-                            build_type: Some("BDS".to_string()),
-                            md5: None,
-                        });
+            if cfg!(target_os = "windows") {
+                if let Some(versions) = win.versions {
+                    for v in versions {
+                        if seen.insert(v.clone()) {
+                            let is_preview =
+                                v.contains("preview") || v.starts_with("1.21.70");
+                            items.push(BedrockVersionItem {
+                                id: v.clone(),
+                                name: if is_preview {
+                                    format!("Minecraft 基岩预览版 {v}")
+                                } else {
+                                    format!("Minecraft 基岩版 {v}")
+                                },
+                                version: v.clone(),
+                                release_type: if is_preview {
+                                    "preview".to_string()
+                                } else {
+                                    "release".to_string()
+                                },
+                                download_url: format!(
+                                    "https://minecraft.azureedge.net/{bin}/bedrock-server-{v}.zip"
+                                ),
+                                store_url: Some(
+                                    "ms-windows-store://pdp/?ProductId=9NBLGGH537BL".to_string(),
+                                ),
+                                date: "BDS-Versions 同步".to_string(),
+                                size: 85_983_232,
+                                sha256: None,
+                                api_source: Some("Bedrock-OSS BDS".to_string()),
+                                build_type: Some("BDS".to_string()),
+                                md5: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if cfg!(target_os = "linux") {
+            if let Some(linux) = self.linux {
+                if let Some(versions) = linux.versions {
+                    for v in versions {
+                        if seen.insert(v.clone()) {
+                            items.push(BedrockVersionItem {
+                                id: v.clone(),
+                                name: format!("Minecraft 基岩版 {v} (BDS)"),
+                                version: v.clone(),
+                                release_type: "release".to_string(),
+                                download_url: format!(
+                                    "https://minecraft.azureedge.net/{bin}/bedrock-server-{v}.zip"
+                                ),
+                                store_url: None,
+                                date: "BDS-Versions 同步".to_string(),
+                                size: 85_983_232,
+                                sha256: None,
+                                api_source: Some("Bedrock-OSS BDS".to_string()),
+                                build_type: Some("BDS".to_string()),
+                                md5: None,
+                            });
+                        }
                     }
                 }
             }
@@ -1889,8 +1951,13 @@ static BEDROCK_VERSIONS_MEMORY_CACHE: std::sync::Mutex<
 pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<BedrockVersionItem> {
     let source = api_source.unwrap_or("mcappx");
 
+    if !cfg!(any(target_os = "windows", target_os = "linux")) {
+        // No official Bedrock server or client runtime on this platform.
+        return Vec::new();
+    }
+
     if source == "azure_mirror" || source == "mcserverjars" {
-        return get_curated_fallback_versions();
+        return platform_bedrock_items(get_curated_fallback_versions());
     }
 
     if let Ok(guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
@@ -1910,10 +1977,12 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
         .unwrap_or_default();
 
     // BedrockBoot sources (McAppx, Gitee, BMCBL)
-    if source == "mcappx"
-        || source == "bedrockboot_gitee"
-        || source == "bmcbl"
-        || source == "bedrockboot"
+    // The BedrockBoot databases only carry Windows Store packages.
+    if cfg!(target_os = "windows")
+        && (source == "mcappx"
+            || source == "bedrockboot_gitee"
+            || source == "bmcbl"
+            || source == "bedrockboot")
     {
         let (primary_url, label) = match source {
             "bedrockboot_gitee" => (
@@ -2004,7 +2073,7 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
     }
 
     // Final fallback to comprehensive curated catalog
-    let fallback = get_curated_fallback_versions();
+    let fallback = platform_bedrock_items(get_curated_fallback_versions());
     if let Ok(mut guard) = BEDROCK_VERSIONS_MEMORY_CACHE.lock() {
         *guard = Some((Instant::now(), source.to_string(), fallback.clone()));
     }
@@ -3786,6 +3855,8 @@ struct BdsVersionsIndex {
     cdn_root: Option<String>,
     #[serde(default)]
     windows: Option<BdsWindowsVersions>,
+    #[serde(default)]
+    linux: Option<BdsWindowsVersions>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -3804,15 +3875,26 @@ impl BdsVersionsIndex {
             .unwrap_or_else(|| "https://www.minecraft.net/bedrockdedicatedserver".to_string());
         let cdn_root = cdn_root.trim_end_matches('/').to_string();
 
-        let Some(windows) = self.windows else {
+        let bin = bds_binary_dir();
+        if bin.is_empty() {
+            return Vec::new();
+        }
+
+        // Both indexes use the same shape; pick the one matching this build.
+        let platform = if cfg!(target_os = "windows") {
+            self.windows
+        } else {
+            self.linux
+        };
+        let Some(platform) = platform else {
             return Vec::new();
         };
 
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (versions, is_preview) in [
-            (&windows.versions, false),
-            (&windows.preview_versions, true),
+            (&platform.versions, false),
+            (&platform.preview_versions, true),
         ] {
             for version in versions {
                 if !seen.insert(version.clone()) {
@@ -3827,7 +3909,7 @@ impl BdsVersionsIndex {
                     },
                     version: version.clone(),
                     release_type: if is_preview { "preview" } else { "release" }.to_string(),
-                    download_url: format!("{cdn_root}/bin-win/bedrock-server-{version}.zip"),
+                    download_url: format!("{cdn_root}/{bin}/bedrock-server-{version}.zip"),
                     store_url: None,
                     date: "BDS 官方版本索引".to_string(),
                     size: 85_983_232,
@@ -3907,12 +3989,22 @@ async fn fetch_bds_registry_versions() -> Vec<BedrockVersionItem> {
         }
     }
 
-    // Last resort: reuse any BDS entries saved by an earlier successful fetch.
+    // Last resort: reuse BDS entries saved by an earlier successful fetch. The
+    // cache can contain another platform's archives, so match this build's
+    // download directory as well.
+    let bin = bds_binary_dir();
+    if bin.is_empty() {
+        return Vec::new();
+    }
+    let marker = format!("/{bin}/");
     load_cached_versions()
         .map(|items| {
             items
                 .into_iter()
-                .filter(|v| v.build_type.as_deref() == Some("BDS"))
+                .filter(|v| {
+                    v.build_type.as_deref() == Some("BDS")
+                        && v.download_url.contains(&marker)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -4740,6 +4832,7 @@ pub async fn install_bedrock_version(
                 segments: 1,
             }],
             stages: make_stages("active", "pending", "pending", 0, 85_983_232, 0, 1),
+            file_logs: Vec::new(),
         },
     );
 
@@ -4807,6 +4900,7 @@ pub async fn install_bedrock_version(
                             retried_files: 0,
                             active_tasks,
                             stages: make_stages("done", "active", "pending", done, total, 0, 1),
+                            file_logs: Vec::new(),
                         },
                     );
                 }
@@ -4901,6 +4995,7 @@ pub async fn install_bedrock_version(
                 skipped_files: 0,
                 retried_files: 0,
                 active_tasks: vec![],
+                file_logs: Vec::new(),
                 stages: make_stages(
                     "done",
                     "done",
@@ -4932,6 +5027,18 @@ pub async fn install_bedrock_version(
                     File::create(&outpath).map_err(|e| format!("创建目标文件失败: {e}"))?;
                 std::io::copy(&mut entry, &mut outfile)
                     .map_err(|e| format!("解压写入失败: {e}"))?;
+                // Linux BDS ships `bedrock_server` plus shared libraries; keep
+                // the archive's executable bits so the core can start directly.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Some(mode) = entry.unix_mode() {
+                        let _ = std::fs::set_permissions(
+                            &outpath,
+                            std::fs::Permissions::from_mode(mode),
+                        );
+                    }
+                }
             }
 
             if i % 25 == 0 || i + 1 == total_entries {
@@ -4951,6 +5058,7 @@ pub async fn install_bedrock_version(
                         skipped_files: 0,
                         retried_files: 0,
                         active_tasks: vec![],
+                        file_logs: Vec::new(),
                         stages: make_stages(
                             "done",
                             "done",
@@ -5038,9 +5146,13 @@ pub async fn install_bedrock_version(
     let _ = tokio::fs::remove_file(&pkg_part).await;
 
     let src_label = api_source.unwrap_or("BedrockBoot 引擎");
+    #[cfg(target_os = "linux")]
+    let platform_label = " (Linux BDS)";
+    #[cfg(not(target_os = "linux"))]
+    let platform_label = "";
     let version_info = serde_json::json!({
         "id": version_id,
-        "name": format!("Minecraft 基岩版 {version_id}"),
+        "name": format!("Minecraft 基岩版 {version_id}{platform_label}"),
         "source": src_label,
         "packageFile": pkg_filename,
         "downloadUrl": download_url,
@@ -5069,6 +5181,7 @@ pub async fn install_bedrock_version(
             retried_files: 0,
             active_tasks: vec![],
             stages: make_stages("done", "done", "done", 85_983_232, 85_983_232, 1, 1),
+            file_logs: Vec::new(),
         },
     );
 
@@ -7098,6 +7211,23 @@ pub fn import_bedrock_world_file(
     game_root: &Path,
     file_path: &str,
 ) -> Result<InstallPackResult, String> {
+    install_bedrock_world_archive(game_root, file_path, "本地导入")
+}
+
+/// Installs a world archive downloaded from CurseForge. It uses the same
+/// extraction path as a local import but reports the online origin.
+pub fn install_downloaded_bedrock_world(
+    game_root: &Path,
+    file_path: &str,
+) -> Result<InstallPackResult, String> {
+    install_bedrock_world_archive(game_root, file_path, "在线下载")
+}
+
+fn install_bedrock_world_archive(
+    game_root: &Path,
+    file_path: &str,
+    origin: &str,
+) -> Result<InstallPackResult, String> {
     let root = net::absolute_path(game_root);
     let source = net::absolute_path(Path::new(file_path));
     if !source.is_file() {
@@ -7121,7 +7251,7 @@ pub fn import_bedrock_world_file(
     }
 
     let mut result = install_pack_archive(&root, &source)?;
-    result.message = format!("本地导入 — {}", result.message);
+    result.message = format!("{origin} — {}", result.message);
     Ok(result)
 }
 
@@ -7522,9 +7652,17 @@ pub async fn install_bedrock_loader(
         );
         let zip_path = cache_dir.join(format!("levilamina-{loader_version}.zip"));
 
-        net::download_file_with_mirrors(&zip_url, &zip_path, None, None, 1, None, None)
-            .await
-            .map_err(|e| format!("下载 LeviLamina 失败 ({zip_url}): {e}"))?;
+        net::download_file_with_mirrors(
+            &zip_url,
+            &zip_path,
+            None,
+            None,
+            net::download_threads(),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| format!("下载 LeviLamina 失败 ({zip_url}): {e}"))?;
 
         let file = File::open(&zip_path).map_err(|e| format!("打开安装包失败: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解压安装包失败: {e}"))?;
@@ -7576,9 +7714,17 @@ pub async fn install_bedrock_loader(
         );
         let zip_path = cache_dir.join(format!("amethyst-{loader_version}.zip"));
 
-        net::download_file_with_mirrors(&zip_url, &zip_path, None, None, 1, None, None)
-            .await
-            .map_err(|e| format!("下载 Amethyst 失败 ({zip_url}): {e}"))?;
+        net::download_file_with_mirrors(
+            &zip_url,
+            &zip_path,
+            None,
+            None,
+            net::download_threads(),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| format!("下载 Amethyst 失败 ({zip_url}): {e}"))?;
 
         if let Ok(file) = File::open(&zip_path) {
             if let Ok(mut archive) = zip::ZipArchive::new(file) {
@@ -8159,17 +8305,30 @@ mod tests {
         .unwrap();
 
         let items = index.into_items("test");
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0].id, "1.26.70.21");
-        assert_eq!(items[0].release_type, "preview");
-        assert_eq!(items[0].build_type.as_deref(), Some("BDS"));
-        assert_eq!(
-            items[0].download_url,
-            "https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.70.21.zip"
-        );
-        assert_eq!(items[1].id, "1.26.52.3");
-        assert_eq!(items[1].release_type, "release");
-        assert_eq!(items[2].id, "1.26.44.3");
+        if cfg!(target_os = "windows") {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].id, "1.26.70.21");
+            assert_eq!(items[0].release_type, "preview");
+            assert_eq!(items[0].build_type.as_deref(), Some("BDS"));
+            assert_eq!(
+                items[0].download_url,
+                "https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.70.21.zip"
+            );
+            assert_eq!(items[1].id, "1.26.52.3");
+            assert_eq!(items[1].release_type, "release");
+            assert_eq!(items[2].id, "1.26.44.3");
+        } else if cfg!(target_os = "linux") {
+            // The same index must yield the native Linux archive on Linux.
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].id, "9.9.9.9");
+            assert_eq!(
+                items[0].download_url,
+                "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-9.9.9.9.zip"
+            );
+        } else {
+            // macOS has no official BDS build.
+            assert!(items.is_empty());
+        }
     }
 
     #[test]

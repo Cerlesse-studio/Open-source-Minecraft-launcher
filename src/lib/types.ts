@@ -112,6 +112,17 @@ export interface JavaPackItem {
   isDir: boolean;
 }
 
+/** Catalog metadata stored beside a downloaded map. */
+export interface JavaWorldSource {
+  provider: string;
+  projectId: string;
+  fileId: string;
+  version: string;
+  title: string;
+  url: string;
+  installedAt: number;
+}
+
 /** One Java save inside the instance's `saves/` folder. */
 export interface JavaWorldItem {
   id: string;
@@ -122,6 +133,22 @@ export interface JavaWorldItem {
   modifiedTime: string;
   /** `icon.png` inlined as a data URL by the backend. */
   iconDataUrl?: string | null;
+  /** Present for saves installed from a catalog with downloadable updates. */
+  source?: JavaWorldSource | null;
+}
+
+/** Result of comparing one installed map with the newest catalog file. */
+export interface JavaMapUpdate {
+  projectId: string;
+  currentFileId: string;
+  latestFileId: string;
+  latestName: string;
+  latestVersion: string;
+  latestFilename: string;
+  downloadUrl: string;
+  sha1?: string | null;
+  size: number;
+  updateAvailable: boolean;
 }
 
 export interface LoaderSelection {
@@ -141,7 +168,8 @@ export type ContentProjectType =
   | "modpack"
   | "shader"
   | "datapack"
-  | "resourcepack";
+  | "resourcepack"
+  | "world";
 
 export interface ContentHit {
   projectId: string;
@@ -208,6 +236,12 @@ export interface DownloadContentRequest {
   gameVersions?: string[];
   /** Loader family of the file ("fabric", "forge", …) when known. */
   loader?: string;
+  /** Version isolation of the instance; decides which `saves/` a map uses. */
+  isolation?: string;
+  /** Catalog source recorded beside a downloaded map for update checks. */
+  sourceProjectId?: string;
+  sourceFileId?: string;
+  sourceVersion?: string;
 }
 
 export interface ContentDownloadProgress {
@@ -253,6 +287,17 @@ export interface StageProgress {
   totalBytes: number;
 }
 
+export interface InstallFileLog {
+  stage: string;
+  file: string;
+  status: "ok" | "skip" | "fail";
+  bytes: number;
+  totalBytes: number;
+  threads: number;
+  elapsedMs: number;
+  error?: string;
+}
+
 export interface InstallProgress {
   versionId: string;
   stage: string;
@@ -268,6 +313,8 @@ export interface InstallProgress {
   retriedFiles?: number;
   activeTasks?: ActiveDownloadTask[];
   stages?: StageProgress[];
+  /** 自上次进度事件以来完成的文件下载结果。 */
+  fileLogs?: InstallFileLog[];
 }
 
 export interface DownloadHistoryRecord {

@@ -190,11 +190,6 @@ function P2pPanelBody({
               {displayTemporary ? "（临时地址）" : ""}
             </p>
           )}
-
-          <p className="text-[9.5px] leading-4 text-muted-foreground/70">
-            需要本机放行 EasyTier 的 UDP/TCP {config.listenPort} 端口；如果路由器直接丢弃入站
-            IPv6 UDP，双方仍可能无法打洞，失败时不会自动回退中继。
-          </p>
         </div>
 
         <div className="min-w-0 space-y-2 border-t border-border/50 pt-3 min-[980px]:border-t-0 min-[980px]:border-l min-[980px]:pt-0 min-[980px]:pl-4">

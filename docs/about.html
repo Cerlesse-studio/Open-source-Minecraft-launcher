@@ -10,8 +10,8 @@
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="关于 · Open-source-Minecraft-launcher" />
-  <meta property="og:description" content="一个由玩家和开发者共同维护的开源 Minecraft 启动器。" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:description" content="一个由玩家和开发者共同维护的开源 Minecraft 启动器。0.1.4 带来扩展、双语、双模式联机与 OTA 更新。" />
+  <meta property="og:image" content="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/assets/og.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="assets/site.css" />
@@ -82,10 +82,10 @@
         <h1 class="page-title">把启动器<br />还给玩家。</h1>
         <p class="page-lede">Open-source-Minecraft-launcher 是一个由玩家和开发者共同维护的开源项目。我们想把启动这件小事做得干净、稳定、可掌控，然后把时间还给游戏本身。</p>
         <div class="page-meta">
-          <span class="badge badge-primary">v0.0.7</span>
+          <span class="badge badge-primary">v0.1.4</span>
           <span class="badge">MIT License</span>
           <span class="badge">Open Source</span>
-          <span class="badge">Windows 10 / 11</span>
+          <span class="badge">Windows / macOS / Linux</span>
         </div>
       </div>
     </section>
@@ -97,7 +97,7 @@
             <span class="eyebrow section-kicker">WHY THIS PROJECT</span>
             <h2 class="section-title">不是又一个套壳启动器。</h2>
             <p class="mt-16">很多启动器把「能启动」当成终点，却把版本、Java、下载源、模组冲突和联机留给了用户。我们选择另一条路：把容易出错的环节下沉到 Rust 后端，让界面只负责清晰地呈现状态和选择。</p>
-            <p>启动器同时支持 Java 版与基岩版，内置 EasyTier 联机、Modrinth / CurseForge 内容搜索、微软与离线账户、自动 Java 管理与镜像容灾下载。它不包含广告或遥测，账户令牌只保存在本机。</p>
+            <p>启动器同时支持 Java 版与基岩版，内置 EasyTier 双模式联机、Modrinth / CurseForge 内容搜索、微软与离线账户、自动 Java 管理、镜像容灾下载、扩展系统、中英双语与 OTA 更新。它不包含广告或遥测，账户令牌只保存在本机。</p>
             <p>项目以 MIT 协议开源。你可以查看每一行代码、自行构建，或者把它改成更适合自己的样子。</p>
             <div class="hero-actions mt-24">
               <a class="btn btn-primary" href="download.html">下载启动器</a>
@@ -109,12 +109,12 @@
             <h3>项目信息</h3>
             <div class="fact-list">
               <div class="fact"><span class="fact-label">项目名称</span><span class="fact-value">Open-source-Minecraft-launcher</span></div>
-              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.0.7</span></div>
+              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.1.4</span></div>
               <div class="fact"><span class="fact-label">开源协议</span><span class="fact-value">MIT License</span></div>
               <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Electron</span></div>
               <div class="fact"><span class="fact-label">后端语言</span><span class="fact-value">Rust 2024</span></div>
               <div class="fact"><span class="fact-label">前端</span><span class="fact-value">React 19 + TypeScript</span></div>
-              <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows 10 / 11</span></div>
+              <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows / macOS / Linux</span></div>
               <div class="fact"><span class="fact-label">仓库</span><span class="fact-value">Cerlesse-studio</span></div>
             </div>
           </aside>
@@ -164,13 +164,13 @@
             <div class="timeline">
               <div class="timeline-item">
                 <span class="timeline-date">NOW</span>
-                <h3>v0.0.7 · 核心功能成型</h3>
-                <p>Java / 基岩版、微软与离线账户、多线程下载、内容市场、EasyTier 联机与个性化界面已经可用。</p>
+                <h3>v0.1.4 · 扩展与跨平台</h3>
+                <p>扩展系统、中英双语、纯 P2P / 公益节点双模式、房间资源克隆、OTA 更新、Linux BDS 与 macOS MCPELauncher 已接入。</p>
               </div>
               <div class="timeline-item">
                 <span class="timeline-date">ONGOING</span>
                 <h3>发布与平台验证</h3>
-                <p>完善预编译产物、Windows 之外的 Java 版验证，以及文档、错误提示与边界情况。</p>
+                <p>完善预编译产物、macOS / Linux 真机回归（Java 版、EasyTier 与 Linux BDS），以及文档、错误提示与边界情况。</p>
               </div>
               <div class="timeline-item">
                 <span class="timeline-date">LONG TERM</span>
@@ -183,13 +183,16 @@
           <div data-reveal>
             <span class="eyebrow section-kicker">TECH</span>
             <h2 class="section-title">技术选型。</h2>
-            <p class="section-desc">使用 Electron 内置 Chromium；下载、解包、校验、启动与 EasyTier 进程都在 Rust 侧完成。前端只负责呈现状态与下发命令。</p>
+            <p class="section-desc">使用 Electron 内置 Chromium 与独立 Rust 核心进程；下载、解包、校验、启动与 EasyTier 都在 Rust 侧完成。前端负责呈现、i18n、扩展宿主与下发命令，Electron 主进程负责窗口、IPC 与更新。</p>
             <div class="tech-strip mt-22">
               <span class="tech-item">Electron</span>
               <span class="tech-item"><img src="assets/icons/rust.svg" alt="" /> Rust 2024</span>
               <span class="tech-item"><img src="assets/icons/react.svg" alt="" /> React 19</span>
               <span class="tech-item"><img src="assets/icons/vite.svg" alt="" /> Vite 8</span>
               <span class="tech-item"><img src="assets/icons/tailwindcss.svg" alt="" /> Tailwind CSS 4</span>
+              <span class="tech-item">Chrome MV2/MV3</span>
+              <span class="tech-item">Rust/WASM</span>
+              <span class="tech-item">zh-CN / en-US</span>
             </div>
             <a class="link-arrow mt-24" href="credits.html">
               查看开源项目与许可证
@@ -269,6 +272,7 @@
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
             <a href="index.html#capabilities">功能</a>
+            <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>
@@ -286,6 +290,7 @@
           <h3>文档</h3>
           <div class="footer-links">
             <a href="docs.html">技术文档</a>
+            <a href="docs.html#extensions">扩展系统</a>
             <a href="docs.html#architecture">架构设计</a>
             <a href="docs.html#downloads">下载引擎</a>
             <a href="docs.html#faq">常见问题</a>

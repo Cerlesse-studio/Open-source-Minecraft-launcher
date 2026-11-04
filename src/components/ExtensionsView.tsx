@@ -338,7 +338,6 @@ export function ExtensionsView({ gameRoot, onNotification }: ExtensionsViewProps
     <div className="space-y-5">
       <PageHeader
         title="扩展"
-        description="支持本机扩展和 Chrome MV2 / MV3 扩展：安装 ZIP、CRX 或已解压目录，自动读取弹窗、后台脚本与本地化文案。"
         actions={
           <>
             <Button

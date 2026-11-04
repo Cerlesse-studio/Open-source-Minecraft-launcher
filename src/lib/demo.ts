@@ -159,7 +159,7 @@ export function demoSystemInfo(): SystemInfo {
     arch: "x86_64",
     javaInstalls: javaInstalls.map((java) => ({ ...java })),
     gameRunning,
-    launcherVersion: "0.0.7",
+    launcherVersion: "0.1.4",
   };
 }
 
@@ -986,6 +986,49 @@ const DEMO_DATAPACKS: ContentHit[] = [
   },
 ];
 
+const DEMO_WORLDS: ContentHit[] = [
+  {
+    projectId: "cfw:9861",
+    slug: "skyblock-classic",
+    author: "Noobcrew",
+    title: "SkyBlock Classic (经典空岛生存)",
+    description: "一张空岛、一棵树、一个箱子，从零开始在虚空中建立自己的家园。",
+    categories: ["world", "地图", "adventure"],
+    versions: ["1.21.4", "1.20.1", "1.12.2"],
+    downloads: 2_400_000,
+    follows: 18_000,
+    iconUrl: null,
+    projectType: "world",
+  },
+  {
+    projectId: "cfw:1340",
+    slug: "parkour-paradise",
+    author: "Hielke",
+    title: "Parkour Paradise (跑酷天堂)",
+    description:
+      "百关跑酷地图，从简单热身到极限连跳，适合单人挑战与多人计时赛。",
+    categories: ["world", "地图", "parkour"],
+    versions: ["1.21.4", "1.21.1"],
+    downloads: 1_100_000,
+    follows: 6_200,
+    iconUrl: null,
+    projectType: "world",
+  },
+  {
+    projectId: "cfw:7620",
+    slug: "ctm-adventure",
+    author: "Team Vaeron",
+    title: "CTM: The Complete Adventure",
+    description: "大型解谜冒险地图，收集全部 16 种羊毛并击败最终守卫者。",
+    categories: ["world", "地图", "adventure"],
+    versions: ["1.20.1", "1.19.4"],
+    downloads: 760_000,
+    follows: 4_800,
+    iconUrl: null,
+    projectType: "world",
+  },
+];
+
 export async function demoSearchContent(options: {
   query?: string;
   projectType: ContentProjectType;
@@ -1003,7 +1046,9 @@ export async function demoSearchContent(options: {
         ? DEMO_MODPACKS
         : options.projectType === "shader"
           ? DEMO_SHADERS
-          : DEMO_DATAPACKS;
+          : options.projectType === "world"
+            ? DEMO_WORLDS
+            : DEMO_DATAPACKS;
 
   const q = options.query?.trim().toLowerCase();
   if (q) {
@@ -1067,6 +1112,29 @@ export async function demoGetContentVersions(
   }
 
   const gv = gameVersion && gameVersion !== "all" ? gameVersion : "1.21.4";
+
+  if (projectId.startsWith("cfw:")) {
+    return [
+      {
+        id: `${projectId}:1`,
+        name: `${gv} 地图存档`,
+        versionNumber: gv,
+        gameVersions: [gv],
+        loaders: ["world"],
+        datePublished: "2026-10-20T10:00:00Z",
+        downloads: 98_000,
+        files: [
+          {
+            url: "https://example.com/world.zip",
+            filename: `${projectId.replace(/[^a-z0-9]+/gi, "-")}-${gv}.zip`,
+            primary: true,
+            size: 12_800_000,
+          },
+        ],
+      },
+    ];
+  }
+
   return [
     {
       id: `${projectId}-v1`,
@@ -1174,9 +1242,12 @@ export async function demoDownloadContentFile(
     (iv) => iv.mcVersion && wanted.has(iv.mcVersion.toLowerCase()),
   );
   const instanceId = request.instanceId || matched?.id;
-  const folder = instanceId
-    ? `versions\\${instanceId}\\${request.projectType}s`
-    : `${request.projectType}s`;
+  const folder =
+    request.projectType === "world"
+      ? `saves\\${request.title || "世界"}`
+      : instanceId
+        ? `versions\\${instanceId}\\${request.projectType}s`
+        : `${request.projectType}s`;
   return {
     success: true,
     filePath: `C:\\Users\\you\\.cobble\\${folder}\\${request.filename}`,

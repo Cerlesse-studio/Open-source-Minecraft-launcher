@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.0.7";
+pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.1.4";
 
 /// Files at or above 1 MB are eligible for multi-segment HTTP Range downloading.
 const MIN_MULTITHREAD_SIZE: u64 = 1_048_576;
@@ -88,6 +88,20 @@ fn download_preference() -> DownloadPreference {
 /// Thread count content downloads should use when the caller has no own value.
 pub fn download_threads() -> usize {
     download_preference().threads
+}
+
+/// 单个文件可用的分片线程数。
+///
+/// 小于 1 MB 的文件分不出有意义的分片，直接单连接；未知大小或大文件
+/// 使用用户配置的线程数，由下载器先探测 Range 再决定是否真的分段。
+/// 这样所有下载入口（客户端、依赖库、资源、安装器、运行时）都遵守同一套
+/// 多线程策略，不会再出现某个入口固定单线程的情况。
+pub fn per_file_threads(size: Option<u64>) -> usize {
+    let configured = download_threads().clamp(1, 64);
+    match size {
+        Some(total) if total < MIN_MULTITHREAD_SIZE => 1,
+        _ => configured,
+    }
 }
 
 fn is_bmclapi(url: &str) -> bool {
@@ -343,7 +357,7 @@ pub async fn download_file(
         dest,
         expected_sha1,
         expected_size,
-        1,
+        per_file_threads(expected_size),
         None,
         Some(&mut delta_adapter),
     )
@@ -444,6 +458,29 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
             "https://github.com/",
             "https://github1.roundstudio.top/https://github.com/",
         ));
+    } else if let Some(rest) = trimmed.strip_prefix("https://raw.githubusercontent.com/") {
+        let parts: Vec<&str> = rest.splitn(4, '/').collect();
+        if parts.len() == 4 {
+            let (owner, repo, branch, path) = (parts[0], parts[1], parts[2], parts[3]);
+            mirrors.push(format!("https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"));
+            mirrors.push(format!("https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"));
+            mirrors.push(format!("https://gcore.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"));
+        }
+        mirrors.push(format!("https://ghproxy.net/{trimmed}"));
+        mirrors.push(format!("https://gh-proxy.com/{trimmed}"));
+    } else if let Some(rest) = trimmed.strip_prefix("https://cdn.jsdelivr.net/gh/") {
+        mirrors.push(format!("https://fastly.jsdelivr.net/gh/{rest}"));
+        mirrors.push(format!("https://gcore.jsdelivr.net/gh/{rest}"));
+        if let Some((repo_part, path)) = rest.split_once('/') {
+            if let Some((owner, repo_and_branch)) = repo_part.split_once('/') {
+                let (repo, branch) = match repo_and_branch.split_once('@') {
+                    Some((r, b)) => (r, b),
+                    None => (repo_and_branch, "master"),
+                };
+                mirrors.push(format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"));
+                mirrors.push(format!("https://ghproxy.net/https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"));
+            }
+        }
     }
 
     mirrors
@@ -1422,6 +1459,25 @@ mod tests {
         ));
         assert!(mirrors.contains(
             &"https://bmclapi2.bangbang93.com/assets/02/022e48005197b37f0caa53e8051c8a266eeae15e"
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn github_raw_url_falls_back_to_jsdelivr_and_proxies() {
+        let mirrors = get_mirror_urls(
+            "https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/images/logo.png",
+        );
+        assert!(mirrors.contains(
+            &"https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/logo.png"
+                .to_string()
+        ));
+        assert!(mirrors.contains(
+            &"https://fastly.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/logo.png"
+                .to_string()
+        ));
+        assert!(mirrors.contains(
+            &"https://gcore.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/logo.png"
                 .to_string()
         ));
     }

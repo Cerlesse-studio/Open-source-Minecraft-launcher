@@ -4,14 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>下载 · Open-source-Minecraft-launcher</title>
-  <meta name="description" content="下载 Open-source-Minecraft-launcher：查看 Windows / macOS / Linux 支持情况、系统要求、GitHub Releases 与源码构建步骤。" />
+  <meta name="description" content="下载 Open-source-Minecraft-launcher v0.1.4：Windows / macOS / Linux 平台支持、系统要求、GitHub Releases、源码构建与 OTA 更新说明。" />
   <meta name="theme-color" content="#060a07" />
   <link rel="icon" type="image/png" href="assets/favicon.png" />
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="下载 · Open-source-Minecraft-launcher" />
-  <meta property="og:description" content="选择平台，或从源码构建。当前版本 v0.0.7。" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:description" content="选择平台，或从源码构建。当前源码版本 v0.1.4。" />
+  <meta property="og:image" content="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/assets/og.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="assets/site.css" />
@@ -80,9 +80,9 @@
           <span>下载</span>
         </nav>
         <h1 class="page-title">下载启动器</h1>
-        <p class="page-lede">选择你的平台，或直接从源码构建。当前版本 v0.0.7；Windows 是完整功能平台，macOS / Linux 目前以 Java 版源码构建为主。</p>
+        <p class="page-lede">选择你的平台，或直接从源码构建。当前源码版本 v0.1.4；Windows 提供完整基岩版路径，Linux 额外支持官方 BDS 与 EasyTier，macOS 以 Java 版和 MCPELauncher 客户端为主。</p>
         <div class="page-meta">
-          <span class="badge badge-primary"><span class="badge-dot"></span> v0.0.7</span>
+          <span class="badge badge-primary"><span class="badge-dot"></span> v0.1.4</span>
           <span class="badge">Windows 10 / 11</span>
           <span class="badge">MIT License</span>
           <span class="badge">Electron</span>
@@ -94,7 +94,7 @@
       <div class="download-status" data-reveal>
         <div class="download-status-main">
           <span class="status-dot" aria-hidden="true"></span>
-          <span><strong>发布状态：</strong>当前以源码构建为主；预编译安装包发布后会同步到 GitHub Releases。</span>
+          <span><strong>发布状态：</strong>当前源码版本为 v0.1.4；GitHub Releases 提供已构建安装包，版本可能滞后于仓库代码。</span>
         </div>
         <span class="os-note" data-os-note>当前系统：自动检测</span>
       </div>
@@ -111,7 +111,7 @@
           <ul class="platform-list">
             <li>Java 版 + 基岩版完整功能</li>
             <li>EasyTier 联机与 Windows 防火墙集成</li>
-            <li>预编译包发布后可直接安装</li>
+            <li>支持安装包 / 单文件与 OTA 更新</li>
           </ul>
           <div class="platform-actions">
             <a class="btn btn-primary btn-sm" href="https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher/releases" target="_blank" rel="noopener">前往 Releases</a>
@@ -128,8 +128,9 @@
             </div>
           </div>
           <ul class="platform-list">
-            <li>Java 版核心可尝试构建运行</li>
-            <li>基岩版与 Xbox 运行时不可用</li>
+            <li>Java 版核心可构建运行</li>
+            <li>可接管已安装的 MCPELauncher 客户端</li>
+            <li>无官方 BDS 与 Xbox 运行时</li>
             <li>需要 Xcode Command Line Tools</li>
           </ul>
           <div class="platform-actions">
@@ -143,13 +144,14 @@
             <span class="platform-icon"><svg class="icon" aria-hidden="true"><use href="#icon-terminal"></use></svg></span>
             <div>
               <div class="platform-name">Linux</div>
-              <div class="platform-sub">Java 版 · 需自行构建</div>
+              <div class="platform-sub">Java 版 + BDS + 联机</div>
             </div>
           </div>
           <ul class="platform-list">
-            <li>Java 版核心可尝试构建运行</li>
-            <li>需要 Electron 支持的 Linux 桌面环境</li>
-            <li>基岩版相关功能不可用</li>
+            <li>Java 版核心可构建运行</li>
+            <li>原生 BDS 服务端（官方 Ubuntu x86_64）</li>
+            <li>EasyTier 用户态联机，无需 root</li>
+            <li>基岩版 UWP / GDK 客户端不可用</li>
           </ul>
           <div class="platform-actions">
             <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">构建指南</a>
@@ -162,9 +164,9 @@
         <section class="release-card" id="releases" data-reveal>
           <span class="eyebrow">RELEASES</span>
           <h2>获取最新构建</h2>
-          <p>GitHub Releases 是官方构建的唯一发布渠道。如果已有对应平台的安装包，会在这里提供下载；没有时请使用源码构建。</p>
+          <p>GitHub Releases 是官方构建的唯一发布渠道。安装包可能滞后于源码版本；要以当前 0.1.4 代码运行，请使用源码构建。</p>
           <div class="release-meta">
-            <span class="badge badge-primary">v0.0.7</span>
+            <span class="badge badge-primary">源码 v0.1.4</span>
             <span class="badge">Windows 10 / 11</span>
             <span class="badge">MIT</span>
           </div>
@@ -180,7 +182,7 @@
           </div>
           <div class="callout callout-warn mb-0">
             <svg class="icon" aria-hidden="true"><use href="#icon-warning"></use></svg>
-            <p><span class="callout-title">只从可信来源下载</span>不要从第三方网盘或陌生链接获取启动器。需要最新代码时，请使用本仓库的 Releases 或自行从源码构建。</p>
+            <p><span class="callout-title">只从可信来源下载</span>不要从第三方网盘或陌生链接获取启动器。需要最新代码时，请使用本仓库的 Releases 或自行从源码构建。安装后可在「设置 → 关于启动器 → 软件更新」中检查 OTA 更新。</p>
           </div>
         </section>
 
@@ -192,19 +194,22 @@
             <div class="code-head"><span class="code-lang">bash</span><button class="copy-btn" type="button">复制</button></div>
             <pre><code>git clone https://github.com/Cerlesse-studio/Open-source-Minecraft-launcher.git
 cd Open-source-Minecraft-launcher
-npm install
+npm ci
+npm run start                  # 开发模式：Electron + Rust 核心
 
-# 一键打包单文件免安装版（输出至 release/Open-source-Minecraft-launcher.exe）
-npm run electron:build:portable
+# 一键打包当前平台：安装包 + OTA 文件
+npm run package
 
-# 一键打包安装包版
-npm run electron:build:nsis</code></pre>
+# 指定平台（必须在该系统上执行）
+npm run package:win
+npm run package:mac
+npm run package:linux</code></pre>
           </div>
           <div class="download-actions">
             <a class="btn btn-secondary btn-sm" href="docs.html#quickstart">完整构建文档</a>
             <a class="link-arrow" href="docs.html#requirements">查看系统要求 <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg></a>
           </div>
-          <p class="download-note">构建产物：<code>release/</code>。Windows 生成 NSIS 安装包，macOS 生成 DMG，Linux 生成 AppImage。</p>
+          <p class="download-note">构建产物：<code>release/v&lt;版本&gt;/</code>。Windows 生成 NSIS 与免安装版，macOS 生成 DMG 与 ZIP，Linux 生成 AppImage，并附带 <code>latest*.yml</code>、<code>latest.json</code> 与 <code>SHA256SUMS.txt</code>。三个平台需分别在对应系统上构建。</p>
         </section>
       </div>
 
@@ -230,7 +235,7 @@ npm run electron:build:nsis</code></pre>
           <div class="requirement-card" data-reveal>
             <svg class="icon icon-lg" aria-hidden="true"><use href="#icon-wifi"></use></svg>
             <strong>网络与联机</strong>
-            <span>首次安装版本、依赖与 Java 需要联网；EasyTier 联机默认使用 IPv6 双向直连，需要双方有公网 IPv6，并放行本机 TCP/UDP 11010。</span>
+            <span>首次安装版本、依赖与 Java 需要联网；纯 IPv6 P2P 需要双方公网 IPv6 与 TCP/UDP 11010，没有 IPv6 时可切换公益节点模式。</span>
           </div>
         </div>
       </section>
@@ -270,8 +275,8 @@ npm run electron:build:nsis</code></pre>
         </div>
         <div class="faq-list">
           <details class="faq">
-            <summary>为什么 Releases 里没有安装包？</summary>
-            <div class="faq-body"><p>项目仍在快速迭代，预编译产物尚未稳定发布。可以先按源码构建；Release 发布后，本页与 GitHub Releases 会提供对应平台的安装包。</p></div>
+            <summary>Releases 的版本和源码版本不一致？</summary>
+            <div class="faq-body"><p>GitHub Releases 的安装包可能滞后于仓库代码。当前源码版本为 0.1.4；如果需要立即体验最新功能，请按本页步骤从源码构建，或等待 Releases 更新。</p></div>
           </details>
           <details class="faq">
             <summary>Windows 提示「未知发布者」怎么办？</summary>
@@ -279,7 +284,7 @@ npm run electron:build:nsis</code></pre>
           </details>
           <details class="faq">
             <summary>macOS / Linux 有安装包吗？</summary>
-            <div class="faq-body"><p>目前以源码构建为主。Java 版可以尝试在 macOS / Linux 构建运行；基岩版、Xbox 运行时、winget 与 Windows 防火墙集成仅限 Windows。</p></div>
+            <div class="faq-body"><p>macOS 生成 DMG，Linux 生成 AppImage；Releases 可能尚未覆盖所有架构。Java 版与 EasyTier 联机可跨平台运行；Linux 还支持官方 BDS 服务端，macOS 可接管已安装的 MCPELauncher。基岩版 UWP / GDK 客户端、Xbox 运行时、winget 与 Windows 防火墙集成仅限 Windows。</p></div>
           </details>
           <details class="faq">
             <summary>构建时提示找不到 Rust 或 Cargo？</summary>
@@ -322,6 +327,7 @@ npm run electron:build:nsis</code></pre>
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
             <a href="index.html#capabilities">功能</a>
+            <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>
@@ -339,6 +345,7 @@ npm run electron:build:nsis</code></pre>
           <h3>文档</h3>
           <div class="footer-links">
             <a href="docs.html">技术文档</a>
+            <a href="docs.html#extensions">扩展系统</a>
             <a href="docs.html#architecture">架构设计</a>
             <a href="docs.html#downloads">下载引擎</a>
             <a href="docs.html#faq">常见问题</a>

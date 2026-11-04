@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Check,
   CircleSlash2,
   FolderInput,
   FolderOpen,
@@ -14,6 +15,7 @@ import {
 import { open as openDialog } from "@/lib/desktop";
 import { cn } from "cn";
 import {
+  checkJavaWorldUpdate,
   deleteBedrockWorld,
   deleteJavaWorld,
   getBedrockWorlds,
@@ -22,7 +24,7 @@ import {
   installJavaWorldFile,
   isDesktop,
 } from "../lib/backend";
-import type { JavaWorldItem } from "../lib/types";
+import type { JavaMapUpdate, JavaWorldItem, JavaWorldSource } from "../lib/types";
 import { formatBytes, formatDate, joinPath } from "../lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +39,8 @@ interface WorldRow {
   size: number;
   modifiedTime: string;
   icon?: string | null;
+  /** Catalog metadata for a downloaded Java map. */
+  source?: JavaWorldSource | null;
   /** Bedrock only: which com.mojang folder this copy lives in. */
   location?: string;
   locationPath?: string;
@@ -103,12 +107,15 @@ export function WorldManager({
   const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState<WorldRow | null>(null);
   const [busyPath, setBusyPath] = useState<string | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updates, setUpdates] = useState<Record<string, JavaMapUpdate>>({});
 
   const savesDir = isBedrock ? "" : joinPath(gameDir ?? gameRoot, "saves");
 
   const load = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
+      setUpdates({});
       try {
         if (isBedrock) {
           const rows = await getBedrockWorlds(gameRoot);
@@ -205,6 +212,68 @@ export function WorldManager({
       setImporting(false);
     }
   }, [versionId, isolation, gameRoot, load, onNotify]);
+
+  const checkUpdates = useCallback(async () => {
+    if (isBedrock) return;
+    const eligible = worlds.filter(
+      (world) => world.source?.projectId && world.source.fileId,
+    );
+    if (eligible.length === 0) {
+      onNotify?.(
+        "info",
+        "没有可检测的地图",
+        "只有通过启动器下载并带有来源信息的地图才能检测后续版本。",
+      );
+      return;
+    }
+
+    setCheckingUpdates(true);
+    try {
+      const results = await Promise.allSettled(
+        eligible.map(async (world) => {
+          const update = await checkJavaWorldUpdate(
+            world.source!.projectId,
+            world.source!.fileId,
+          );
+          return [world.folder, update] as const;
+        }),
+      );
+      const next: Record<string, JavaMapUpdate> = {};
+      let available = 0;
+      let failed = 0;
+      for (const result of results) {
+        if (result.status === "rejected") {
+          failed += 1;
+          continue;
+        }
+        const [folder, update] = result.value;
+        next[folder] = update;
+        if (update.updateAvailable) available += 1;
+      }
+      setUpdates(next);
+      if (failed === results.length) {
+        onNotify?.(
+          "error",
+          "更新检测失败",
+          "无法读取地图版本信息，请检查网络后重试。",
+        );
+      } else if (available > 0) {
+        onNotify?.(
+          "info",
+          "发现地图更新",
+          `${available} 个地图有新版本${failed > 0 ? `，${failed} 个检查失败` : ""}`,
+        );
+      } else {
+        onNotify?.(
+          "success",
+          "地图均为最新",
+          `已检查 ${eligible.length} 个下载地图${failed > 0 ? `，${failed} 个检查失败` : ""}`,
+        );
+      }
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, [isBedrock, worlds, onNotify]);
 
   const removeWorld = useCallback(async () => {
     if (!deleting) return;
@@ -317,6 +386,21 @@ export function WorldManager({
               variant="outline"
               size="sm"
               className="h-8 gap-1.5 text-[11px]"
+              disabled={loading || checkingUpdates}
+              title="仅检测通过启动器下载、带来源信息的地图"
+              onClick={() => void checkUpdates()}
+            >
+              <RefreshCw
+                className={cn("size-3.5", checkingUpdates && "animate-spin")}
+              />
+              检测更新
+            </Button>
+          )}
+          {isBedrock ? null : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-[11px]"
               disabled={importing}
               onClick={() => void importFolder()}
             >
@@ -400,6 +484,7 @@ export function WorldManager({
           <div className="divide-y divide-border/50">
             {visible.map((world) => {
               const busy = busyPath === world.path;
+              const update = updates[world.folder];
               return (
                 <div
                   key={world.path || world.id}
@@ -415,6 +500,32 @@ export function WorldManager({
                       {world.location ? (
                         <span className="rounded border border-border/60 bg-background/50 px-1 py-px text-[9.5px] text-muted-foreground">
                           {world.location}
+                        </span>
+                      ) : null}
+                      {world.source ? (
+                        <span
+                          title={`已安装 ${world.source.title || "下载地图"}${
+                            world.source.version ? ` (${world.source.version})` : ""
+                          }`}
+                          className="rounded border border-primary/30 bg-primary/10 px-1 py-px text-[9.5px] text-primary"
+                        >
+                          已下载
+                        </span>
+                      ) : null}
+                      {update?.updateAvailable ? (
+                        <span
+                          title={`最新文件：${update.latestName}${
+                            update.latestVersion ? ` (${update.latestVersion})` : ""
+                          }`}
+                          className="flex items-center gap-1 rounded border border-amber-400/35 bg-amber-400/10 px-1 py-px text-[9.5px] text-amber-300"
+                        >
+                          <RefreshCw className="size-2.5" />
+                          有新版本
+                        </span>
+                      ) : update ? (
+                        <span className="flex items-center gap-1 rounded border border-emerald-400/30 bg-emerald-400/10 px-1 py-px text-[9.5px] text-emerald-300">
+                          <Check className="size-2.5" />
+                          已是最新
                         </span>
                       ) : null}
                     </div>
@@ -462,7 +573,7 @@ export function WorldManager({
         <ShieldAlert className="mt-px size-3 shrink-0" />
         {isBedrock
           ? "存档与附加包共用 com.mojang；导入会写入所有已存在的数据目录，删除也会移除这些副本。操作前请完全关闭游戏。"
-          : "存档目录随「版本隔离」设置变化；删除会连同维度文件与玩家数据一起移除，且无法撤销。"}
+          : "存档目录随「版本隔离」设置变化；删除会连同维度文件与玩家数据一起移除，且无法撤销。更新检测只比较已记录的下载来源，不会覆盖当前存档。"}
       </p>
 
       {deleting ? (

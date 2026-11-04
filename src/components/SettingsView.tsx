@@ -35,7 +35,6 @@ import {
   Trash2,
   Type,
   Upload,
-  UserRound,
   Zap,
   LoaderCircle,
   type LucideIcon,
@@ -75,7 +74,6 @@ import type {
   AppUpdateInfo,
   AppUpdateProgress,
   EasyTierPublicServer,
-  MsAccount,
   DownloadSourceId,
   DownloadSourceProbe,
   HomePageMode,
@@ -263,12 +261,10 @@ interface SettingsViewProps {
   onRefreshJava: () => Promise<void>;
   onOpenFolder: (path: string) => void;
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
-  account?: MsAccount | null;
   initialTab?: SettingsTab;
 }
 
 type SettingsTab =
-  | "account"
   | "launch"
   | "download"
   | "personalization"
@@ -388,12 +384,22 @@ export function SettingsView({
   onRefreshJava,
   onOpenFolder,
   onNotify,
-  account,
   initialTab,
 }: SettingsViewProps) {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || "account");
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || "launch");
   const lastInitialTabRef = useRef<SettingsTab | undefined>(initialTab);
+
+  const offlineSkinLabel =
+    settings.offlineSkinType === "random"
+      ? "按昵称随机分配 Steve / Alex"
+      : settings.offlineSkinType === "steve"
+        ? "Steve · 经典 4px 粗手臂"
+        : settings.offlineSkinType === "alex"
+          ? "Alex · 纤细 3px 细手臂"
+          : settings.offlineSkinType === "mojang"
+            ? `正版皮肤 · ${settings.mojangSkinName?.trim() || settings.playerName || "Steve"}`
+            : `自定义皮肤 · ${settings.offlineSkinModel === "slim" ? "Alex 细手臂" : "Steve 粗手臂"}`;
 
   useEffect(() => {
     // 仅在外部真正切换传入新的 initialTab 时更新，避免内部设置修改导致反复重置与刷新
@@ -626,7 +632,6 @@ export function SettingsView({
       onNotify("error", "无法打开后台日志窗口", String(error));
     }
   };
-  const cleanName = /^[A-Za-z0-9_]{1,16}$/.test(settings.playerName);
 
   // Custom mirror latency changes when the URL changes, so drop stale results.
   useEffect(() => {
@@ -907,13 +912,6 @@ export function SettingsView({
         <div className="overflow-x-auto pb-1">
           <TabsList className="h-10 w-full justify-start gap-1 rounded-lg border border-border/70 bg-card/60 p-1">
             <TabsTrigger
-              value="account"
-              className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
-            >
-              <UserRound className="size-3.5 transition-colors" />
-              {t("账户设置")}
-            </TabsTrigger>
-            <TabsTrigger
               value="launch"
               className="gap-2 px-3.5 py-1.5 text-[12px] text-muted-foreground transition-all hover:text-foreground data-[state=active]:border data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:font-semibold data-[state=active]:shadow-xs"
             >
@@ -944,124 +942,10 @@ export function SettingsView({
           </TabsList>
         </div>
 
-        {/* 账户设置 Tab */}
-        <TabsContent value="account" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-2xl space-y-4">
-            <SettingsSection
-              title="账户信息"
-              icon={<UserRound className="size-4" />}
-            >
-              <Field
-                label="游戏昵称"
-                htmlFor="player-name"
-                error={
-                  cleanName
-                    ? undefined
-                    : "昵称格式错误：请使用 1–16 位英文字母、数字或下划线"
-                }
-              >
-                <div className="relative">
-                  <Input
-                    id="player-name"
-                    value={settings.playerName}
-                    maxLength={16}
-                    spellCheck={false}
-                    aria-invalid={!cleanName}
-                    className={cn(
-                      "h-9 bg-background/40 pr-9 text-[12px]",
-                      !cleanName && "border-destructive/60 focus-visible:ring-destructive/20",
-                    )}
-                    onChange={(event) => onChange({ playerName: event.target.value })}
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2">
-                    {cleanName ? (
-                      <Check className="size-3.5 text-primary" />
-                    ) : (
-                      <AlertCircle className="size-3.5 text-destructive" />
-                    )}
-                  </span>
-                </div>
-              </Field>
 
-              <div className="flex items-center gap-3.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
-                <div className="size-10 overflow-hidden rounded-md border border-border/60 bg-background flex items-center justify-center shrink-0">
-                  <Avatar
-                    name={account?.signedIn ? account.name : settings.playerName || "Steve"}
-                    skinType={
-                      settings.offlineSkinType === "custom" && settings.customSkinPath
-                        ? "custom"
-                        : account?.signedIn
-                          ? settings.offlineSkinType === "steve" || settings.offlineSkinType === "alex"
-                            ? settings.offlineSkinType
-                            : "mojang"
-                          : settings.offlineSkinType
-                    }
-                    customSkinPath={settings.customSkinPath}
-                    mojangSkinName={
-                      account?.signedIn
-                        ? settings.offlineSkinType === "mojang" && settings.mojangSkinName?.trim()
-                          ? settings.mojangSkinName.trim()
-                          : account.name
-                        : settings.mojangSkinName
-                    }
-                    skinUrl={account?.skinUrl}
-                    size={40}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="truncate text-[13px] font-medium text-foreground">
-                      {account?.signedIn ? account.name : settings.playerName || "未命名"}
-                    </p>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "h-4 border-border/80 px-1.5 text-[9px] font-normal",
-                        account?.signedIn
-                          ? "border-primary/40 bg-primary/10 text-primary"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {account?.signedIn ? "正版账户" : "离线账户"}
-                    </Badge>
-                  </div>
-                  <p className="text-[10.5px] text-muted-foreground truncate pt-0.5">
-                    {account?.signedIn ? (
-                      <>
-                        当前正版模式 · 皮肤：
-                        <span className="text-foreground/90 font-medium">
-                          {settings.offlineSkinType === "custom" && settings.customSkinPath
-                            ? "自定义本地皮肤"
-                            : settings.offlineSkinType === "steve"
-                              ? "强制 Steve 粗手臂"
-                              : settings.offlineSkinType === "alex"
-                                ? "强制 Alex 细手臂"
-                                : settings.offlineSkinType === "mojang" && settings.mojangSkinName?.trim()
-                                  ? `指定正版皮肤 (${settings.mojangSkinName.trim()})`
-                                  : `官方正版皮肤 (${account.name})`}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        离线皮肤状态：
-                        <span className="text-foreground/90 font-medium">
-                          {settings.offlineSkinType === "random"
-                            ? "随机 (默认)"
-                            : settings.offlineSkinType === "steve"
-                              ? "Steve 粗手臂"
-                              : settings.offlineSkinType === "alex"
-                                ? "Alex 细手臂"
-                                : settings.offlineSkinType === "mojang"
-                                  ? `正版皮肤 (${settings.mojangSkinName?.trim() || settings.playerName})`
-                                  : "自定义本地皮肤"}
-                        </span>
-                      </>
-                    )}
-                  </p>
-                </div>
-              </div>
-            </SettingsSection>
 
+        {/* 游戏与启动 Tab */}
+        <TabsContent value="launch" className="mt-0 space-y-4 focus-visible:outline-none">
             {/* 离线皮肤 Card */}
             <Card className="gap-0 border-border/70 bg-card/55 py-0 shadow-sm">
               <CardHeader className="border-b border-border/60 px-5 py-3.5">
@@ -1091,35 +975,57 @@ export function SettingsView({
 
               {!skinCollapsed && (
                 <CardContent className="space-y-4 p-5">
-                  {/* Warning banner matching user screenshot */}
+                  <div className="flex items-center gap-3.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
+                    <div className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-background">
+                      <Avatar
+                        name={settings.playerName || "Steve"}
+                        size={56}
+                        skinType={
+                          settings.offlineSkinType === "custom" && settings.customSkinPath
+                            ? "custom"
+                            : settings.offlineSkinType
+                        }
+                        customSkinPath={settings.customSkinPath}
+                        mojangSkinName={settings.mojangSkinName}
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-[13px] font-medium text-foreground">
+                        {settings.playerName || "Steve"}
+                      </p>
+                      <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
+                        {offlineSkinLabel}
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="rounded-md border-l-4 border-amber-500 bg-amber-500/10 px-4 py-2.5 text-[12px] font-medium text-amber-600 dark:text-amber-400">
                     由于技术问题，此功能只保证对 1.19.2 以前的版本有效！
                   </div>
 
-                  {/* Radio Group matching user screenshot */}
                   <RadioGroup
                     value={settings.offlineSkinType}
                     onValueChange={(val) =>
                       onChange({ offlineSkinType: val as OfflineSkinType })
                     }
-                    className="flex flex-wrap items-center gap-6 pt-1"
+                    className="flex flex-wrap items-center gap-x-6 gap-y-2.5 pt-1"
                   >
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="random" id="skin-random" />
                       <Label htmlFor="skin-random" className="cursor-pointer text-xs font-normal">
-                        随机
+                        随机（按昵称）
                       </Label>
                     </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="steve" id="skin-steve" />
                       <Label htmlFor="skin-steve" className="cursor-pointer text-xs font-normal">
-                        Steve
+                        Steve · 经典 4px 粗臂
                       </Label>
                     </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="alex" id="skin-alex" />
                       <Label htmlFor="skin-alex" className="cursor-pointer text-xs font-normal">
-                        Alex
+                        Alex · 纤细 3px 细臂
                       </Label>
                     </div>
                     <div className="flex items-center space-x-2">
@@ -1145,36 +1051,22 @@ export function SettingsView({
 
                   {settings.offlineSkinType === "steve" && (
                     <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/15 p-3">
-                      <div className="size-9 shrink-0 overflow-hidden rounded border border-border/60 bg-muted/30">
-                        <img
-                          src="https://minotar.net/helm/Steve/36.png"
-                          alt="Steve"
-                          className="size-full object-contain pixelated"
-                          onError={(e) => {
-                            e.currentTarget.style.display = "none";
-                          }}
-                        />
+                      <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded border border-border/60 bg-muted/30">
+                        <Avatar name="Steve" skinType="steve" size={32} />
                       </div>
                       <div className="text-[11.5px] text-muted-foreground leading-relaxed">
-                        💡 强制将离线 UUID 校验为偶数哈希，固定使用经典的史蒂夫（Steve）4px 粗手臂模型与外观。
+                        Steve 是经典模型：4px 粗手臂、较宽的身形。启动器会固定离线 UUID 的模型校验，让客户端使用这套模型。
                       </div>
                     </div>
                   )}
 
                   {settings.offlineSkinType === "alex" && (
                     <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/15 p-3">
-                      <div className="size-9 shrink-0 overflow-hidden rounded border border-border/60 bg-muted/30">
-                        <img
-                          src="https://minotar.net/helm/Alex/36.png"
-                          alt="Alex"
-                          className="size-full object-contain pixelated"
-                          onError={(e) => {
-                            e.currentTarget.style.display = "none";
-                          }}
-                        />
+                      <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded border border-border/60 bg-muted/30">
+                        <Avatar name="Alex" skinType="alex" size={32} />
                       </div>
                       <div className="text-[11.5px] text-muted-foreground leading-relaxed">
-                        💡 强制将离线 UUID 校验为奇数哈希，固定使用爱丽克丝（Alex）3px 细手臂纤细外观。
+                        Alex 是纤细模型：3px 细手臂、较窄的身形，和 Steve 不是同一套模型。启动器会固定离线 UUID 的模型校验，让客户端使用这套模型。
                       </div>
                     </div>
                   )}
@@ -1249,7 +1141,9 @@ export function SettingsView({
 
                       {/* Arm Model Selection */}
                       <div className="space-y-1.5">
-                        <Label className="text-[11px] text-muted-foreground">皮肤模型手臂类型</Label>
+                        <Label className="text-[11px] text-muted-foreground">
+                          皮肤模型（Steve 与 Alex 使用不同手臂模型）
+                        </Label>
                         <RadioGroup
                           value={settings.offlineSkinModel}
                           onValueChange={(val) =>
@@ -1260,13 +1154,13 @@ export function SettingsView({
                           <div className="flex items-center space-x-2">
                             <RadioGroupItem value="default" id="model-default" />
                             <Label htmlFor="model-default" className="cursor-pointer text-xs font-normal">
-                              经典 (4px 粗手臂 / Steve)
+                              Steve · 经典 4px 粗手臂
                             </Label>
                           </div>
                           <div className="flex items-center space-x-2">
                             <RadioGroupItem value="slim" id="model-slim" />
                             <Label htmlFor="model-slim" className="cursor-pointer text-xs font-normal">
-                              纤细 (3px 细手臂 / Alex)
+                              Alex · 纤细 3px 细手臂
                             </Label>
                           </div>
                         </RadioGroup>
@@ -1280,11 +1174,7 @@ export function SettingsView({
                 </CardContent>
               )}
             </Card>
-          </div>
-        </TabsContent>
 
-        {/* 游戏与启动 Tab */}
-        <TabsContent value="launch" className="mt-0 space-y-4 focus-visible:outline-none">
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="lg:col-span-2">
               <SettingsSection
@@ -1407,6 +1297,7 @@ export function SettingsView({
                   <Input
                     id="game-root"
                     value={rootDraft}
+                    placeholder={systemInfo?.defaultRoot || "启动器同目录下的 .minecraft"}
                     spellCheck={false}
                     className="h-9 min-w-0 flex-1 bg-background/40 font-mono text-[11px]"
                     onChange={(event) => setRootDraft(event.target.value)}
@@ -1415,6 +1306,17 @@ export function SettingsView({
                       if (event.key === "Enter") event.currentTarget.blur();
                     }}
                   />
+                  {systemInfo?.defaultRoot && settings.gameRoot !== systemInfo.defaultRoot && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 shrink-0 px-2.5 text-[11px]"
+                      onClick={() => onChange({ gameRoot: systemInfo.defaultRoot })}
+                      title="重置为启动器主程序同目录"
+                    >
+                      恢复默认
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -1434,6 +1336,9 @@ export function SettingsView({
                     <FolderOpen className="size-3.5" />
                   </Button>
                 </div>
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  默认保存在与启动器主程序同一目录下的 .minecraft 文件夹中
+                </p>
               </Field>
 
               <div className="space-y-2">
@@ -1896,11 +1801,7 @@ export function SettingsView({
                     </Button>
                   ) : null}
                 </div>
-              ) : (
-                <p className="text-[10.5px] leading-5 text-muted-foreground/60">
-                  选择只改变优先顺序，失败时会自动回退到其它源；测速会请求各源的版本清单，仅比较首字节延迟。
-                </p>
-              )}
+              ) : null}
 
               {settings.downloadSource === "custom" ? (
                 <Field label="自定义镜像 URL">
@@ -2039,10 +1940,6 @@ export function SettingsView({
                     </Button>
                   ))}
                 </div>
-
-                <p className="text-[10.5px] leading-5 text-muted-foreground/60">
-                  线程越多分片越细，建议 8–16；网络不稳定或共享带宽时降到 4 更稳。单文件小于 1 MB 时仍走单线程。
-                </p>
               </div>
             </SettingsSection>
 
@@ -3012,7 +2909,7 @@ export function SettingsView({
                     <p className="text-[12px] font-medium text-foreground">
                       当前版本{" "}
                       <span className="font-mono">
-                        v{updateInfo?.currentVersion ?? systemInfo?.launcherVersion ?? "0.0.7"}
+                        v{updateInfo?.currentVersion ?? systemInfo?.launcherVersion ?? "0.1.4"}
                       </span>
                       {updateInfo?.available && updateInfo.latestVersion ? (
                         <span className="ml-2 font-mono text-[11px] text-primary">
@@ -3218,7 +3115,7 @@ export function SettingsView({
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
                   <span className="text-[11.5px] text-muted-foreground">名称与版本</span>
                   <span className="font-mono text-[12px] font-medium text-foreground">
-                    Open-source-Minecraft-launcher v{systemInfo?.launcherVersion ?? "0.0.7"}
+                    Open-source-Minecraft-launcher v{systemInfo?.launcherVersion ?? "0.1.4"}
                   </span>
                 </div>
 
@@ -3239,7 +3136,7 @@ export function SettingsView({
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
                   <span className="text-[11.5px] text-muted-foreground">运行模式</span>
                   <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-                    {isDesktop ? "原生轻量级 WebView 桌面版 (Win / macOS / Linux)" : "Web 预览"}
+                    {isDesktop ? "Electron 桌面版 (Win / macOS / Linux)" : "Web 预览"}
                   </Badge>
                 </div>
               </div>
@@ -3365,13 +3262,13 @@ export function SettingsView({
             </SettingsSection>
 
             <SettingsSection
-              title="跨平台轻量级原生 WebView 内核与安全基线"
+              title="Electron 桌面运行时与安全基线"
               icon={<Cpu className="size-4" />}
             >
               <div className="space-y-2.5">
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <div className="rounded-lg border border-border/50 bg-muted/15 p-2.5">
-                    <div className="text-[10.5px] text-muted-foreground">WebView 渲染核心</div>
+                    <div className="text-[10.5px] text-muted-foreground">Chromium 渲染核心</div>
                     <div className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
                       {chromiumProfile?.versions.chrome ?? "Custom"}
                     </div>
@@ -3400,19 +3297,19 @@ export function SettingsView({
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-foreground">L1 打包层裁剪</span>
                     <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/10 text-emerald-400 text-[10px]">
-                      零捆绑浏览器运行时 · 节省 ~240 MB 落盘体积
+                      定制 Chromium 裁剪 · 按需分发运行时
                     </Badge>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-foreground">L2 运行时与 Fuse 加固</span>
                     <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/10 text-emerald-400 text-[10px]">
-                      Rust 进程内直连 IPC · 禁用 14 项冗余特性
+                      Rust 独立进程 · stdio JSON IPC · 禁用冗余特性
                     </Badge>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-foreground">L3 源码级 GN 裁剪配置</span>
                     <Badge variant="outline" className="border-primary/35 bg-primary/10 text-primary font-mono text-[10px]">
-                      Win WebView2 · macOS WKWebView · Linux WebKitGTK
+                      Electron 22 · Chromium · Windows / macOS / Linux
                     </Badge>
                   </div>
                 </div>
@@ -3441,7 +3338,7 @@ export function SettingsView({
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-4 text-[10px] text-muted-foreground/60">
         <span className="font-mono">
-          Open-source-Minecraft-launcher {systemInfo?.launcherVersion ?? "0.0.7"}
+          Open-source-Minecraft-launcher {systemInfo?.launcherVersion ?? "0.1.4"}
         </span>
         <span>MIT License</span>
       </footer>

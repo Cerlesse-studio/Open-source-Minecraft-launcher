@@ -1,7 +1,7 @@
 {
   "name": "open-source-minecraft-launcher",
   "private": true,
-  "version": "0.0.7",
+  "version": "0.1.4",
   "license": "MIT",
   "type": "module",
   "sideEffects": [
@@ -12,7 +12,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test src/lib/multiplayerHealth.test.ts src/lib/multiplayerP2p.test.ts",
+    "test": "node --test src/lib/multiplayerHealth.test.ts src/lib/multiplayerP2p.test.ts src/lib/format.test.ts",
     "core:dev": "cargo build --manifest-path src-tauri/Cargo.toml",
     "core:build": "cargo build --release --manifest-path src-tauri/Cargo.toml",
     "start": "npm run core:dev && node electron/dev.cjs",
@@ -22,7 +22,12 @@
     "electron:build:nsis": "npm run core:build && npm run build && electron-builder --win nsis",
     "electron:audit": "node electron/measure-baseline.cjs",
     "electron:fuses": "node electron/fuses.cjs",
-    "app:build": "npm run electron:build"
+    "app:build": "npm run electron:build",
+    "package": "node scripts/package.mjs",
+    "package:win": "node scripts/package.mjs --platform win",
+    "package:mac": "node scripts/package.mjs --platform mac",
+    "package:linux": "node scripts/package.mjs --platform linux",
+    "package:ota": "node scripts/package.mjs --ota-only"
   },
   "dependencies": {},
   "devDependencies": {
@@ -88,7 +93,9 @@
     ],
     "win": {
       "icon": "src-tauri/icons/icon.ico",
+      "signAndEditExecutable": false,
       "target": [
+        "nsis",
         "portable"
       ],
       "extraResources": [
@@ -99,14 +106,15 @@
       ]
     },
     "portable": {
-      "artifactName": "${productName}.exe",
-      "requestExecutionLevel": "user",
-      "unpackDirName": "OpenSourceMinecraftLauncher"
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}",
+      "requestExecutionLevel": "user"
     },
     "mac": {
       "icon": "src-tauri/icons/icon.icns",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "extraResources": [
         {
@@ -117,6 +125,7 @@
     },
     "linux": {
       "icon": "src-tauri/icons/icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "target": [
         "AppImage"
       ],
@@ -129,6 +138,7 @@
     },
     "nsis": {
       "include": "electron/installer.nsh",
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowElevation": true,
       "perMachine": true,

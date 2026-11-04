@@ -21,13 +21,35 @@ use std::time::Duration;
 
 /// CurseForge game id for Minecraft Bedrock Edition.
 pub const BEDROCK_GAME_ID: u32 = 78022;
+/// CurseForge game id for Minecraft: Java Edition.
+///
+/// These are the same identifiers HMCL uses in its
+/// `CurseForgeRemoteAddonRepository`: `gameId=432` and `SECTION_WORLD=17`.
+pub const JAVA_GAME_ID: u32 = 432;
 
 /// CurseForge class ids of the Bedrock sections the launcher browses.
 const CLASS_ADDONS: u32 = 4984;
 const CLASS_TEXTURE_PACKS: u32 = 6929;
+/// CurseForge class id of the Bedrock Edition "Maps" section.
+const CLASS_BEDROCK_WORLDS: u32 = 6913;
+/// CurseForge class id of the Java Edition "Worlds" section.
+const CLASS_WORLDS: u32 = 17;
 
 /// Prefix that marks a launcher project id as a CurseForge Bedrock project.
 pub const PROJECT_PREFIX: &str = "cfb:";
+/// Prefix that marks a launcher project id as a CurseForge Java world.
+pub const WORLD_PREFIX: &str = "cfw:";
+/// Prefix that marks a launcher project id as a CurseForge Bedrock world.
+pub const BEDROCK_WORLD_PREFIX: &str = "cbw:";
+
+/// Which CurseForge catalogue a project came from. The two share the same REST
+/// shapes but need different labels, id prefixes and version fallbacks.
+#[derive(Clone, Copy, PartialEq)]
+enum Catalog {
+    Bedrock,
+    World,
+    BedrockWorld,
+}
 
 const MCIM_BASE: &str = "https://mod.mcimirror.top/curseforge/";
 const OFFICIAL_BASE: &str = "https://api.curseforge.com/";
@@ -261,6 +283,7 @@ fn class_label(class_id: u32) -> &'static str {
     match class_id {
         CLASS_TEXTURE_PACKS => "材质包",
         CLASS_ADDONS => "附加包",
+        CLASS_WORLDS | CLASS_BEDROCK_WORLDS => "地图",
         _ => "基岩版",
     }
 }
@@ -276,7 +299,12 @@ fn sort_field(sort: Option<&str>) -> u32 {
     }
 }
 
-fn hit_from_project(project: CfProject, project_type: &str, class_id: u32) -> ContentHit {
+fn hit_from_project(
+    project: CfProject,
+    project_type: &str,
+    class_id: u32,
+    catalog: Catalog,
+) -> ContentHit {
     let author = if project.authors.is_empty() {
         "CurseForge".to_string()
     } else {
@@ -289,11 +317,20 @@ fn hit_from_project(project: CfProject, project_type: &str, class_id: u32) -> Co
             .join("、")
     };
 
-    let mut categories = vec![
-        "bedrock".to_string(),
-        "基岩版".to_string(),
-        class_label(class_id).to_string(),
-    ];
+    let mut categories = match catalog {
+        Catalog::Bedrock => vec![
+            "bedrock".to_string(),
+            "基岩版".to_string(),
+            class_label(class_id).to_string(),
+        ],
+        Catalog::World => vec!["world".to_string(), "地图".to_string()],
+        Catalog::BedrockWorld => vec![
+            "world".to_string(),
+            "地图".to_string(),
+            "bedrock".to_string(),
+            "基岩版".to_string(),
+        ],
+    };
     if let Some(sub) = project
         .categories
         .iter()
@@ -324,7 +361,9 @@ fn hit_from_project(project: CfProject, project_type: &str, class_id: u32) -> Co
             }
         }
     }
-    versions.push("基岩版".to_string());
+    if matches!(catalog, Catalog::Bedrock | Catalog::BedrockWorld) {
+        versions.push("基岩版".to_string());
+    }
 
     let latest = project.latest_files.first();
     let latest_version = latest.map(|file| {
@@ -334,8 +373,14 @@ fn hit_from_project(project: CfProject, project_type: &str, class_id: u32) -> Co
             .unwrap_or_else(|| file.file_name.clone())
     });
 
+    let prefix = match catalog {
+        Catalog::Bedrock => PROJECT_PREFIX,
+        Catalog::World => WORLD_PREFIX,
+        Catalog::BedrockWorld => BEDROCK_WORLD_PREFIX,
+    };
+
     ContentHit {
-        project_id: format!("{PROJECT_PREFIX}{}", project.id),
+        project_id: format!("{prefix}{}", project.id),
         slug: project
             .slug
             .filter(|slug| !slug.trim().is_empty())
@@ -366,15 +411,96 @@ pub async fn search_bedrock(
     limit: u32,
     sort: Option<&str>,
 ) -> Result<SearchContentResult, String> {
-    let limit = limit.clamp(1, 50);
     let class_id = class_for_project_type(project_type);
+    search_catalog(
+        query,
+        project_type,
+        BEDROCK_GAME_ID,
+        class_id,
+        Catalog::Bedrock,
+        None,
+        offset,
+        limit,
+        sort,
+    )
+    .await
+}
+
+/// Search Bedrock Edition maps (the CurseForge "Maps" section).
+///
+/// Bedrock worlds are `.mcworld` archives. They are installed into every
+/// `com.mojang/minecraftWorlds` folder rather than a Java `saves/` directory.
+pub async fn search_bedrock_worlds(
+    query: &str,
+    offset: u32,
+    limit: u32,
+    sort: Option<&str>,
+) -> Result<SearchContentResult, String> {
+    search_catalog(
+        query,
+        "world",
+        BEDROCK_GAME_ID,
+        CLASS_BEDROCK_WORLDS,
+        Catalog::BedrockWorld,
+        None,
+        offset,
+        limit,
+        sort,
+    )
+    .await
+}
+
+/// Search Java Edition worlds (the CurseForge "Worlds" section).
+///
+/// Worlds are plain save archives: the installer unpacks them into `saves/`
+/// instead of dropping a jar into a version folder.
+pub async fn search_worlds(
+    query: &str,
+    game_version: Option<&str>,
+    offset: u32,
+    limit: u32,
+    sort: Option<&str>,
+) -> Result<SearchContentResult, String> {
+    search_catalog(
+        query,
+        "world",
+        JAVA_GAME_ID,
+        CLASS_WORLDS,
+        Catalog::World,
+        game_version,
+        offset,
+        limit,
+        sort,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn search_catalog(
+    query: &str,
+    project_type: &str,
+    game_id: u32,
+    class_id: u32,
+    catalog: Catalog,
+    game_version: Option<&str>,
+    offset: u32,
+    limit: u32,
+    sort: Option<&str>,
+) -> Result<SearchContentResult, String> {
+    let limit = limit.clamp(1, 50);
     let mut path = format!(
-        "v1/mods/search?gameId={BEDROCK_GAME_ID}&classId={class_id}&index={offset}&pageSize={limit}&sortField={}&sortOrder=desc",
+        "v1/mods/search?gameId={game_id}&classId={class_id}&index={offset}&pageSize={limit}&sortField={}&sortOrder=desc",
         sort_field(sort)
     );
     let query = query.trim();
     if !query.is_empty() {
         path.push_str(&format!("&searchFilter={}", percent_encode(query)));
+    }
+    if let Some(version) = game_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all" && *value != "基岩版")
+    {
+        path.push_str(&format!("&gameVersion={}", percent_encode(version)));
     }
 
     let (response, _source): (CfList<CfProject>, String) = get_json(&path).await?;
@@ -388,7 +514,7 @@ pub async fn search_bedrock(
         hits: response
             .data
             .into_iter()
-            .map(|project| hit_from_project(project, project_type, class_id))
+            .map(|project| hit_from_project(project, project_type, class_id, catalog))
             .collect(),
         offset,
         limit,
@@ -398,7 +524,20 @@ pub async fn search_bedrock(
     })
 }
 
+#[cfg(test)]
 fn file_to_version(mod_id: u32, file: CfFile) -> ContentVersionItem {
+    file_to_version_with(mod_id, file, "bedrock", "基岩版")
+}
+
+/// Map a CurseForge file to the launcher's download row. Worlds use the same
+/// schema but carry the `world` loader and fall back to a version label of
+/// "Java 版" when the author did not tag a Minecraft version.
+fn file_to_version_with(
+    mod_id: u32,
+    file: CfFile,
+    loader: &str,
+    fallback_version: &str,
+) -> ContentVersionItem {
     let download_url = file.download_url.clone().unwrap_or_default();
     let sha1 = file
         .hashes
@@ -411,7 +550,7 @@ fn file_to_version(mod_id: u32, file: CfFile) -> ContentVersionItem {
         .first()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "基岩版".to_string());
+        .unwrap_or_else(|| fallback_version.to_string());
     let display_name = file
         .display_name
         .clone()
@@ -423,7 +562,7 @@ fn file_to_version(mod_id: u32, file: CfFile) -> ContentVersionItem {
         name: display_name,
         version_number,
         game_versions: file.game_versions,
-        loaders: vec!["bedrock".to_string()],
+        loaders: vec![loader.to_string()],
         date_published: file.file_date,
         downloads: file.download_count,
         files: vec![ContentFile {
@@ -447,12 +586,30 @@ async fn resolve_download_url(mod_id: u32, file_id: u32) -> Option<String> {
 
 /// Every downloadable file of one Bedrock project, newest first.
 pub async fn bedrock_project_files(mod_id: u32) -> Result<Vec<ContentVersionItem>, String> {
+    project_files(mod_id, "bedrock", "基岩版").await
+}
+
+/// Every downloadable file of one Java world, newest first.
+pub async fn world_project_files(mod_id: u32) -> Result<Vec<ContentVersionItem>, String> {
+    project_files(mod_id, "world", "Java 版").await
+}
+
+/// Every downloadable file of one Bedrock world, newest first.
+pub async fn bedrock_world_project_files(mod_id: u32) -> Result<Vec<ContentVersionItem>, String> {
+    project_files(mod_id, "bedrock", "基岩版").await
+}
+
+async fn project_files(
+    mod_id: u32,
+    loader: &str,
+    fallback_version: &str,
+) -> Result<Vec<ContentVersionItem>, String> {
     let path = format!("v1/mods/{mod_id}/files?index=0&pageSize={FILE_LIST_PAGE_SIZE}");
     let (response, _source): (CfList<CfFile>, String) = get_json(&path).await?;
 
     let mut items = Vec::new();
     for file in response.data {
-        let mut version = file_to_version(mod_id, file.clone());
+        let mut version = file_to_version_with(mod_id, file.clone(), loader, fallback_version);
         if let Some(entry) = version.files.first_mut() {
             if entry.url.trim().is_empty() {
                 if let Some(url) = resolve_download_url(mod_id, file.id).await {
@@ -500,7 +657,7 @@ mod tests {
     #[test]
     fn maps_a_curseforge_project_to_a_launcher_hit() {
         let project: CfProject = serde_json::from_str(PROJECT_FIXTURE).unwrap();
-        let hit = hit_from_project(project, "mod", CLASS_ADDONS);
+        let hit = hit_from_project(project, "mod", CLASS_ADDONS, Catalog::Bedrock);
 
         assert_eq!(hit.project_id, "cfb:1575941");
         assert_eq!(hit.title, "Verity - Bedrock Edition");
@@ -537,6 +694,51 @@ mod tests {
         assert_eq!(version.files[0].size, 37_688_517);
         // Only the sha1 hash (algo 1) is used for verification.
         assert_eq!(version.files[0].sha1.as_deref(), Some("26f55d06"));
+    }
+
+    #[test]
+    fn maps_a_curseforge_bedrock_world_to_a_map_hit() {
+        let project: CfProject = serde_json::from_str(PROJECT_FIXTURE).unwrap();
+        let hit = hit_from_project(
+            project,
+            "world",
+            CLASS_BEDROCK_WORLDS,
+            Catalog::BedrockWorld,
+        );
+
+        assert_eq!(hit.project_id, "cbw:1575941");
+        assert_eq!(hit.project_type, "world");
+        assert!(hit.categories.contains(&"world".to_string()));
+        assert!(hit.categories.contains(&"bedrock".to_string()));
+        assert!(hit.versions.iter().any(|v| v == "基岩版"));
+    }
+
+    #[test]
+    fn maps_a_curseforge_world_to_a_map_hit() {
+        let project: CfProject = serde_json::from_str(PROJECT_FIXTURE).unwrap();
+        let hit = hit_from_project(project, "world", CLASS_WORLDS, Catalog::World);
+
+        assert_eq!(hit.project_id, "cfw:1575941");
+        assert_eq!(hit.project_type, "world");
+        assert!(hit.categories.contains(&"world".to_string()));
+        assert!(hit.categories.contains(&"地图".to_string()));
+        assert!(!hit.categories.contains(&"bedrock".to_string()));
+        // Worlds are a Java Edition feature: no Bedrock version pill is added.
+        assert!(!hit.versions.iter().any(|v| v == "基岩版"));
+    }
+
+    #[test]
+    fn maps_a_world_file_to_a_world_version() {
+        let file: CfFile = serde_json::from_str(
+            r#"{"id": 4455, "fileName": "Skyblock.zip", "displayName": "Skyblock 2.1",
+                "fileLength": 1200, "downloadUrl": "https://edge.forgecdn.net/f/Skyblock.zip",
+                "gameVersions": ["1.21.4"], "fileDate": "2026-09-17T09:05:26.977Z"}"#,
+        )
+        .unwrap();
+
+        let version = file_to_version_with(1, file, "world", "Java 版");
+        assert_eq!(version.loaders, vec!["world".to_string()]);
+        assert_eq!(version.version_number, "1.21.4");
     }
 
     #[test]

@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@/lib/desktop";
 import { cn } from "cn";
-import { formatBytes, formatDate, joinPath, shortPath, typeLabel, typeTone } from "../lib/format";
+import { formatBytes, formatDate, joinPath, shortPath, toJsdelivrUrl, typeLabel, typeTone } from "../lib/format";
 import type {
   InstalledVersion,
   JavaInstall,
@@ -715,7 +715,7 @@ function ModIconTile({
   className?: string;
 }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const url = iconUrl?.trim() ?? "";
+  const url = toJsdelivrUrl(iconUrl);
   const showImage = url.length > 0 && failedUrl !== url;
   const initial = (name.trim()[0] ?? "M").toUpperCase();
 

@@ -94,9 +94,6 @@ export function JavaShortcuts({
             </button>
           ))}
         </div>
-        <p className="mt-2.5 text-[10.5px] leading-4 text-muted-foreground/80">
-          文件夹不存在时会自动创建；存档与截图的位置跟随「版本隔离」设置。
-        </p>
       </CardContent>
     </Card>
   );

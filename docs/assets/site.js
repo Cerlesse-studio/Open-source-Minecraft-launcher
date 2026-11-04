@@ -152,6 +152,87 @@
   }
 
   /* ------------------------------------------------------------------------
+     Gallery
+     ---------------------------------------------------------------------- */
+
+  const JSDELIVR_DOCS_BASE = "https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/";
+  const isLocalHost = Boolean(
+    window.location &&
+    ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname) &&
+    window.location.protocol !== "https:"
+  );
+
+  const toAcceleratedImageUrl = (url) => {
+    if (!url || isLocalHost) return url;
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) return url;
+    const clean = url.replace(/^\.?\//, "");
+    return JSDELIVR_DOCS_BASE + clean;
+  };
+
+  const gallery = doc.querySelector("[data-gallery]");
+  if (gallery) {
+    const tabs = Array.from(gallery.querySelectorAll("[data-shot]"));
+    const image = gallery.querySelector("[data-gallery-image]");
+    const caption = gallery.querySelector("[data-gallery-caption]");
+    const link = gallery.querySelector("[data-gallery-link]");
+    const frame = gallery.querySelector(".gallery-frame");
+    let shotToken = 0;
+
+    const selectShot = (tab) => {
+      if (!image) return;
+      const rawSrc = tab.getAttribute("data-src");
+      const cdnSrc = toAcceleratedImageUrl(rawSrc);
+      const alt = tab.getAttribute("data-alt") || "";
+      const text = tab.getAttribute("data-caption") || "";
+      if (!src) return;
+
+      tabs.forEach((item) => {
+        const active = item === tab;
+        item.classList.toggle("is-active", active);
+        item.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+
+      frame?.classList.add("is-switching");
+      const token = ++shotToken;
+      const next = new Image();
+      const commit = (finalSrc) => {
+        if (token !== shotToken) return;
+        image.src = finalSrc;
+        image.alt = alt;
+        if (caption) caption.textContent = text;
+        if (link) link.href = finalSrc;
+        frame?.classList.remove("is-switching");
+      };
+      next.onload = () => commit(cdnSrc);
+      next.onerror = () => {
+        if (cdnSrc !== rawSrc) {
+          const fallback = new Image();
+          fallback.onload = () => commit(rawSrc);
+          fallback.onerror = () => commit(rawSrc);
+          fallback.src = rawSrc;
+        } else {
+          commit(rawSrc);
+        }
+      };
+      next.decoding = "async";
+      next.src = cdnSrc;
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => selectShot(tab));
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+        event.preventDefault();
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        const nextIndex = (index + direction + tabs.length) % tabs.length;
+        tabs[nextIndex].focus();
+        selectShot(tabs[nextIndex]);
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------------------
+
      Docs sidebar active section
      ---------------------------------------------------------------------- */
 

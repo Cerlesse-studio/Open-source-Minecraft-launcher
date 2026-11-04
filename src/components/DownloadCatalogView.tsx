@@ -16,12 +16,12 @@ import {
   HardDriveDownload,
   Layers3,
   LoaderCircle,
+  Map as MapIcon,
   Package,
   PackageOpen,
   Play,
   RefreshCw,
   Search,
-  ShieldCheck,
   Sparkles,
   Store,
   Trash2,
@@ -250,6 +250,7 @@ interface DownloadCatalogViewProps {
   installed: InstalledVersion[];
   selectedVersion: string;
   gameRoot: string;
+  versionIsolation?: string;
   installingVersion: string | null;
   installProgress: InstallProgress | null;
   lastProgress: InstallProgress | null;
@@ -272,7 +273,8 @@ type CatalogCategory =
   | "shader"
   | "mod"
   | "datapack"
-  | "modpack";
+  | "modpack"
+  | "world";
 
 const CATALOG_CATEGORIES: Array<{
   id: CatalogCategory;
@@ -281,6 +283,7 @@ const CATALOG_CATEGORIES: Array<{
   desc: string;
 }> = [
   { id: "versions", label: "游戏版本", icon: Package, desc: "Java 与基岩版核心" },
+  { id: "world", label: "地图", icon: MapIcon, desc: "Java 存档与冒险地图" },
   { id: "resourcepack", label: "材质与资源包", icon: Sparkles, desc: "基岩版与 Java 材质包" },
   { id: "shader", label: "光影包", icon: FlaskConical, desc: "Java 光影与基岩版 RTX/PBR" },
   { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "Java 模组与基岩版行为包" },
@@ -370,6 +373,7 @@ export function DownloadCatalogView({
   installed,
   selectedVersion,
   gameRoot,
+  versionIsolation,
   installingVersion,
   installProgress,
   lastProgress,
@@ -805,6 +809,7 @@ export function DownloadCatalogView({
           installed={installed}
           selectedVersion={selectedVersion}
           gameRoot={gameRoot}
+          isolation={versionIsolation}
           onOpenFolder={onOpenFolder}
           onNotify={onNotify}
         />
@@ -988,11 +993,6 @@ export function DownloadCatalogView({
               </div>
             </CardContent>
           </Card>
-
-          <p className="flex items-start gap-1.5 px-1 text-[9.5px] leading-4 text-muted-foreground/65">
-            <ShieldCheck className="mt-0.5 size-3 shrink-0" />
-            来自 Mojang 官方服务器，客户端、依赖库与资源文件都会自动校验。
-          </p>
         </aside>
 
         <div className="min-w-0 space-y-3">

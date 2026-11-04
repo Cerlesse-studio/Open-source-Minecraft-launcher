@@ -76,7 +76,7 @@ function normalizeAsset(asset) {
  * Pick the installer that fits the running platform. A setup/installer build
  * is preferred over a portable one when both are attached to the release.
  */
-function pickUpdateAsset(release, platform = process.platform, arch = process.arch) {
+function pickUpdateAsset(release, platform = process.platform, arch = process.arch, options = {}) {
   const assets = Array.isArray(release && release.assets) ? release.assets : [];
   const candidates = assets
     .map(normalizeAsset)
@@ -87,12 +87,20 @@ function pickUpdateAsset(release, platform = process.platform, arch = process.ar
   else if (platform === 'darwin') preferred.push('.dmg', '.pkg', '.zip');
   else preferred.push('.appimage', '.deb', '.rpm');
 
+  // A portable build must not be updated by running a Setup installer: its
+  // portable executable has to be replaced in place. The env variable is set
+  // by electron-builder's portable launcher at runtime.
+  const portable =
+    platform === 'win32' &&
+    (options.portable ?? Boolean(process.env.PORTABLE_EXECUTABLE_FILE));
+
   const scored = candidates
     .filter((asset) => preferred.some((extension) => asset.name.toLowerCase().endsWith(extension)))
     .map((asset) => {
       const lower = asset.name.toLowerCase();
       let score = 0;
-      if (/setup|installer|install/.test(lower)) score += 5;
+      if (/setup|installer|install/.test(lower)) score += portable ? -10 : 5;
+      if (portable && /portable/.test(lower)) score += 6;
       if (arch && lower.includes(String(arch).toLowerCase())) score += 3;
       if (platform === 'linux' && lower.endsWith('.appimage')) score += 2;
       if (platform === 'darwin' && lower.endsWith('.dmg')) score += 2;

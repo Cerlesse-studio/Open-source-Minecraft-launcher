@@ -66,6 +66,7 @@ import type {
   InstallResult,
   InstalledVersion,
   JavaInstall,
+  JavaMapUpdate,
   JavaModItem,
   JavaPackItem,
   JavaWorldItem,
@@ -929,6 +930,30 @@ export async function installJavaWorldFile(
     filePath,
     isolation,
     root,
+  });
+}
+
+export async function checkJavaWorldUpdate(
+  projectId: string,
+  currentFileId: string,
+): Promise<JavaMapUpdate> {
+  if (!isDesktop) {
+    return {
+      projectId,
+      currentFileId,
+      latestFileId: currentFileId,
+      latestName: "当前版本",
+      latestVersion: "",
+      latestFilename: "",
+      downloadUrl: "",
+      sha1: null,
+      size: 0,
+      updateAvailable: false,
+    };
+  }
+  return invoke<JavaMapUpdate>("check_java_world_update", {
+    projectId,
+    currentFileId,
   });
 }
 

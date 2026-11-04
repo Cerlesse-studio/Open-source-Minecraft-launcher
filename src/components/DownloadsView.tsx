@@ -62,6 +62,13 @@ export interface DownloadFileEvent {
   stage: string;
   detail: string;
   speedBps: number;
+  /** `active` 是进度摘要，`ok`/`skip`/`fail` 是逐文件结果。 */
+  status?: "active" | "ok" | "skip" | "fail";
+  bytes?: number;
+  totalBytes?: number;
+  threads?: number;
+  elapsedMs?: number;
+  error?: string;
 }
 
 interface DownloadsViewProps {
@@ -326,6 +333,86 @@ function WorkerTaskCard({ task }: { task: ActiveDownloadTask }) {
         </span>
         <span>{pct !== null ? `${pct}%` : "传输中"}</span>
       </div>
+    </div>
+  );
+}
+
+function LogStatusIcon({ status }: { status: DownloadFileEvent["status"] }) {
+  if (status === "fail") return <XCircle className="size-3 shrink-0 text-destructive" />;
+  if (status === "skip") return <FileCheck2 className="size-3 shrink-0 text-muted-foreground" />;
+  if (status === "ok") return <CheckCircle2 className="size-3 shrink-0 text-emerald-400" />;
+  return <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" />;
+}
+
+function DownloadLogList({
+  events,
+  limit = 120,
+  maxHeight = "max-h-[280px]",
+}: {
+  events: DownloadFileEvent[];
+  limit?: number;
+  maxHeight?: string;
+}) {
+  if (events.length === 0) {
+    return (
+      <div className="py-6 text-center text-[11.5px] text-muted-foreground">
+        暂无文件拉取日志，启动下载后将实时记录。
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "divide-y divide-border/40 overflow-y-auto rounded-lg border border-border/60 bg-background/40",
+        maxHeight,
+      )}
+    >
+      {events.slice(0, limit).map((ev) => (
+        <div
+          key={ev.id}
+          className="flex items-center justify-between gap-2.5 px-3 py-1.5 text-[11px]"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="font-mono text-[9.5px] text-muted-foreground">{ev.time}</span>
+            <LogStatusIcon status={ev.status} />
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 border-border/70 px-1 text-[9px] text-muted-foreground"
+            >
+              {stageLabel(ev.stage)}
+            </Badge>
+            <span
+              className={cn(
+                "truncate font-mono text-[10.5px]",
+                ev.status === "fail" ? "text-destructive" : "text-foreground/90",
+              )}
+              title={ev.error ? `${ev.detail}\n${ev.error}` : ev.detail}
+            >
+              {ev.detail}
+            </span>
+            {ev.threads && ev.threads > 1 ? (
+              <Badge
+                variant="outline"
+                className="h-4 shrink-0 border-gold/30 bg-gold/10 px-1 font-mono text-[9px] font-normal text-gold"
+              >
+                Range ×{ev.threads}
+              </Badge>
+            ) : ev.status === "ok" ? (
+              <span
+                className="shrink-0 text-[9px] text-muted-foreground"
+                title="小于 1 MB 的文件切片收益很低，由并发文件池同时拉取"
+              >
+                并发池
+              </span>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2 font-mono text-[9.5px] text-muted-foreground">
+            {ev.bytes && ev.bytes > 0 ? <span>{formatBytes(ev.bytes)}</span> : null}
+            {ev.speedBps > 0 ? <span>{formatSpeed(ev.speedBps)}</span> : null}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1078,40 +1165,7 @@ export function DownloadsView({
 
                 {/* 3. Live File Log View */}
                 {activeDetailTab === "logs" ? (
-                  fileEvents.length === 0 ? (
-                    <div className="py-6 text-center text-[11.5px] text-muted-foreground">
-                      暂无文件拉取日志，启动下载后将实时记录。
-                    </div>
-                  ) : (
-                    <div className="max-h-[220px] divide-y divide-border/40 overflow-y-auto rounded-lg border border-border/60 bg-background/40">
-                      {fileEvents.slice(0, 15).map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="flex items-center justify-between gap-2.5 px-3 py-1.5 text-[11px]"
-                        >
-                          <div className="min-w-0 flex-1 flex items-center gap-2">
-                            <span className="font-mono text-[9.5px] text-muted-foreground">
-                              {ev.time}
-                            </span>
-                            <Badge
-                              variant="outline"
-                              className="h-4 border-border/70 px-1 text-[9px] text-muted-foreground"
-                            >
-                              {stageLabel(ev.stage)}
-                            </Badge>
-                            <span className="truncate font-mono text-[10.5px] text-foreground/90">
-                              {ev.detail}
-                            </span>
-                          </div>
-                          {ev.speedBps > 0 ? (
-                            <span className="font-mono text-[9.5px] text-muted-foreground">
-                              {formatSpeed(ev.speedBps)}
-                            </span>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  )
+                  <DownloadLogList events={fileEvents} limit={200} maxHeight="max-h-[320px]" />
                 ) : null}
               </div>
             ) : null}
@@ -1590,6 +1644,27 @@ export function DownloadsView({
           </div>
         ) : null}
       </div>
+
+      {/* 4.5 Recent file logs stay available after the install finishes */}
+      {!showActiveRow && fileEvents.length > 0 ? (
+        <Card className="border-border/70 bg-card/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FileCheck2 className="size-4 text-primary" />
+              <h3 className="text-[13px] font-medium text-foreground">最近下载日志</h3>
+              <Badge variant="outline" className="h-4 px-1.5 text-[9.5px] text-muted-foreground">
+                {fileEvents.length} 条
+              </Badge>
+            </div>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              成功 · 跳过 · 失败 / 每文件线程与速度
+            </span>
+          </div>
+          <div className="mt-3">
+            <DownloadLogList events={fileEvents} limit={120} maxHeight="max-h-[240px]" />
+          </div>
+        </Card>
+      ) : null}
 
       {/* 5. Delete History Item Confirmation Modal */}
       {deletingRecord ? (

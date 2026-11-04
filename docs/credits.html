@@ -11,7 +11,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:title" content="开源声明 · Open-source-Minecraft-launcher" />
   <meta property="og:description" content="启动器使用的开源项目、字体、图标与数据来源。" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Cerlesse-studio/Open-source-Minecraft-launcher/main/docs/assets/og.png" />
+  <meta property="og:image" content="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/assets/og.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="assets/site.css" />
@@ -82,7 +82,8 @@
         <h1 class="page-title">开源项目与<br />第三方声明</h1>
         <p class="page-lede">启动器不是凭空写出来的。它站在这些开源项目、数据服务与字体图标之上，也把这份依赖关系完整地写在这里。</p>
         <div class="page-meta">
-          <span class="badge badge-primary">MIT License</span>
+          <span class="badge badge-primary">v0.1.4</span>
+          <span class="badge">MIT License</span>
           <span class="badge">Open Source</span>
           <span class="badge">Third-party notices</span>
         </div>
@@ -106,10 +107,18 @@
         <div class="credit-grid">
           <article class="credit-card" data-reveal>
             <div class="credit-head">
-              <span class="credit-icon">E</span>
-              <div><div class="credit-name">Electron</div><div class="credit-role">桌面运行时与打包</div></div>
+              <span class="credit-icon"><span class="letter-mark">E</span></span>
+              <div><div class="credit-name">Electron</div><div class="credit-role">桌面运行时、窗口与自动更新</div></div>
             </div>
             <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/electron/electron" target="_blank" rel="noopener">仓库 ↗</a></div>
+          </article>
+
+          <article class="credit-card" data-reveal>
+            <div class="credit-head">
+              <span class="credit-icon"><span class="letter-mark">B</span></span>
+              <div><div class="credit-name">electron-builder</div><div class="credit-role">安装包与分发构建</div></div>
+            </div>
+            <div class="credit-meta"><span class="credit-license">MIT</span><a class="credit-link" href="https://github.com/electron-userland/electron-builder" target="_blank" rel="noopener">仓库 ↗</a></div>
           </article>
 
           <article class="credit-card" data-reveal>
@@ -179,7 +188,7 @@
           <article class="credit-card" data-reveal>
             <div class="credit-head">
               <span class="credit-icon"><span class="letter-mark">E</span></span>
-              <div><div class="credit-name">EasyTier</div><div class="credit-role">联机内核</div></div>
+              <div><div class="credit-name">EasyTier</div><div class="credit-role">联机内核 · P2P / 公益节点</div></div>
             </div>
             <div class="credit-meta"><span class="credit-license">LGPL-3.0</span><a class="credit-link" href="https://github.com/EasyTier/EasyTier" target="_blank" rel="noopener">仓库 ↗</a></div>
           </article>
@@ -234,6 +243,10 @@
             <img class="source-logo" src="assets/icons/mcmod.png" alt="" />
             <div><strong>MC 百科</strong><span>中文模组资料与条目跳转</span></div>
           </a>
+          <a class="source-card" href="https://info.qtet.cn" target="_blank" rel="noopener" data-reveal>
+            <svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg>
+            <div><strong>EasyTier 社区节点</strong><span><code>info.qtet.cn</code> 社区监控与公益中继节点列表</span></div>
+          </a>
         </div>
       </div>
     </section>
@@ -263,7 +276,7 @@
           </div>
           <div class="source-card" data-reveal>
             <svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg>
-            <div><strong>第三方 Logo</strong><span>Electron、Rust、React、Vite、Tailwind CSS、Modrinth、CurseForge、BMCLAPI、MC百科等 Logo 归各项目所有，仅用于署名。</span></div>
+            <div><strong>第三方 Logo</strong><span>Electron、electron-builder、Rust、React、Vite、Tailwind CSS、Modrinth、CurseForge、BMCLAPI、MC百科等 Logo 归各项目所有，仅用于署名。</span></div>
           </div>
         </div>
       </div>
@@ -289,6 +302,7 @@
             <li>各开源项目的许可证以对应仓库为准；上表中的许可证仅作摘要，不构成法律意见。</li>
             <li>EasyTier 以独立进程方式运行，遵循 LGPL-3.0；对 EasyTier 的修改与分发请遵守其许可证要求。</li>
             <li>BedrockBoot-DM 作为基岩版目录与加载规范的参考；如涉及代码复用，请遵循 GPL-3.0。</li>
+            <li>扩展由各自作者独立维护，其代码、许可证与安全性由作者负责；启动器不背书未经验证的第三方扩展。</li>
             <li>Minecraft 客户端、资源与物品图标版权归 Mojang Studios 所有；本项目不包含游戏本体。</li>
           </ul>
         </div>
@@ -334,6 +348,7 @@
           <div class="footer-links">
             <a href="index.html#capabilities">功能亮点</a>
             <a href="index.html#capabilities">功能</a>
+            <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>
             <a href="docs.html#quickstart">快速开始</a>
           </div>
@@ -351,6 +366,7 @@
           <h3>文档</h3>
           <div class="footer-links">
             <a href="docs.html">技术文档</a>
+            <a href="docs.html#extensions">扩展系统</a>
             <a href="docs.html#architecture">架构设计</a>
             <a href="docs.html#downloads">下载引擎</a>
             <a href="docs.html#faq">常见问题</a>

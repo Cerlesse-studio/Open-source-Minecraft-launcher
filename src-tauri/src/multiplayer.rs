@@ -489,9 +489,13 @@ fn release_asset_name() -> Result<String, String> {
     };
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
+        // Windows ARM64 发行包用的是 arm64，其余平台才叫 aarch64。
+        "aarch64" if os == "windows" => "arm64",
         "aarch64" => "aarch64",
-        // 官方只为 Windows 提供 32 位发行包。
+        // 官方只为 Windows 提供 32 位 x86 发行包；Linux 的 32 位 ARM
+        // 发行包名为 armv7，这也是最常见的树莓派 / 开发板架构。
         "x86" if os == "windows" => "i686",
+        "arm" if os == "linux" => "armv7",
         other => return Err(format!("EasyTier 暂不支持当前架构: {other}")),
     };
     Ok(format!("easytier-{os}-{arch}-{EASYTIER_VERSION}.zip"))

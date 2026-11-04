@@ -9,6 +9,82 @@ const { readElectronFuses } = require('./fuses.cjs');
 const { collectBaselineReport } = require('./measure-baseline.cjs');
 const updater = require('./updater.cjs');
 
+// ============================================================================
+// [存储目录] 便携版优先把数据和游戏目录放在程序旁边；若该目录不可写
+// （例如以普通用户运行安装在 Program Files 的版本、Linux AppImage 或
+// macOS .app），则回退到当前用户目录。Chromium 的 userData 必须可写，
+// 否则 GPU/渲染进程会启动失败，主进程随即退出，表现为“闪退”。
+// ============================================================================
+const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR
+  ? path.resolve(process.env.PORTABLE_EXECUTABLE_DIR)
+  : null;
+const executableRoot = app.isPackaged
+  ? path.dirname(process.execPath)
+  : path.resolve(__dirname, '..');
+const preferredRoot = portableRoot || executableRoot;
+const fallbackRoot = path.join(app.getPath('appData'), 'Open-source-Minecraft-launcher');
+
+function ensureWritableDir(candidate) {
+  try {
+    fs.mkdirSync(candidate, { recursive: true });
+    const probe = path.join(candidate, `.write-test-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(probe, 'ok');
+    try {
+      fs.unlinkSync(probe);
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function storageAt(root) {
+  return {
+    root,
+    data: path.join(root, 'data'),
+    game: path.join(root, '.minecraft'),
+  };
+}
+
+let storage = storageAt(preferredRoot);
+if (!ensureWritableDir(storage.data) || !ensureWritableDir(storage.game)) {
+  const fallback = storageAt(fallbackRoot);
+  if (!ensureWritableDir(fallback.data) || !ensureWritableDir(fallback.game)) {
+    dialog.showErrorBox(
+      '启动失败',
+      `启动器无法创建可写的数据目录。\n\n程序目录：${preferredRoot}\n用户目录：${fallbackRoot}\n\n请检查目录权限，或把启动器放到有写入权限的位置后重试。`,
+    );
+    app.exit(1);
+  }
+  console.warn(`程序目录不可写，数据目录已回退到：${fallback.root}`);
+  try {
+    fs.appendFileSync(
+      path.join(fallback.data, 'startup.log'),
+      `[${new Date().toISOString()}] 程序目录不可写（${preferredRoot}），已使用用户目录 ${fallback.root}\n`,
+    );
+  } catch {}
+  storage = fallback;
+}
+
+const launcherDir = storage.root;
+const launcherDataDir = storage.data;
+const launcherGameDir = storage.game;
+
+// 将 Electron 应用配置与缓存重定向至选定目录下的独立 web 子目录中。
+// 注意：严禁重定向 appData 与 sessionData！
+// 1. appData 必须保留为操作系统的 Roaming AppData，否则 Chromium 内部沙盒与系统集成会产生路径错乱。
+// 2. sessionData 应默认驻留在 userData 内，单独重定向会导致 Chromium 在 Windows 普通用户（非管理员）
+//    权限下初始化网络沙盒失败并抛出 0x5（拒绝访问），直接导致 GPU/渲染进程崩溃（error_code=18）闪退。
+try {
+  const webUserDataDir = path.join(launcherDataDir, 'web');
+  fs.mkdirSync(webUserDataDir, { recursive: true });
+  app.setPath('userData', webUserDataDir);
+  app.setPath('crashDumps', path.join(launcherDataDir, 'crashes'));
+  app.setPath('logs', path.join(launcherDataDir, 'logs'));
+} catch (err) {
+  console.warn('重定向应用数据路径遇到非致命警告:', err);
+}
+
 const bootStartTime = performance.now();
 let readyInteractiveMs = null;
 
@@ -27,6 +103,10 @@ const DISABLED_CHROMIUM_FEATURES = [
   'WebUSB',
   'WebBluetooth',
   'WebXR',
+  // 必须禁用 NetworkServiceSandbox：在便携版或自定义数据目录下，非管理员启动时
+  // Chromium 无法为沙盒化 NetworkService 配置 Windows AppContainer/Lowbox 权限，
+  // 导致 Network 目录报 0x5 访问拒绝进而引发整个渲染层崩溃闪退。
+  'NetworkServiceSandbox',
 ];
 
 const DISABLED_CHROMIUM_SWITCHES = [
@@ -37,6 +117,8 @@ const DISABLED_CHROMIUM_SWITCHES = [
   'disable-print-preview',
   'disable-speech-api',
   'disable-sync',
+  // 普通用户非管理员模式下避免 GPU 进程沙盒令牌初始化失败 (error_code=18)
+  'disable-gpu-sandbox',
 ];
 
 app.commandLine.appendSwitch('disable-features', DISABLED_CHROMIUM_FEATURES.join(','));
@@ -155,24 +237,43 @@ const events = new Set([
 
 function resolveCoreBinary() {
   const binary = `open-source-minecraft-launcher${process.platform === 'win32' ? '.exe' : ''}`;
-  const candidates = app.isPackaged
-    ? [
-        path.join(process.resourcesPath, 'core', binary),
-        path.join(path.dirname(process.execPath), 'resources', 'core', binary),
-        path.join(process.resourcesPath, binary),
-        path.join(path.dirname(process.execPath), binary),
-      ]
-    : [
-        path.join(__dirname, '..', 'src-tauri', 'target', 'release', binary),
-        path.join(__dirname, '..', 'src-tauri', 'target', 'debug', binary),
-      ];
+  if (app.isPackaged) {
+    const candidates = [
+      path.join(process.resourcesPath, 'core', binary),
+      path.join(path.dirname(process.execPath), 'resources', 'core', binary),
+      path.join(process.resourcesPath, binary),
+      path.join(path.dirname(process.execPath), binary),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return candidates[0];
+  }
 
+  // Development builds both target/debug and target/release. Picking release
+  // unconditionally made `npm start` (which builds debug) run an outdated
+  // core, so new backend features silently fell back to old behaviour. Use the
+  // most recently built binary instead.
+  const candidates = [
+    path.join(__dirname, '..', 'src-tauri', 'target', 'debug', binary),
+    path.join(__dirname, '..', 'src-tauri', 'target', 'release', binary),
+  ];
+  let newest = null;
+  let newestTime = -Infinity;
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile() && stat.mtimeMs > newestTime) {
+        newest = candidate;
+        newestTime = stat.mtimeMs;
+      }
+    } catch {
+      // Missing build artifact: try the next candidate.
     }
   }
-  return candidates[0];
+  return newest ?? candidates[0];
 }
 
 function startCore() {
@@ -180,19 +281,28 @@ function startCore() {
     return;
   }
   const binaryPath = resolveCoreBinary();
-  const config = path.join(app.getPath('appData'), 'com.opensource.minecraft.launcher');
+  const config = path.join(launcherDataDir, 'config');
   const resources = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', 'src-tauri');
 
+  try {
+    fs.mkdirSync(config, { recursive: true });
+  } catch {}
+
   appendBackendLog('system', `启动核心进程: ${binaryPath}`);
-  appendBackendLog('system', `工作目录: ${config}`);
+  appendBackendLog('system', `启动器主程序目录: ${launcherDir}`);
+  appendBackendLog('system', `核心配置目录: ${config}`);
+  appendBackendLog('system', `默认游戏目录: ${launcherGameDir}`);
   try {
     core = spawn(binaryPath, [], {
+      cwd: launcherDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: {
         ...process.env,
-        OSML_HOME: app.getPath('home'),
+        OSML_LAUNCHER_DIR: launcherDir,
+        OSML_HOME: launcherDir,
         OSML_CONFIG: config,
+        OSML_GAME_DIR: launcherGameDir,
         OSML_RESOURCES: resources,
       },
     });
@@ -817,10 +927,27 @@ app.whenReady().then(async () => {
     }
   });
 
-  if (app.isPackaged) await mainWindow.loadURL('launcher://app/index.html');
-  else await mainWindow.loadURL('http://127.0.0.1:1420/');
+  if (app.isPackaged) {
+    try {
+      await mainWindow.loadURL('launcher://app/index.html');
+    } catch (loadErr) {
+      console.warn('launcher:// 协议加载失败，正在尝试本地文件回退加载:', loadErr);
+      await mainWindow.loadFile(path.resolve(__dirname, '..', 'dist', 'index.html'));
+    }
+  } else {
+    await mainWindow.loadURL('http://127.0.0.1:1420/');
+  }
 }).catch((error) => {
   console.error(error);
+  try {
+    fs.appendFileSync(
+      path.join(launcherDataDir, 'startup.log'),
+      `[${new Date().toISOString()}] 启动失败：${error && error.stack ? error.stack : error}\n`,
+    );
+  } catch {}
+  try {
+    dialog.showErrorBox('启动失败', `启动器初始化失败：${error && error.message ? error.message : error}`);
+  } catch {}
   app.quit();
 });
 

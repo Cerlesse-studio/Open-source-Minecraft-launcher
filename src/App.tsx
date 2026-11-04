@@ -200,7 +200,7 @@ interface RuntimeView {
 }
 
 const MAX_LOGS = 1500;
-const MAX_FILE_EVENTS = 180;
+const MAX_FILE_EVENTS = 600;
 const HISTORY_STORAGE_KEY = "cobble.download-history.v1";
 
 /** EasyTier 安装任务转换成下载管理器里的一条后台任务。 */
@@ -259,8 +259,8 @@ export default function App() {
   const [installTarget, setInstallTarget] = useState<VersionSummary | null>(null);
   const [view, setView] = useState<ViewId>("home");
   const [settingsTab, setSettingsTab] = useState<
-    "account" | "launch" | "download" | "personalization" | "about"
-  >("account");
+    "launch" | "download" | "personalization" | "about"
+  >("launch");
   const [manifestLoading, setManifestLoading] = useState(true);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [installingVersion, setInstallingVersion] = useState<string | null>(null);
@@ -602,6 +602,7 @@ export default function App() {
       shader: "光影包",
       resourcepack: "材质包",
       datapack: "数据包",
+      world: "地图",
     };
     const categoryLabel = typeNameMap[payload.projectType] || "组件";
 
@@ -774,7 +775,7 @@ export default function App() {
         setSystemInfo(info);
         setJavaInstalls((current) => (current.length ? current : info.javaInstalls));
         setSettings((current) =>
-          current.gameRoot.trim() ? current : { ...current, gameRoot: info.defaultRoot },
+          (!current.gameRoot.trim() || current.gameRoot.includes(".cobble")) ? { ...current, gameRoot: info.defaultRoot } : current,
         );
       })
       .catch((error) => {
@@ -850,8 +851,45 @@ export default function App() {
             stage: progress.stage,
             detail: progress.detail,
             speedBps: speed,
+            status: "active",
           };
           setFileEvents((prev) => [ev, ...prev].slice(0, MAX_FILE_EVENTS));
+        }
+
+        if (progress.fileLogs && progress.fileLogs.length > 0) {
+          const completedKeys = new Set(
+            progress.fileLogs.map((log) => `${log.stage}:${log.file}`),
+          );
+          const additions: DownloadFileEvent[] = progress.fileLogs
+            .slice()
+            .reverse()
+            .map((log) => ({
+              id: ++fileEventId.current,
+              time: timeNow(),
+              versionId: progress.versionId,
+              stage: log.stage,
+              detail: log.file,
+              speedBps:
+                log.elapsedMs > 0
+                  ? Math.round((log.bytes * 1000) / log.elapsedMs)
+                  : 0,
+              status: log.status,
+              bytes: log.bytes,
+              totalBytes: log.totalBytes,
+              threads: log.threads,
+              elapsedMs: log.elapsedMs,
+              error: log.error,
+            }));
+          setFileEvents((prev) =>
+            [
+              ...additions,
+              ...prev.filter(
+                (event) =>
+                  event.status !== "active" ||
+                  !completedKeys.has(`${event.stage}:${event.detail}`),
+              ),
+            ].slice(0, MAX_FILE_EVENTS),
+          );
         }
 
         if (progress.stage === "java" || progress.stage === "launch") {
@@ -1582,7 +1620,7 @@ export default function App() {
           javaPath={settings.javaPath}
           javaDetecting={javaDetecting}
           runtimeStatus={runtime.status}
-          launcherVersion={systemInfo?.launcherVersion ?? "0.0.7"}
+          launcherVersion={systemInfo?.launcherVersion ?? "0.1.4"}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
           skinType={settings.offlineSkinType}
@@ -1710,6 +1748,7 @@ export default function App() {
                   installed={installed}
                   selectedVersion={selectedVersion}
                   gameRoot={settings.gameRoot}
+                  versionIsolation={effectiveLaunchSettings.versionIsolation}
                   installingVersion={installingVersion}
                   installProgress={installProgress}
                   lastProgress={lastInstallProgress}
@@ -1843,7 +1882,6 @@ export default function App() {
                   onRefreshJava={refreshJava}
                   onOpenFolder={(path) => void openFolder(path)}
                   onNotify={pushToast}
-                  account={activeAccount}
                   initialTab={settingsTab}
                 />
               ) : null}

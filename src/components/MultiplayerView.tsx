@@ -1685,7 +1685,6 @@ export function MultiplayerView({
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4 sm:p-6">
       <PageHeader
         title="简易联机"
-        description="基于 EasyTier：纯 IPv6 P2P 直连时游戏流量不经过任何中继；没有公网 IPv6 时可切换到公益节点模式。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <span
@@ -1780,17 +1779,6 @@ export function MultiplayerView({
             />
           </div>
 
-          <div className="w-full rounded-xl border border-border/70 bg-card/40 p-4">
-            <div className="flex items-center gap-2 font-medium text-[12px] text-foreground">
-              <Zap className="size-4 text-primary" />
-              <span>两种连接方式：</span>
-            </div>
-            <ul className="mt-2 list-disc list-inside space-y-1 text-[11px] text-muted-foreground leading-relaxed">
-              <li><strong>纯 IPv6 P2P（默认）</strong>：双方交换分享码和回执码后直接打洞；强制 <code>--p2p-only</code>，游戏流量不经过任何中继，也不联系公共 STUN。</li>
-              <li><strong>公益节点兜底</strong>：没有公网 IPv6，或运营商封禁入站 UDP 时使用；通过 EasyTier 共享节点协助打洞并转发。</li>
-              <li>纯 P2P 失败时不会偷偷切换中继，启动器会明确提示失败原因；可随时改选公益节点模式。</li>
-            </ul>
-          </div>
         </div>
       ) : null}
 
@@ -1821,12 +1809,6 @@ export function MultiplayerView({
                 onClick={() => selectConnectionMode("relay")}
               />
             </div>
-            {config.p2pOnly ? (
-              <p className="mt-2.5 text-[10px] leading-4 text-muted-foreground">
-                IPv6 打洞依赖双方路由器允许状态防火墙建立回程；如果运营商或路由器直接丢弃入站 UDP，
-                本模式会明确失败，不会自动回退公益中继。
-              </p>
-            ) : null}
           </section>
 
           {/* Step 1: 游戏世界与端口 */}
@@ -1900,19 +1882,17 @@ export function MultiplayerView({
                   />
                 </div>
               </div>
-              <div className="flex-1 pb-1 text-[11px] leading-5 text-muted-foreground">
-                {autoLanPort && autoLanPort === config.hostPort ? (
-                  <span className="text-primary font-medium">✓ 已从游戏日志自动检测并填入端口 {autoLanPort}</span>
-                ) : (
-                  <span>游戏内进入存档按 ESC 点击【对局域网开放】后，启动器会自动读取并填入。</span>
-                )}
-              </div>
+              {autoLanPort && autoLanPort === config.hostPort ? (
+                <div className="flex-1 pb-1 text-[11px] leading-5 text-primary font-medium">
+                  ✓ 已从游戏日志自动检测并填入端口 {autoLanPort}
+                </div>
+              ) : null}
             </div>
           </section>
 
           {/* Step 2: Astral 房间设置 */}
           <section className="rounded-xl border border-border/70 bg-card/55 p-4">
-            <StepHeader step="2" title="房间名称与密码" detail="好友加入时需要完全匹配" />
+            <StepHeader step="2" title="房间名称与密码" />
 
             <div className="mt-3 space-y-3">
               <div>
@@ -2062,9 +2042,6 @@ export function MultiplayerView({
                     className="h-9 font-mono text-[12px]"
                   />
                 </div>
-                <p className="flex-1 pb-1 text-[10px] leading-4 text-muted-foreground">
-                  双方使用同一个端口更容易打洞；分享码会自动带上它。
-                </p>
               </div>
 
               <div className="mt-3 rounded-lg border border-border/50 bg-muted/15 px-3 py-2">
