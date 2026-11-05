@@ -139,6 +139,7 @@ import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
   cancelInstall,
+  checkVersionFiles,
   configureDeveloperOptions,
   deleteBedrockVersion,
   deleteVersion,
@@ -663,6 +664,15 @@ export default function App() {
       const others = current.filter((item) => item.id !== task.id);
       return [...others, task].sort((a, b) => a.startedAt - b.startedAt);
     });
+    // EasyTier 内核下载同样计入顶部实时速率、峰值与波形，否则下载页只有
+    // 版本安装时顶部才有速度，其他任务进行时一直显示 0 B/s。
+    if (task.speedBps > 0) {
+      if (task.speedBps > peakSpeedRef.current) {
+        peakSpeedRef.current = task.speedBps;
+      }
+      setPeakSpeedBps((prev) => Math.max(prev, task.speedBps));
+      setSpeedHistory((prev) => [...prev.slice(-23), task.speedBps]);
+    }
   }, []);
 
   useEffect(() => {
@@ -1378,6 +1388,43 @@ export default function App() {
     }
   }, [installingVersion, installQueue, handleInstall]);
 
+  const handleRepairVersion = useCallback(
+    async (versionId: string) => {
+      const root = settingsRef.current.gameRoot;
+      if (!root) {
+        pushToast("error", "游戏目录为空", "请先在设置中选择游戏目录。");
+        return;
+      }
+      pushToast(
+        "info",
+        `开始补全 ${versionId}`,
+        "正在检查并下载缺失的依赖库、客户端与资源文件…",
+      );
+      pushLog("cobble", `开始自动补全 ${versionId}…`);
+      try {
+        const result = await installVersion(
+          root,
+          versionId,
+          settingsRef.current.downloadThreads,
+        );
+        await refreshInstalled(root);
+        pushToast(
+          "success",
+          "游戏文件已补全",
+          `依赖库 ${result.libraries} 个、资源文件 ${result.assets} 个已就绪，可以启动。`,
+        );
+        pushLog(
+          "cobble",
+          `${versionId} 补全完成（依赖库 ${result.libraries}，资源文件 ${result.assets}）。`,
+        );
+      } catch (error) {
+        pushToast("error", `补全 ${versionId} 失败`, String(error));
+        pushLog("cobble", `补全 ${versionId} 失败: ${String(error)}`);
+      }
+    },
+    [pushLog, pushToast, refreshInstalled],
+  );
+
   const handleLaunch = useCallback(
     async (versionOverride?: string, options?: { stay?: boolean }) => {
       let versionId = versionOverride ?? selectedVersion;
@@ -1491,36 +1538,141 @@ export default function App() {
 
       activeVisibilityRef.current = launchSettings.launcherVisibility;
 
-      try {
-        await launchGame({
+      const launchRoot = settingsRef.current.gameRoot;
+      const launchRequest = {
+        versionId,
+        root: launchRoot,
+        playerName: launchPlayerName,
+        memoryMb: launchSettings.memoryMb,
+        javaPath: launchSettings.javaPath?.trim() || settings.javaPath.trim() || null,
+        width: effectiveWidth,
+        height: effectiveHeight,
+        skinType: settings.offlineSkinType,
+        customSkinPath: settings.customSkinPath || null,
+        customSkinModel: settings.offlineSkinModel || null,
+        mojangSkinName: settings.mojangSkinName || null,
+        versionIsolation: launchSettings.versionIsolation,
+        windowTitle: launchSettings.windowTitle || null,
+        customInfo: launchSettings.customInfo || null,
+        launcherVisibility: launchSettings.launcherVisibility,
+        processPriority: launchSettings.processPriority,
+        windowSize: launchSettings.windowSize,
+        jvmArgs: launchSettings.jvmArgs || null,
+        language: launchSettings.language || null,
+        offline: !activeAccount,
+      };
+
+      // A version folder can look installed while a download was interrupted
+      // or the folder was copied without its libraries. Repair it with the same
+      // verified download plan used by the installer, then confirm nothing is
+      // still missing so Java never starts with a broken classpath.
+      const autoRepairGameFiles = async (reason: string) => {
+        setRuntime({
+          status: "preparing",
           versionId,
-          root: settingsRef.current.gameRoot,
-          playerName: launchPlayerName,
-          memoryMb: launchSettings.memoryMb,
-          javaPath: launchSettings.javaPath?.trim() || settings.javaPath.trim() || null,
-          width: effectiveWidth,
-          height: effectiveHeight,
-          skinType: settings.offlineSkinType,
-          customSkinPath: settings.customSkinPath || null,
-          customSkinModel: settings.offlineSkinModel || null,
-          mojangSkinName: settings.mojangSkinName || null,
-          versionIsolation: launchSettings.versionIsolation,
-          windowTitle: launchSettings.windowTitle || null,
-          customInfo: launchSettings.customInfo || null,
-          launcherVisibility: launchSettings.launcherVisibility,
-          processPriority: launchSettings.processPriority,
-          windowSize: launchSettings.windowSize,
-          jvmArgs: launchSettings.jvmArgs || null,
-          language: launchSettings.language || null,
-          offline: !activeAccount,
+          detail: "正在自动补全缺失的游戏文件",
         });
+        setLaunchProgress({
+          versionId,
+          stage: "files",
+          done: 0,
+          total: 0,
+          detail: "正在补全依赖库与游戏文件",
+        });
+        pushLog("cobble", `检测到 ${versionId} 需要补全（${reason}），开始自动补全…`);
+        const repaired = await installVersion(
+          launchRoot,
+          versionId,
+          settingsRef.current.downloadThreads,
+        );
+        await refreshInstalled(launchRoot);
+        const afterRepair = await checkVersionFiles(launchRoot, versionId).catch(
+          () => null,
+        );
+        if (afterRepair && afterRepair.missingCount > 0) {
+          throw new Error(
+            `自动补全后仍缺少 ${afterRepair.missingCount} 个文件：${afterRepair.missing
+              .slice(0, 3)
+              .join("、")}`,
+          );
+        }
+        pushToast(
+          "success",
+          "游戏文件已补全",
+          `已检查并补齐 ${repaired.libraries} 个依赖库，正在启动…`,
+        );
+        pushLog(
+          "cobble",
+          `${versionId} 自动补全完成（依赖库 ${repaired.libraries}，资源文件 ${repaired.assets}），继续启动。`,
+        );
+        setLaunchProgress({
+          versionId,
+          stage: "java",
+          done: 0,
+          total: 0,
+          detail: "检查 Java 并启动",
+        });
+      };
+
+      // Preflight: catch missing dependencies before Java is asked to start.
+      let preflight: Awaited<ReturnType<typeof checkVersionFiles>> | null = null;
+      try {
+        preflight = await checkVersionFiles(launchRoot, versionId);
+      } catch (preflightError) {
+        // An older core without this command, or an unreadable profile: the
+        // launch-time repair below still covers it.
+        pushLog("cobble", `启动前文件检查跳过：${String(preflightError)}`);
+      }
+      if (preflight && preflight.missingCount > 0) {
+        const sample = preflight.missing
+          .slice(0, 2)
+          .map((path) => path.split(/[\\/]/).pop() || path)
+          .join("、");
+        pushToast(
+          "info",
+          "检测到游戏文件缺失",
+          `缺少 ${preflight.missingCount} 个文件（${sample}），正在自动补全后启动。`,
+        );
+        try {
+          await autoRepairGameFiles("启动前检查发现缺失文件");
+        } catch (repairError) {
+          setRuntime({ status: "idle" });
+          setLaunchProgress(null);
+          pushToast("error", "自动补全游戏文件失败", String(repairError));
+          pushLog("cobble", `${versionId} 自动补全失败: ${String(repairError)}`);
+          return;
+        }
+      }
+
+      try {
+        await launchGame(launchRequest);
         // Java may have been installed during launch; reflect it in the UI.
-        void detectJavaForRoot(settingsRef.current.gameRoot);
+        void detectJavaForRoot(launchRoot);
       } catch (error) {
+        const message = String(error);
+        const needsFileRepair =
+          /游戏依赖不完整|原生库缺失|客户端 jar 为空或下载不完整/i.test(message);
+        if (needsFileRepair) {
+          try {
+            await autoRepairGameFiles(`启动失败：${message.slice(0, 120)}`);
+            await launchGame(launchRequest);
+            void detectJavaForRoot(launchRoot);
+            return;
+          } catch (repairError) {
+            setRuntime({ status: "idle" });
+            setLaunchProgress(null);
+            pushToast("error", "自动补全后启动失败", String(repairError));
+            pushLog(
+              "cobble",
+              `${versionId} 自动补全后启动失败: ${String(repairError)}`,
+            );
+            return;
+          }
+        }
         setRuntime({ status: "idle" });
         setLaunchProgress(null);
-        pushToast("error", "启动失败", String(error));
-        pushLog("cobble", `启动失败: ${String(error)}`);
+        pushToast("error", "启动失败", message);
+        pushLog("cobble", `启动失败: ${message}`);
       }
     },
     [
@@ -1528,6 +1680,7 @@ export default function App() {
       installed,
       pushLog,
       pushToast,
+      refreshInstalled,
       runtime.status,
       selectedVersion,
       settings.javaPath,
@@ -1620,7 +1773,7 @@ export default function App() {
           javaPath={settings.javaPath}
           javaDetecting={javaDetecting}
           runtimeStatus={runtime.status}
-          launcherVersion={systemInfo?.launcherVersion ?? "0.1.4"}
+          launcherVersion={systemInfo?.launcherVersion ?? "0.1.6"}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
           skinType={settings.offlineSkinType}
@@ -1737,6 +1890,10 @@ export default function App() {
                   onOpenFolder={(path) => void openFolder(path)}
                   onOpenLauncherSettings={() => setView("settings")}
                   onOpenDownloadPage={() => setView("download")}
+                  onRefreshInstalled={async () => {
+                    await refreshInstalled(settings.gameRoot);
+                  }}
+                  onRepairVersion={handleRepairVersion}
                   onDeleteVersion={handleDeleteVersion}
                   onNotify={pushToast}
                 />

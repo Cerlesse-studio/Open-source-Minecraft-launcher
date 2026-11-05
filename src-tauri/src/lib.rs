@@ -354,6 +354,15 @@ async fn get_version_loaders(mc_version: String) -> Result<loaders::VersionLoade
     loaders::fetch_version_loaders(&mc_version).await
 }
 
+/// Preflight for the launch button: lists classpath/native files Java would
+/// need that are missing (or empty) so the UI can repair them before starting.
+async fn check_version_files(
+    root: String,
+    version_id: String,
+) -> Result<minecraft::VersionFileReport, String> {
+    minecraft::check_version_files(&PathBuf::from(root), &version_id).await
+}
+
 async fn install_version(
     app: AppHandle,
     state: State<'_, InstallState>,

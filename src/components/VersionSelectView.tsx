@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
   Check,
@@ -17,6 +17,7 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  Wrench,
   X,
 } from "lucide-react";
 import { cn } from "cn";
@@ -83,6 +84,8 @@ export interface VersionSelectViewProps {
   onOpenFolder: (path: string) => void;
   onOpenLauncherSettings: () => void;
   onOpenDownloadPage: () => void;
+  onRefreshInstalled?: () => Promise<void> | void;
+  onRepairVersion?: (versionId: string) => Promise<void> | void;
   onDeleteVersion?: (versionId: string, edition: "java" | "bedrock") => Promise<void> | void;
   onNotify?: (
     tone: "success" | "error" | "info",
@@ -128,6 +131,8 @@ export function VersionSelectView({
   onOpenFolder,
   onOpenLauncherSettings,
   onOpenDownloadPage,
+  onRefreshInstalled,
+  onRepairVersion,
   onDeleteVersion,
   onNotify,
 }: VersionSelectViewProps) {
@@ -138,6 +143,7 @@ export function VersionSelectView({
   const [deletingItem, setDeletingItem] = useState<MixedVersionItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [cleaningLeftovers, setCleaningLeftovers] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -149,6 +155,18 @@ export function VersionSelectView({
   }, [gameRoot]);
 
   const leftovers = bedrockStatus?.leftoverVersions ?? [];
+  const selectedInstalled =
+    installed.find((version) => version.id === selectedVersion) ?? null;
+
+  const handleRepairSelected = async () => {
+    if (!selectedInstalled || !onRepairVersion || repairing) return;
+    setRepairing(true);
+    try {
+      await onRepairVersion(selectedInstalled.id);
+    } finally {
+      setRepairing(false);
+    }
+  };
 
   // Folders left behind by aborted downloads never show up as installed cores,
   // so they had no delete entry at all. Clearing them goes through the same
@@ -175,6 +193,55 @@ export function VersionSelectView({
       setCleaningLeftovers(false);
     }
   }, [cleaningLeftovers, leftovers, gameRoot, refreshStatus, onNotify]);
+
+  // The window can stay open while version folders are copied in, repaired or
+  // removed. Keep the latest callback in a ref so the scan timer is not torn
+  // down and recreated after every parent render.
+  const onRefreshInstalledRef = useRef(onRefreshInstalled);
+  useEffect(() => {
+    onRefreshInstalledRef.current = onRefreshInstalled;
+  });
+
+  // Re-scan on mount, when the window regains focus, and on a short interval so
+  // the list follows the versions directory without an app restart.
+  useEffect(() => {
+    let disposed = false;
+    let pending: Promise<void> | null = null;
+
+    const scan = (force = false): Promise<void> => {
+      if (disposed || (!force && document.hidden)) return Promise.resolve();
+      if (pending) return pending;
+      pending = (async () => {
+        try {
+          await onRefreshInstalledRef.current?.();
+        } catch {
+          // The parent already reports scan failures as a single toast.
+        } finally {
+          pending = null;
+        }
+      })();
+      return pending;
+    };
+
+    // The window can be created hidden; still load once so the first paint
+    // after it is shown already reflects the directory.
+    void scan(true);
+
+    const timer = window.setInterval(() => void scan(), 2000);
+    const onFocus = () => void scan();
+    const onVisibility = () => {
+      if (!document.hidden) void scan();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [gameRoot]);
 
   useEffect(() => {
     void refreshStatus();
@@ -357,7 +424,7 @@ export function VersionSelectView({
         </div>
 
         {/* Search & Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -377,6 +444,23 @@ export function VersionSelectView({
               </button>
             ) : null}
           </div>
+          {selectedInstalled && onRepairVersion ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 border-border/80 bg-card/60 text-[11.5px]"
+              onClick={() => void handleRepairSelected()}
+              disabled={repairing}
+              title={`检查并补全 ${selectedInstalled.id} 缺失的依赖库与游戏文件`}
+            >
+              {repairing ? (
+                <LoaderCircle className="size-3.5 animate-spin text-primary" />
+              ) : (
+                <Wrench className="size-3.5 text-primary" />
+              )}
+              {repairing ? "补全中…" : "自动补全"}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"

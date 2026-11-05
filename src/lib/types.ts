@@ -30,6 +30,14 @@ export interface InstalledVersion {
   fabricApiVersion?: string;
 }
 
+/** Result of the launch preflight: classpath files that are missing or empty. */
+export interface VersionFileReport {
+  versionId: string;
+  checked: number;
+  missingCount: number;
+  missing: string[];
+}
+
 export interface LoaderVersionItem {
   version: string;
   stable: boolean;
@@ -926,6 +934,8 @@ export interface RoomResources {
   resourcePacks: RoomResourceItem[];
   /** Datapacks in the instance folder and in each save's `datapacks` folder. */
   datapacks: RoomResourceItem[];
+  /** Version files (json, jar, configs) served directly by host. */
+  versionFiles?: RoomResourceItem[];
   /** Absent on older hosts. */
   version?: RoomVersionInfo | null;
   updatedAt: number;

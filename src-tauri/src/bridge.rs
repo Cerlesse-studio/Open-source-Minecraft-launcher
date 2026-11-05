@@ -134,6 +134,13 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
         "get_version_loaders" => {
             to_value(crate::get_version_loaders(argument(&args, "mcVersion")?).await?)
         }
+        "check_version_files" => to_value(
+            crate::check_version_files(
+                argument(&args, "root")?,
+                argument(&args, "versionId")?,
+            )
+            .await?,
+        ),
         "install_version" => to_value(
             crate::install_version(
                 app.clone(),
@@ -470,6 +477,7 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
                 argument(&args, "host")?,
                 argument(&args, "port")?,
                 argument(&args, "token")?,
+                argument(&args, "includeVersion").unwrap_or(false),
                 argument(&args, "includeMods")?,
                 argument(&args, "includeShaders")?,
                 argument(&args, "includeDatapacks")?,

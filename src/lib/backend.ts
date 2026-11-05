@@ -92,6 +92,7 @@ import type {
   SystemInfo,
   WikiEntry,
   VersionIsolation,
+  VersionFileReport,
   VersionLoadersCatalog,
   VersionManifest,
 } from "./types";
@@ -198,6 +199,18 @@ export async function probeDownloadSources(
 export async function getInstalledVersions(root: string): Promise<InstalledVersion[]> {
   if (!isDesktop) return demoInstalledVersions();
   return invoke<InstalledVersion[]>("get_installed_versions", { root });
+}
+
+/**
+ * Preflight check used before launching: resolves the version profile locally
+ * and reports classpath/native files Java needs that are missing or empty.
+ */
+export async function checkVersionFiles(
+  root: string,
+  versionId: string,
+): Promise<VersionFileReport> {
+  if (!isDesktop) return { versionId, checked: 0, missingCount: 0, missing: [] };
+  return invoke<VersionFileReport>("check_version_files", { root, versionId });
 }
 
 export async function readSkinAsDataUrl(path: string): Promise<string> {
@@ -1350,12 +1363,13 @@ export async function startRoomResources(
   });
 }
 
-/** 访客一键下载房主的模组、光影和数据包，写回本机对应实例。 */
+/** 访客一键下载房主的环境（版本、模组、光影和数据包），写回本机对应实例。 */
 export async function cloneRoomResources(
   root: string,
   host: string,
   port: number,
   token: string,
+  includeVersion: boolean,
   includeMods: boolean,
   includeShaders: boolean,
   includeDatapacks: boolean,
@@ -1363,6 +1377,7 @@ export async function cloneRoomResources(
   if (!isDesktop) {
     const resources = demoRoomResources(demoRoomVersion);
     const files = [
+      ...(includeVersion ? (resources.versionFiles || []) : []),
       ...(includeMods ? resources.mods : []),
       ...(includeShaders ? resources.shaders : []),
       ...(includeDatapacks ? resources.datapacks : []),
@@ -1402,6 +1417,7 @@ export async function cloneRoomResources(
     host,
     port,
     token,
+    includeVersion,
     includeMods,
     includeShaders,
     includeDatapacks,

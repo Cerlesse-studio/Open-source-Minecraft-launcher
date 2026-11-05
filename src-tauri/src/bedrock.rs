@@ -4847,6 +4847,7 @@ pub async fn install_bedrock_version(
             let version_tag_clone = version_tag.clone();
             let pkg_filename_clone = pkg_filename.clone();
 
+            let mut speed_smoother = net::SpeedSmoother::new();
             let mut on_progress_cb = |done: u64, total: u64, _delta: u64| {
                 let now = Instant::now();
                 let mut guard = match last_emit_instant.lock() {
@@ -4858,11 +4859,13 @@ pub async fn install_bedrock_version(
                     let prev_bytes = last_emit_bytes.swap(done, Ordering::Relaxed);
                     let delta = done.saturating_sub(prev_bytes);
                     let secs = elapsed.as_secs_f64();
-                    let speed = if secs > 0.0 {
+                    let instant = if secs > 0.0 {
                         (delta as f64 / secs) as u64
                     } else {
                         0
                     };
+                    let speed =
+                        speed_smoother.update(instant, elapsed.as_millis() as u64);
                     *guard = now;
 
                     let pct = if total > 0 { done * 100 / total } else { 0 };

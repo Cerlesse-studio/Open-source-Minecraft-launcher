@@ -159,7 +159,7 @@ export function demoSystemInfo(): SystemInfo {
     arch: "x86_64",
     javaInstalls: javaInstalls.map((java) => ({ ...java })),
     gameRunning,
-    launcherVersion: "0.1.4",
+    launcherVersion: "0.1.6",
   };
 }
 

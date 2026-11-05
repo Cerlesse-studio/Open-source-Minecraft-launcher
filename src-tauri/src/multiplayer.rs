@@ -277,6 +277,8 @@ pub struct RoomResources {
     resource_packs: Vec<RoomResourceItem>,
     #[serde(default)]
     datapacks: Vec<RoomResourceItem>,
+    #[serde(default)]
+    version_files: Vec<RoomResourceItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     version: Option<RoomVersionInfo>,
     updated_at: u64,
@@ -757,6 +759,7 @@ async fn download_candidate(
     let mut last_emit = Instant::now() - INSTALL_EMIT_INTERVAL;
     let mut last_done = 0u64;
     let mut last_speed = 0u64;
+    let mut speed_smoother = net::SpeedSmoother::new();
 
     let mut on_progress = move |done: u64, total: u64, _delta: u64| {
         *activity_cb
@@ -767,7 +770,8 @@ async fn download_candidate(
         }
         let elapsed = last_emit.elapsed().as_secs_f64().max(0.001);
         if done >= last_done {
-            last_speed = ((done - last_done) as f64 / elapsed) as u64;
+            let instant = ((done - last_done) as f64 / elapsed) as u64;
+            last_speed = speed_smoother.update(instant, (elapsed * 1000.0) as u64);
         }
         last_done = done;
         last_emit = Instant::now();
@@ -1808,19 +1812,192 @@ fn scan_room_datapacks(root: &Path, version_id: &str, isolation: Option<&str>) -
     items
 }
 
+fn scan_room_version_files(
+    root: &Path,
+    version_id: &str,
+    isolation: Option<&str>,
+) -> Vec<RoomResourceItem> {
+    let mut items = Vec::new();
+    let version_dir = root.join("versions").join(version_id);
+    if !version_dir.is_dir() {
+        return items;
+    }
+
+    // 1. 递归扫描 versions/<version_id> 目录下的所有文件
+    // 排除 saves/logs/crash-reports/mods/shaderpacks/resourcepacks/datapacks/natives
+    let mut stack = vec![version_dir.clone()];
+    while let Some(current_dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                let name_lower = file_name.to_lowercase();
+                if name_lower == "saves"
+                    || name_lower == "logs"
+                    || name_lower == "crash-reports"
+                    || name_lower == "mods"
+                    || name_lower == "shaderpacks"
+                    || name_lower == "resourcepacks"
+                    || name_lower == "datapacks"
+                    || name_lower.ends_with("-natives")
+                    || name_lower == "natives"
+                    || name_lower == ".fabric"
+                    || name_lower == ".quilt"
+                {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.is_file() {
+                let fn_lower = file_name.to_lowercase();
+                if fn_lower == "usercache.json" || fn_lower == "usernamecache.json" {
+                    continue;
+                }
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let relative_path = room_relative_path(root, &path);
+                if !relative_path.is_empty() {
+                    items.push(room_resource_item(
+                        relative_path.clone(),
+                        file_name,
+                        true,
+                        size,
+                        relative_path,
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2. 若未使用版本隔离，扫描根目录的 config 与 defaultconfigs
+    let game_dir = crate::minecraft::resolve_java_game_dir(root, version_id, isolation);
+    if game_dir != version_dir {
+        for sub in &["config", "defaultconfigs"] {
+            let sub_dir = game_dir.join(sub);
+            if sub_dir.is_dir() {
+                let mut sub_stack = vec![sub_dir];
+                while let Some(cd) = sub_stack.pop() {
+                    let Ok(entries) = std::fs::read_dir(&cd) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let fn_str = entry.file_name().to_string_lossy().to_string();
+                        if fn_str.starts_with('.') {
+                            continue;
+                        }
+                        if path.is_dir() {
+                            sub_stack.push(path);
+                        } else if path.is_file() {
+                            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                            let relative_path = room_relative_path(root, &path);
+                            if !relative_path.is_empty() {
+                                items.push(room_resource_item(
+                                    relative_path.clone(),
+                                    fn_str,
+                                    true,
+                                    size,
+                                    relative_path,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 包含 libraries/ 下的模组核心（例如已构建好的 Forge/NeoForge client.jar）
+    let json_path = version_dir.join(format!("{version_id}.json"));
+    if let Ok(text) = std::fs::read_to_string(&json_path) {
+        if let Ok(detail) = serde_json::from_str::<crate::minecraft::VersionDetail>(&text) {
+            let (loader, loader_ver) = crate::minecraft::detect_loader(&detail);
+            let clean_mc = crate::minecraft::resolve_clean_mc_version(&detail);
+            if let (Some(l), Some(lv)) = (loader, loader_ver) {
+                if l == "forge" || l == "neoforge" {
+                    let clean_loader_ver = lv
+                        .strip_prefix(&format!("{clean_mc}-"))
+                        .unwrap_or(&lv);
+                    let client_rel_path = if l == "neoforge" {
+                        format!("libraries/net/neoforged/neoforge/{clean_loader_ver}/neoforge-{clean_loader_ver}-client.jar")
+                    } else {
+                        format!("libraries/net/minecraftforge/forge/{clean_mc}-{clean_loader_ver}/forge-{clean_mc}-{clean_loader_ver}-client.jar")
+                    };
+                    let client_jar_path = root.join(&client_rel_path);
+                    if client_jar_path.is_file() {
+                        let size = client_jar_path.metadata().map(|m| m.len()).unwrap_or(0);
+                        items.push(room_resource_item(
+                            client_rel_path.clone(),
+                            client_jar_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                            true,
+                            size,
+                            client_rel_path,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    sort_resource_items(&mut items);
+    items
+}
+
 fn room_version_info(root: &Path, version_id: &str) -> RoomVersionInfo {
-    crate::minecraft::list_installed(root)
+    let installed = crate::minecraft::list_installed(root)
         .ok()
-        .and_then(|versions| versions.into_iter().find(|item| item.id == version_id))
-        .map(|item| RoomVersionInfo {
-            mc_version: item.mc_version.unwrap_or_default(),
+        .and_then(|versions| versions.into_iter().find(|item| item.id == version_id));
+
+    let json_path = root.join("versions").join(version_id).join(format!("{version_id}.json"));
+    let detail = std::fs::read_to_string(&json_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<crate::minecraft::VersionDetail>(&text).ok());
+
+    let (detected_loader, detected_loader_ver) = detail
+        .as_ref()
+        .map(crate::minecraft::detect_loader)
+        .unwrap_or((None, None));
+
+    let clean_mc = detail
+        .as_ref()
+        .map(crate::minecraft::resolve_clean_mc_version)
+        .unwrap_or_default();
+
+    if let Some(item) = installed {
+        let mc = if !item.mc_version.as_deref().unwrap_or("").is_empty() {
+            item.mc_version.unwrap()
+        } else {
+            clean_mc
+        };
+        RoomVersionInfo {
+            mc_version: mc,
             version_type: item.version_type,
-            loader: item.loader.unwrap_or_default(),
-            loader_version: item.loader_version.unwrap_or_default(),
+            loader: item.loader.or(detected_loader).unwrap_or_default(),
+            loader_version: item.loader_version.or(detected_loader_ver).unwrap_or_default(),
             optifine_version: item.optifine_version.unwrap_or_default(),
             fabric_api_version: item.fabric_api_version.unwrap_or_default(),
-        })
-        .unwrap_or_default()
+        }
+    } else {
+        RoomVersionInfo {
+            mc_version: clean_mc,
+            version_type: detail
+                .as_ref()
+                .and_then(|d| d.version_type.clone())
+                .unwrap_or_else(|| "release".to_string()),
+            loader: detected_loader.unwrap_or_default(),
+            loader_version: detected_loader_ver.unwrap_or_default(),
+            optifine_version: String::new(),
+            fabric_api_version: String::new(),
+        }
+    }
 }
 
 /// 给可下载的文件分配随机 ID，并生成 `fileId -> 真实路径` 映射。
@@ -1832,8 +2009,9 @@ fn attach_room_file_ids(
     let mut files = HashMap::new();
     let mut next_id = 0usize;
     for item in resources
-        .mods
+        .version_files
         .iter_mut()
+        .chain(resources.mods.iter_mut())
         .chain(resources.shaders.iter_mut())
         .chain(resources.datapacks.iter_mut())
     {
@@ -1863,6 +2041,7 @@ fn scan_room_resources(root: &Path, version_id: &str, isolation: Option<&str>) -
         shaders: scan_room_shaders(root, &game_dir),
         resource_packs: scan_room_resource_packs(root, version_id, isolation),
         datapacks: scan_room_datapacks(root, version_id, isolation),
+        version_files: scan_room_version_files(root, version_id, isolation),
         version: Some(room_version_info(root, version_id)),
         updated_at: now_millis(),
         host_port: None,
@@ -2252,7 +2431,15 @@ fn safe_room_download_path(value: &str) -> Option<PathBuf> {
     let first = parts.next()?;
     if !matches!(
         first,
-        "versions" | "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "saves"
+        "versions"
+            | "mods"
+            | "shaderpacks"
+            | "resourcepacks"
+            | "datapacks"
+            | "saves"
+            | "config"
+            | "defaultconfigs"
+            | "libraries"
     ) {
         return None;
     }
@@ -2342,15 +2529,15 @@ async fn fetch_room_file_inner(
     }
 }
 
-/// 访客一键克隆房主的模组、光影和数据包。版本本体由前端先调用
-/// `install_version` 安装成同一个实例名，这里只负责把文件按原相对路径
-/// 写回去。返回逐文件结果，单个文件失败不会中断其余文件。
+/// 访客一键克隆房主的环境（版本本体、模组、光影、数据包与配置文件）。
+/// 房主主机作为文件服务器，通过内部网络直接分发文件，无需走互联网清单。
 pub async fn clone_room_resources(
     app: AppHandle,
     root: String,
     host: String,
     port: u16,
     token: String,
+    include_version: bool,
     include_mods: bool,
     include_shaders: bool,
     include_datapacks: bool,
@@ -2368,6 +2555,9 @@ pub async fn clone_room_resources(
     .await?;
 
     let mut items = Vec::new();
+    if include_version {
+        items.extend(resources.version_files.iter().cloned());
+    }
     if include_mods {
         items.extend(resources.mods.iter().cloned());
     }
@@ -4792,6 +4982,7 @@ mod tests {
             shaders: Vec::new(),
             resource_packs: Vec::new(),
             datapacks: Vec::new(),
+            version_files: Vec::new(),
             version: None,
             updated_at: 1,
         };

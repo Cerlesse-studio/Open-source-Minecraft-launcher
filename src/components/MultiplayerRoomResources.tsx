@@ -14,10 +14,9 @@ import {
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cloneRoomResources, installVersion, subscribe } from "../lib/backend";
+import { cloneRoomResources, subscribe } from "../lib/backend";
 import type {
   InstalledVersion,
-  LoaderSelection,
   RoomCloneProgress,
   RoomCloneResult,
   RoomResourceItem,
@@ -224,39 +223,34 @@ export function RoomResourcesPanel({
   const versionInstalled = Boolean(
     resources && installedVersions.some((entry) => entry.id === resources.versionId),
   );
-  const canInstallVersion = Boolean(gameRoot && resources?.versionId);
-  const hasResourceSelection = includeMods || includeShaders || includeDatapacks;
+  const hasResourceSelection = includeVersion || includeMods || includeShaders || includeDatapacks;
   const hasFiles = Boolean(
     resources &&
-      (includeMods ? resources.mods.length : 0) +
+      (includeVersion ? (resources.versionFiles?.length ?? 1) : 0) +
+        (includeMods ? resources.mods.length : 0) +
         (includeShaders ? resources.shaders.length : 0) +
         (includeDatapacks ? datapacks.length : 0) >
         0,
   );
   const resourcesSupported = Boolean(
     resources &&
-      [resources.mods, resources.shaders, datapacks].some((items) =>
+      [resources.versionFiles ?? [], resources.mods, resources.shaders, datapacks].some((items) =>
         items.some((item) => Boolean(item.fileId)),
       ),
   );
-  const willInstallVersion = includeVersion && !versionInstalled;
   const cloneBlockedReason = !resources
     ? "还没有资源清单"
     : !running
       ? "网络连接后才能克隆"
       : cloning
         ? "正在克隆"
-        : willInstallVersion && !canInstallVersion
-          ? "游戏目录或版本信息为空"
-          : hasResourceSelection && !versionInstalled && !includeVersion
-            ? "请先勾选游戏版本或在本地安装同版本"
-            : hasResourceSelection && !resourcesSupported
-              ? "房主资源服务版本过旧，无法传输文件；请双方更新启动器"
-              : !willInstallVersion && !hasFiles
-                ? versionInstalled
-                  ? "房主版本已安装，且没有勾选可克隆的文件"
-                  : "请选择要克隆的内容"
-                : null;
+        : !hasResourceSelection
+          ? "请选择要克隆的内容"
+          : hasResourceSelection && !resourcesSupported
+            ? "房主资源服务未提供可传输的文件；请双方更新启动器"
+            : !hasFiles
+              ? "没有勾选可克隆的文件"
+              : null;
 
   const handleClone = async () => {
     if (!resources) return;
@@ -266,52 +260,30 @@ export function RoomResourcesPanel({
     setCloneProgress(null);
     try {
       if (!gameRoot.trim()) throw new Error("游戏目录为空，请先在设置中指定");
-      if (willInstallVersion) {
-        const info = resources.version;
-        const mcVersion = info?.mcVersion?.trim() || resources.versionId;
-        const loader = info?.loader?.toLowerCase() ?? "";
-        const selection: LoaderSelection = { instanceName: resources.versionId };
-        if (
-          loader === "forge" ||
-          loader === "neoforge" ||
-          loader === "fabric" ||
-          loader === "quilt"
-        ) {
-          selection.loaderType = loader;
-          if (info?.loaderVersion?.trim()) {
-            selection.loaderVersion = info.loaderVersion.trim();
-          }
-        }
-        if (info?.optifineVersion?.trim()) {
-          selection.optifineVersion = info.optifineVersion.trim();
-        }
-        // Fabric API 通常本身就在 mods 里，跟着模组一起克隆即可；这里不重复
-        // 下载，避免出现两个同名不同版本的 Fabric API。
-        await installVersion(gameRoot, mcVersion, undefined, selection);
-        await onRefreshInstalled?.();
+      if (!hostAddress.trim()) throw new Error("房间还没有房主的虚拟地址");
+      if (!resourcePort || !resourceToken) {
+        throw new Error("分享码里没有房间资源入口，请房主重新发码");
       }
 
-      let result: RoomCloneResult | null = null;
-      if (hasResourceSelection) {
-        if (!hostAddress.trim()) throw new Error("房间还没有房主的虚拟地址");
-        if (!resourcePort || !resourceToken) {
-          throw new Error("分享码里没有房间资源入口，请房主重新发码");
-        }
-        result = await cloneRoomResources(
-          gameRoot,
-          hostAddress,
-          resourcePort,
-          resourceToken,
-          includeMods,
-          includeShaders,
-          includeDatapacks,
-        );
-        setCloneResult(result);
+      const result = await cloneRoomResources(
+        gameRoot,
+        hostAddress,
+        resourcePort,
+        resourceToken,
+        includeVersion,
+        includeMods,
+        includeShaders,
+        includeDatapacks,
+      );
+      setCloneResult(result);
+
+      if (includeVersion) {
+        await onRefreshInstalled?.();
       }
 
       const summary = result
         ? `已复制 ${result.downloaded} 个文件${result.failed ? `，${result.failed} 个失败` : ""}${result.skipped ? `，跳过 ${result.skipped} 个文件夹` : ""}`
-        : "房主版本已安装";
+        : "克隆完成";
       if (result?.failed) {
         onNotify("info", "克隆完成，但部分文件失败", summary);
       } else {
@@ -432,13 +404,14 @@ export function RoomResourcesPanel({
                 ) : null}
               </div>
               <p className="mt-1 text-[10px] leading-4 text-muted-foreground/65">
-                安装与房主相同的游戏版本，并把模组、光影和数据包按原路径复制到本机实例。同名文件会被覆盖。
+                直接从房主电脑（文件服务器）克隆游戏版本核心、模组、配置文件、光影和数据包到本机，无需走互联网下载清单。同名文件会被覆盖。
               </p>
 
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <CloneToggle
                   checked={includeVersion}
                   label={`游戏版本${versionInstalled ? "（已安装）" : ""}`}
+                  count={resources.versionFiles?.length}
                   onChange={setIncludeVersion}
                 />
                 <CloneToggle

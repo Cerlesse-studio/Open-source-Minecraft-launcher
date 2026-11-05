@@ -1002,12 +1002,14 @@ pub async fn download_content_file(
         let mut last_emit = Instant::now();
         let mut last_bytes = 0u64;
         let mut current_speed = 0u64;
+        let mut speed_smoother = net::SpeedSmoother::new();
         let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
             let elapsed_ms = now.duration_since(last_emit).as_millis();
             if elapsed_ms >= 120 || (total > 0 && done >= total) {
                 if elapsed_ms > 0 {
-                    current_speed = (done.saturating_sub(last_bytes) * 1000) / (elapsed_ms as u64);
+                    let instant = (done.saturating_sub(last_bytes) * 1000) / (elapsed_ms as u64);
+                    current_speed = speed_smoother.update(instant, elapsed_ms as u64);
                 }
                 last_emit = now;
                 last_bytes = done;
@@ -1182,6 +1184,7 @@ pub async fn download_content_file(
         let mut last_emit = Instant::now();
         let mut last_bytes = 0u64;
         let mut current_speed = 0u64;
+        let mut speed_smoother = net::SpeedSmoother::new();
 
         let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
@@ -1189,7 +1192,8 @@ pub async fn download_content_file(
             if elapsed_ms >= 120 || (total > 0 && done >= total) {
                 if elapsed_ms > 0 {
                     let diff = done.saturating_sub(last_bytes);
-                    current_speed = (diff * 1000) / (elapsed_ms as u64);
+                    let instant = (diff * 1000) / (elapsed_ms as u64);
+                    current_speed = speed_smoother.update(instant, elapsed_ms as u64);
                 }
                 last_emit = now;
                 last_bytes = done;
@@ -1302,6 +1306,7 @@ pub async fn download_content_file(
     let mut last_emit = Instant::now();
     let mut last_bytes = 0u64;
     let mut current_speed = 0u64;
+    let mut speed_smoother = net::SpeedSmoother::new();
 
     let mut progress_callback = |done: u64, total: u64, _delta: u64| {
         let now = Instant::now();
@@ -1309,7 +1314,8 @@ pub async fn download_content_file(
         if elapsed_ms >= 120 || (total > 0 && done >= total) {
             if elapsed_ms > 0 {
                 let bytes_diff = done.saturating_sub(last_bytes);
-                current_speed = (bytes_diff * 1000) / (elapsed_ms as u64);
+                let instant = (bytes_diff * 1000) / (elapsed_ms as u64);
+                current_speed = speed_smoother.update(instant, elapsed_ms as u64);
             }
             last_emit = now;
             last_bytes = done;

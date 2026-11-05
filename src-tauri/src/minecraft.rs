@@ -737,45 +737,10 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
             .as_ref()
             .and_then(|d| d.mc_version.clone())
             .or_else(|| parsed_detail.as_ref().and_then(|d| d.inherits_from.clone()));
-        let (loader, loader_version) = if parsed_detail
-            .as_ref()
-            .and_then(|d| d.loader.clone())
-            .is_some()
-        {
-            (
-                parsed_detail.as_ref().and_then(|d| d.loader.clone()),
-                parsed_detail
-                    .as_ref()
-                    .and_then(|d| d.loader_version.clone()),
-            )
+        let (loader, loader_version) = if let Some(detail) = &parsed_detail {
+            detect_loader(detail)
         } else {
-            let mut detected = (None, None);
-            if let Some(detail) = &parsed_detail {
-                for lib in &detail.libraries {
-                    if lib.name.starts_with("net.minecraftforge:forge:") {
-                        let parts: Vec<&str> = lib.name.split(':').collect();
-                        if parts.len() >= 3 {
-                            let fver = parts[2];
-                            let lver = fver.split('-').nth(1).unwrap_or(fver);
-                            detected = (Some("forge".to_string()), Some(lver.to_string()));
-                            break;
-                        }
-                    } else if lib.name.starts_with("net.neoforged:neoforge:") {
-                        let parts: Vec<&str> = lib.name.split(':').collect();
-                        if parts.len() >= 3 {
-                            detected = (Some("neoforge".to_string()), Some(parts[2].to_string()));
-                            break;
-                        }
-                    } else if lib.name.starts_with("net.fabricmc:fabric-loader:") {
-                        let parts: Vec<&str> = lib.name.split(':').collect();
-                        if parts.len() >= 3 {
-                            detected = (Some("fabric".to_string()), Some(parts[2].to_string()));
-                            break;
-                        }
-                    }
-                }
-            }
-            detected
+            (None, None)
         };
         let optifine_version = parsed_detail
             .as_ref()
@@ -1228,7 +1193,6 @@ pub const DEFAULT_DOWNLOAD_THREADS: usize = 16;
 struct DownloadTracker {
     version_id: String,
     threads: usize,
-    started_at: Instant,
     progress: ProgressFn,
     network_bytes: AtomicU64,
     skipped_files: AtomicU64,
@@ -1237,6 +1201,7 @@ struct DownloadTracker {
     stages: Mutex<Vec<StageProgress>>,
     pending_file_logs: Mutex<Vec<InstallFileLog>>,
     speed_samples: Mutex<VecDeque<(Instant, u64)>>,
+    smoothed_speed: Mutex<net::SpeedSmoother>,
     last_emit: Mutex<Instant>,
 }
 
@@ -1297,7 +1262,6 @@ impl DownloadTracker {
         Arc::new(Self {
             version_id: version_id.to_string(),
             threads: threads.clamp(1, 64),
-            started_at: now,
             progress,
             network_bytes: AtomicU64::new(0),
             skipped_files: AtomicU64::new(0),
@@ -1306,6 +1270,7 @@ impl DownloadTracker {
             stages: Mutex::new(stages),
             pending_file_logs: Mutex::new(Vec::new()),
             speed_samples: Mutex::new(samples),
+            smoothed_speed: Mutex::new(net::SpeedSmoother::new()),
             last_emit: Mutex::new(now - Duration::from_secs(1)),
         })
     }
@@ -1394,33 +1359,43 @@ impl DownloadTracker {
     fn sample_speed(&self) -> u64 {
         let now = Instant::now();
         let net_total = self.network_bytes.load(Ordering::Relaxed);
-        let Ok(mut samples) = self.speed_samples.lock() else {
-            return 0;
-        };
-        samples.push_back((now, net_total));
-        let window = Duration::from_millis(2000);
-        while samples.len() > 2 {
-            if let Some((front_time, _)) = samples.front() {
-                if now.duration_since(*front_time) > window {
-                    samples.pop_front();
-                } else {
-                    break;
+        // 2s 滑动窗口内的瞬时速率；停顿（diff == 0）时交给平滑器衰减，
+        // 不再回退到“全局平均”，否则停顿帧会突然跳回一个很高的值。
+        let (instant, elapsed_ms) = {
+            let Ok(mut samples) = self.speed_samples.lock() else {
+                return 0;
+            };
+            samples.push_back((now, net_total));
+            let window = Duration::from_millis(2000);
+            while samples.len() > 2 {
+                if let Some((front_time, _)) = samples.front() {
+                    if now.duration_since(*front_time) > window {
+                        samples.pop_front();
+                    } else {
+                        break;
+                    }
                 }
             }
-        }
-        if let Some((oldest_time, oldest_bytes)) = samples.front() {
-            let elapsed = now.duration_since(*oldest_time).as_secs_f64();
-            let diff = net_total.saturating_sub(*oldest_bytes);
-            if elapsed >= 0.08 && diff > 0 {
-                return (diff as f64 / elapsed) as u64;
+            if let Some((oldest_time, oldest_bytes)) = samples.front() {
+                let elapsed = now.duration_since(*oldest_time).as_secs_f64();
+                if elapsed >= 0.08 {
+                    let diff = net_total.saturating_sub(*oldest_bytes);
+                    ((diff as f64 / elapsed) as u64, (elapsed * 1000.0) as u64)
+                } else {
+                    return self
+                        .smoothed_speed
+                        .lock()
+                        .map(|s| s.current())
+                        .unwrap_or(0);
+                }
+            } else {
+                (0, 2000)
             }
-        }
-        let total_elapsed = now.duration_since(self.started_at).as_secs_f64();
-        if total_elapsed >= 0.1 && net_total > 0 {
-            (net_total as f64 / total_elapsed) as u64
-        } else {
-            0
-        }
+        };
+        self.smoothed_speed
+            .lock()
+            .map(|mut s| s.update(instant, elapsed_ms))
+            .unwrap_or(instant)
     }
 
     fn build_snapshot(
@@ -1999,12 +1974,51 @@ async fn download_client_with_tracker(
     concurrency: usize,
     worker_offset: usize,
 ) -> Result<(), String> {
-    let Some(client) = version.downloads.as_ref().and_then(|d| d.client.as_ref()) else {
-        return Err("这个版本没有提供客户端文件".to_string());
+    let dest = version_dir(root, &version.id).join(format!("{}.jar", version.id));
+    let clean_mc = resolve_clean_mc_version(version);
+
+    // If destination jar already exists and is non-empty, verify or skip
+    if let Ok(meta) = tokio::fs::metadata(&dest).await {
+        if meta.len() > 1024 * 1024 {
+            let matches_sha = if let Some(expected) = version
+                .downloads
+                .as_ref()
+                .and_then(|d| d.client.as_ref())
+                .and_then(|c| c.sha1.as_deref())
+            {
+                net::sha1_file(&dest)
+                    .await
+                    .map(|actual| actual.eq_ignore_ascii_case(expected))
+                    .unwrap_or(false)
+            } else {
+                true
+            };
+            if matches_sha {
+                let total = meta.len();
+                tracker.skipped_files.fetch_add(1, Ordering::Relaxed);
+                tracker.add_stage_completed("client", 1, total);
+                tracker.set_stage_status("client", "done");
+                tracker.emit_now("client", total.max(1), total.max(1), "客户端已存在（跳过）");
+                return Ok(());
+            }
+        }
+    }
+
+    let client = match version.downloads.as_ref().and_then(|d| d.client.as_ref()) {
+        Some(c) => c.clone(),
+        None => {
+            // Fallback for imported or custom loader profiles that omit downloads.client:
+            // Download vanilla client directly from BMCLAPI
+            let url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client");
+            Artifact {
+                path: None,
+                sha1: None,
+                size: None,
+                url: Some(url),
+            }
+        }
     };
     tracker.set_stage_status("client", "active");
-
-    let dest = version_dir(root, &version.id).join(format!("{}.jar", version.id));
     let total = client.size.unwrap_or(0);
     let started_at = Instant::now();
 
@@ -2248,16 +2262,48 @@ pub async fn install_version_with_options(
         }
     }
 
-    let summary = summary.ok_or_else(|| format!("版本清单中找不到 {clean_version_id}"))?;
-    tracker.add_stage_completed("prepare", 1, 0);
-    tracker.emit_now(
-        "prepare",
-        1,
-        prepare_steps,
-        format!("解析版本配置 {}.json", summary.id),
-    );
+    // A loader/imported profile is often absent from the online manifest. Use
+    // its local JSON instead, so the repair/install flow can fill in missing
+    // libraries for versions that were copied in manually.
+    let local_detail = if summary.is_none() {
+        let path = version_dir(root, clean_version_id).join(format!("{clean_version_id}.json"));
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<VersionDetail>(&text).ok())
+    } else {
+        None
+    };
 
-    let mut version = load_version(root, &summary).await?;
+    let (mut version, fallback_type) = if let Some(summary) = summary {
+        tracker.add_stage_completed("prepare", 1, 0);
+        tracker.emit_now(
+            "prepare",
+            1,
+            prepare_steps,
+            format!("解析版本配置 {}.json", summary.id),
+        );
+        (
+            load_version(root, &summary).await?,
+            summary.version_type.clone(),
+        )
+    } else if let Some(detail) = local_detail {
+        tracker.add_stage_completed("prepare", 1, 0);
+        tracker.emit_now(
+            "prepare",
+            1,
+            prepare_steps,
+            format!("读取本地版本配置 {clean_version_id}.json"),
+        );
+        (
+            detail.clone(),
+            detail
+                .version_type
+                .clone()
+                .unwrap_or_else(|| "release".to_string()),
+        )
+    } else {
+        return Err(format!("版本清单中找不到 {clean_version_id}"));
+    };
     if version.inherits_from.is_some() {
         version = resolve_inherits_from(root, version).await?;
     }
@@ -2268,7 +2314,8 @@ pub async fn install_version_with_options(
         .await
         .map_err(|e| format!("无法创建游戏目录: {e}"))?;
 
-    version.mc_version = Some(clean_version_id.to_string());
+    let resolved_mc = resolve_clean_mc_version(&version);
+    version.mc_version = Some(resolved_mc);
     version.id = instance_id.clone();
     version.optifine_version = selection
         .optifine_version
@@ -2473,29 +2520,40 @@ pub async fn install_version_with_options(
     let (_client_res, libs_res, assets_res, _addons_res) =
         tokio::try_join!(client_task, libraries_task, assets_task, addons_task)?;
 
-    if has_addons {
-        if let (Some(loader_type), Some(loader_ver)) =
-            (version.loader.as_deref(), version.loader_version.as_deref())
-        {
-            if loader_type == "forge" || loader_type == "neoforge" {
-                tracker.emit_now("addons", 1, 1, "正在通过安装器构建模组核心");
-                // Ensure vanilla jar exists at versions/<clean_version_id>/<clean_version_id>.jar
-                let base_ver_dir = root.join("versions").join(clean_version_id);
-                let base_jar = base_ver_dir.join(format!("{clean_version_id}.jar"));
-                let inst_jar = instance_dir.join(format!("{instance_id}.jar"));
-                if !base_jar.is_file() && inst_jar.is_file() {
-                    let _ = tokio::fs::create_dir_all(&base_ver_dir).await;
-                    let _ = tokio::fs::copy(&inst_jar, &base_jar).await;
-                }
-                let _ = crate::loaders::ensure_forge_or_neoforge_client_jar(
-                    root,
-                    clean_version_id,
-                    loader_type,
-                    loader_ver,
-                    None,
-                )
-                .await;
-            }
+    let (detected_loader, detected_loader_ver) = detect_loader(&version);
+    let effective_loader = version
+        .loader
+        .as_deref()
+        .or(detected_loader.as_deref());
+    let effective_loader_ver = version
+        .loader_version
+        .as_deref()
+        .or(detected_loader_ver.as_deref());
+
+    if let (Some(loader_type), Some(loader_ver)) = (effective_loader, effective_loader_ver) {
+        let clean_mc = resolve_clean_mc_version(&version);
+        let parts: Vec<u32> = clean_mc
+            .split('.')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect();
+        let is_modern_forge = if loader_type == "neoforge" {
+            true
+        } else if loader_type == "forge" && parts.len() >= 2 && (parts[0] > 1 || (parts[0] == 1 && parts[1] >= 13)) {
+            true
+        } else {
+            false
+        };
+        if is_modern_forge {
+            tracker.emit_now("addons", 1, 1, "正在通过安装器构建模组核心");
+            let _ = crate::loaders::ensure_forge_or_neoforge_client_jar(
+                root,
+                &clean_mc,
+                loader_type,
+                loader_ver,
+                None,
+                Some(&instance_id),
+            )
+            .await;
         }
     }
 
@@ -2503,10 +2561,7 @@ pub async fn install_version_with_options(
 
     Ok(InstallResult {
         version_id: version.id.clone(),
-        version_type: version
-            .version_type
-            .clone()
-            .unwrap_or_else(|| summary.version_type.clone()),
+        version_type: version.version_type.clone().unwrap_or(fallback_type),
         libraries: libs_res,
         assets: assets_res,
         java_major: required_java_major(&version),
@@ -2969,6 +3024,147 @@ fn collect_arguments(
         }
     }
     out
+}
+
+pub fn raw_argument_strings(args: &Arguments) -> Vec<String> {
+    let mut out = Vec::new();
+    for list in [&args.game, &args.jvm] {
+        for item in list.iter() {
+            match item {
+                ArgumentValue::Plain(s) => out.push(s.clone()),
+                ArgumentValue::Complex { value, .. } => {
+                    if let Some(serde_json::Value::String(s)) = value {
+                        out.push(s.clone());
+                    } else if let Some(serde_json::Value::Array(items)) = value {
+                        for sub in items {
+                            if let Some(s) = sub.as_str() {
+                                out.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn detect_loader(detail: &VersionDetail) -> (Option<String>, Option<String>) {
+    if let (Some(l), Some(lv)) = (&detail.loader, &detail.loader_version) {
+        if !l.is_empty() && !lv.is_empty() {
+            return (Some(l.to_lowercase()), Some(lv.clone()));
+        }
+    }
+
+    // 1. Scan libraries for known loaders
+    for lib in &detail.libraries {
+        if lib.name.starts_with("net.minecraftforge:forge:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                let fver = parts[2];
+                let lver = fver.split('-').nth(1).unwrap_or(fver);
+                return (Some("forge".to_string()), Some(lver.to_string()));
+            }
+        } else if lib.name.starts_with("net.minecraftforge:fmlloader:")
+            || lib.name.starts_with("net.minecraftforge:fmlcore:")
+        {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                let fver = parts[2];
+                let lver = fver.split('-').nth(1).unwrap_or(fver);
+                return (Some("forge".to_string()), Some(lver.to_string()));
+            }
+        } else if lib.name.starts_with("net.neoforged:neoforge:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                let fver = parts[2];
+                let lver = fver.split('-').nth(1).unwrap_or(fver);
+                return (Some("neoforge".to_string()), Some(lver.to_string()));
+            }
+        } else if lib.name.starts_with("net.neoforged.fancymodloader:loader:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                let fver = parts[2];
+                return (Some("neoforge".to_string()), Some(fver.to_string()));
+            }
+        } else if lib.name.starts_with("net.fabricmc:fabric-loader:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                return (Some("fabric".to_string()), Some(parts[2].to_string()));
+            }
+        } else if lib.name.starts_with("org.quiltmc:quilt-loader:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                return (Some("quilt".to_string()), Some(parts[2].to_string()));
+            }
+        } else if lib.name.starts_with("optifine:OptiFine:") {
+            let parts: Vec<&str> = lib.name.split(':').collect();
+            if parts.len() >= 3 {
+                return (Some("optifine".to_string()), Some(parts[2].to_string()));
+            }
+        }
+    }
+
+    // 2. Scan arguments for loader flags
+    if let Some(args) = &detail.arguments {
+        let raw = raw_argument_strings(args);
+        for i in 0..raw.len() {
+            if raw[i] == "--fml.forgeVersion" && i + 1 < raw.len() {
+                return (Some("forge".to_string()), Some(raw[i + 1].clone()));
+            }
+            if raw[i] == "--fml.neoForgeVersion" && i + 1 < raw.len() {
+                return (Some("neoforge".to_string()), Some(raw[i + 1].clone()));
+            }
+        }
+    }
+
+    // 3. Fallback: Parse from id (e.g., 1.18.2-Forge_40.3.12, 1.20.1-neoforge-47.1.0)
+    let lower_id = detail.id.to_lowercase();
+    if let Some(idx) = lower_id.find("forge") {
+        let is_neo = idx >= 3 && &lower_id[idx - 3..idx] == "neo";
+        let rest = &detail.id[idx + 5..];
+        let ver = rest.trim_start_matches(|c| c == '-' || c == '_' || c == ' ');
+        if !ver.is_empty() {
+            let ver_token = ver.split(|c| c == '-' || c == '_' || c == ' ').next().unwrap_or(ver);
+            if ver_token.chars().any(|c| c.is_ascii_digit()) {
+                return (
+                    Some(if is_neo { "neoforge".to_string() } else { "forge".to_string() }),
+                    Some(ver_token.to_string()),
+                );
+            }
+        }
+    }
+
+    (None, None)
+}
+
+pub fn resolve_clean_mc_version(version: &VersionDetail) -> String {
+    if let Some(mc) = &version.mc_version {
+        let clean = mc.split('-').next().unwrap_or(mc).trim();
+        if !clean.is_empty() {
+            return clean.to_string();
+        }
+    }
+    if let Some(parent) = &version.inherits_from {
+        let clean = parent.split('-').next().unwrap_or(parent).trim();
+        if !clean.is_empty() && clean.chars().any(|c| c.is_ascii_digit()) {
+            return clean.to_string();
+        }
+    }
+    if let Some(args) = &version.arguments {
+        let raw = raw_argument_strings(args);
+        for i in 0..raw.len() {
+            if raw[i] == "--fml.mcVersion" && i + 1 < raw.len() {
+                let clean = raw[i + 1].split('-').next().unwrap_or(&raw[i + 1]).trim();
+                if !clean.is_empty() {
+                    return clean.to_string();
+                }
+            }
+        }
+    }
+    let id = &version.id;
+    let clean = id.split('-').next().unwrap_or(id).trim();
+    clean.to_string()
 }
 
 /// Whether the version accepts `--width` / `--height` / `--fullscreen`.
@@ -3759,7 +3955,14 @@ fn build_launch_spec(
     } else if let Some(mc_ver) = &version.mc_version {
         game_dir(root, mc_ver).join(format!("{mc_ver}.jar"))
     } else {
-        instance_dir.join(format!("{}.jar", version.id))
+        let clean_mc = resolve_clean_mc_version(version);
+        if instance_dir.join(format!("{clean_mc}.jar")).is_file() {
+            instance_dir.join(format!("{clean_mc}.jar"))
+        } else if game_dir(root, &clean_mc).join(format!("{clean_mc}.jar")).is_file() {
+            game_dir(root, &clean_mc).join(format!("{clean_mc}.jar"))
+        } else {
+            instance_dir.join(format!("{}.jar", version.id))
+        }
     };
     if !client_jar.is_file() {
         return Err("客户端 jar 不存在，请重新安装该版本".to_string());
@@ -4335,6 +4538,161 @@ fn build_launch_spec(
     })
 }
 
+/// Files the launch classpath depends on that are absent or empty. The UI runs
+/// this as a preflight so a copied or partially downloaded version is repaired
+/// before Java starts instead of failing with `NoClassDefFoundError`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionFileReport {
+    pub version_id: String,
+    pub checked: usize,
+    pub missing_count: usize,
+    pub missing: Vec<String>,
+}
+
+pub async fn check_version_files(
+    root: &Path,
+    version_id: &str,
+) -> Result<VersionFileReport, String> {
+    let root = net::absolute_path(root);
+    let root = root.as_path();
+    safe_version_id(version_id)?;
+
+    let instance_dir = version_dir(root, version_id);
+    let json_path = instance_dir.join(format!("{version_id}.json"));
+    let text = tokio::fs::read_to_string(&json_path)
+        .await
+        .map_err(|error| format!("无法读取 {}: {error}", json_path.display()))?;
+    let mut detail = serde_json::from_str::<VersionDetail>(&text)
+        .map_err(|error| format!("本地版本信息损坏: {error}"))?;
+    detail.id = version_id.to_string();
+    let version = resolve_inherits_from(root, detail).await?;
+
+    // Library rules are evaluated with the same features the installer uses
+    // (empty map: no custom resolution, no demo/quick-play flags). Checking
+    // with `has_custom_resolution` forced on would over-report libraries that
+    // the repair pass never downloads, leaving `missingCount > 0` forever and
+    // forcing a "complete files" repair on every launch.
+    let mut features = HashMap::new();
+    features.insert("has_custom_resolution".to_string(), false);
+    features.insert("is_demo_user".to_string(), false);
+    features.insert("has_quick_plays_support".to_string(), false);
+    features.insert("is_quick_play_singleplayer".to_string(), false);
+    features.insert("is_quick_play_multiplayer".to_string(), false);
+    features.insert("is_quick_play_realms".to_string(), false);
+
+    let plan = plan_libraries(root, &version, &features);
+    let mut checked = 0usize;
+    let mut seen = HashSet::new();
+    let mut missing_paths: Vec<PathBuf> = Vec::new();
+    for path in plan.classpath.iter().chain(plan.native_jars.iter()) {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        checked += 1;
+        if !net::looks_complete(path, None) {
+            missing_paths.push(path.clone());
+        }
+    }
+
+    // Same fallback order build_launch_spec uses for the client jar.
+    checked += 1;
+    let client_jar = if instance_dir.join(format!("{version_id}.jar")).is_file() {
+        instance_dir.join(format!("{version_id}.jar"))
+    } else if let Some(parent) = &version.inherits_from {
+        game_dir(root, parent).join(format!("{parent}.jar"))
+    } else if let Some(mc_ver) = &version.mc_version {
+        game_dir(root, mc_ver).join(format!("{mc_ver}.jar"))
+    } else {
+        let clean_mc = resolve_clean_mc_version(&version);
+        if instance_dir.join(format!("{clean_mc}.jar")).is_file() {
+            instance_dir.join(format!("{clean_mc}.jar"))
+        } else if game_dir(root, &clean_mc).join(format!("{clean_mc}.jar")).is_file() {
+            game_dir(root, &clean_mc).join(format!("{clean_mc}.jar"))
+        } else {
+            instance_dir.join(format!("{version_id}.jar"))
+        }
+    };
+    if !net::looks_complete(&client_jar, None) {
+        missing_paths.push(client_jar);
+    }
+
+    let (loader, loader_ver) = detect_loader(&version);
+    if let (Some(l), Some(lv)) = (loader.as_deref(), loader_ver.as_deref()) {
+        let clean_mc = resolve_clean_mc_version(&version);
+        let parts: Vec<u32> = clean_mc
+            .split('.')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect();
+        let is_modern_forge = if l == "neoforge" {
+            true
+        } else if l == "forge" && parts.len() >= 2 && (parts[0] > 1 || (parts[0] == 1 && parts[1] >= 13)) {
+            true
+        } else {
+            false
+        };
+
+        if is_modern_forge {
+            // Only profiles that actually reference a locally-built `:client`
+            // artifact (e.g. installer-generated Forge/NeoForge JSONs) need the
+            // patched client jar. Externally imported profiles (PCL, plain
+            // BootstrapLauncher/FMLLoader setups) launch from the version jar
+            // plus `plan.classpath` and never create this file; requiring it
+            // unconditionally flagged every healthy modded version as
+            // incomplete and re-triggered a full "complete files" download on
+            // each launch. Profiles with a `:client` reference are already
+            // covered by the classpath loop above, so skip duplicates here.
+            let references_client_artifact = version.libraries.iter().any(|lib| {
+                let name = lib.name.to_lowercase();
+                let is_forge_client = (name.starts_with("net.minecraftforge:forge:")
+                    || name.starts_with("net.neoforged:neoforge:"))
+                    && name.contains(":client");
+                let artifact_is_client_jar = lib
+                    .downloads
+                    .as_ref()
+                    .and_then(|d| d.artifact.as_ref())
+                    .and_then(|a| a.path.clone())
+                    .map(|p| p.ends_with("-client.jar"))
+                    .unwrap_or(false);
+                is_forge_client || artifact_is_client_jar
+            });
+            if references_client_artifact {
+                let clean_loader_ver = lv
+                    .strip_prefix(&format!("{clean_mc}-"))
+                    .unwrap_or(lv)
+                    .trim();
+                let client_rel = if l == "neoforge" {
+                    format!("net/neoforged/neoforge/{clean_loader_ver}/neoforge-{clean_loader_ver}-client.jar")
+                } else {
+                    format!("net/minecraftforge/forge/{clean_mc}-{clean_loader_ver}/forge-{clean_mc}-{clean_loader_ver}-client.jar")
+                };
+                let client_path = libraries_dir(root).join(client_rel);
+                // Already counted by the classpath loop when the profile
+                // references this exact path; don't double-count or duplicate.
+                if seen.insert(client_path.clone()) {
+                    checked += 1;
+                    if !net::looks_complete(&client_path, None) {
+                        missing_paths.push(client_path);
+                    }
+                }
+            }
+        }
+    }
+
+    missing_paths.sort();
+    let missing_count = missing_paths.len();
+    Ok(VersionFileReport {
+        version_id: version_id.to_string(),
+        checked,
+        missing_count,
+        missing: missing_paths
+            .iter()
+            .take(10)
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+    })
+}
+
 pub async fn prepare_launch(
     request: &LaunchRequest,
     progress: ProgressFn,
@@ -4469,39 +4827,29 @@ pub async fn prepare_launch(
         }
     }
 
-    let (is_forge_like, loader_kind, loader_ver) = {
-        if let (Some(l), Some(lv)) = (&version.loader, &version.loader_version) {
-            (l == "forge" || l == "neoforge", l.clone(), lv.clone())
-        } else {
-            let mut detected = None;
-            for lib in &version.libraries {
-                if lib.name.starts_with("net.minecraftforge:forge:") {
-                    let parts: Vec<&str> = lib.name.split(':').collect();
-                    if parts.len() >= 3 {
-                        let fver = parts[2];
-                        let loader_ver = fver.split('-').nth(1).unwrap_or(fver).to_string();
-                        detected = Some(("forge".to_string(), loader_ver));
-                        break;
-                    }
-                } else if lib.name.starts_with("net.neoforged:neoforge:") {
-                    let parts: Vec<&str> = lib.name.split(':').collect();
-                    if parts.len() >= 3 {
-                        detected = Some(("neoforge".to_string(), parts[2].to_string()));
-                        break;
-                    }
-                }
-            }
-            if let Some((l, lv)) = detected {
-                (true, l, lv)
+    let (is_modern_forge, loader_kind, loader_ver) = {
+        let (loader, lver) = detect_loader(&version);
+        if let (Some(l), Some(lv)) = (loader, lver) {
+            let clean_mc = resolve_clean_mc_version(&version);
+            let parts: Vec<u32> = clean_mc
+                .split('.')
+                .filter_map(|p| p.parse::<u32>().ok())
+                .collect();
+            let is_mf = if l == "neoforge" {
+                true
+            } else if l == "forge" && parts.len() >= 2 && (parts[0] > 1 || (parts[0] == 1 && parts[1] >= 13)) {
+                true
             } else {
-                (false, String::new(), String::new())
-            }
+                false
+            };
+            (is_mf, l, lv)
+        } else {
+            (false, String::new(), String::new())
         }
     };
 
-    if is_forge_like {
-        let clean_mc = version.mc_version.as_deref().unwrap_or(&version.id);
-        let clean_mc = clean_mc.split('-').next().unwrap_or(clean_mc);
+    if is_modern_forge {
+        let clean_mc = resolve_clean_mc_version(&version);
         progress(InstallProgress::basic(
             request.version_id.clone(),
             "prepare",
@@ -4511,10 +4859,11 @@ pub async fn prepare_launch(
         ));
         crate::loaders::ensure_forge_or_neoforge_client_jar(
             root,
-            clean_mc,
+            &clean_mc,
             &loader_kind,
             &loader_ver,
             Some(&java),
+            Some(&request.version_id),
         )
         .await?;
     }
@@ -5994,6 +6343,121 @@ mod tests {
 
     fn version_from(json: serde_json::Value) -> VersionDetail {
         serde_json::from_value(json).expect("version detail")
+    }
+
+    #[test]
+    fn test_detect_loader_and_resolve_clean_mc() {
+        let text = r#"{
+            "id": "1.18.2-Forge_40.3.12",
+            "type": "release",
+            "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+            "libraries": [
+                {
+                    "name": "net.minecraftforge:fmlloader:1.18.2-40.3.12"
+                }
+            ],
+            "arguments": {
+                "game": [
+                    "--fml.forgeVersion",
+                    "40.3.12",
+                    "--fml.mcVersion",
+                    "1.18.2"
+                ]
+            }
+        }"#;
+        let detail: VersionDetail = serde_json::from_str(text).unwrap();
+        let (loader, lver) = detect_loader(&detail);
+        assert_eq!(loader.as_deref(), Some("forge"));
+        assert_eq!(lver.as_deref(), Some("40.3.12"));
+        let clean_mc = resolve_clean_mc_version(&detail);
+        assert_eq!(clean_mc, "1.18.2");
+    }
+
+    #[tokio::test]
+    async fn test_check_version_files_forge_1_12_does_not_require_client_jar() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_chk_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp_dir.as_path();
+        let version_id = "1.12.2-forge-14.23.5.2864";
+        let inst_dir = root.join("versions").join(version_id);
+        tokio::fs::create_dir_all(&inst_dir).await.unwrap();
+
+        // Create version json
+        let json_content = r#"{
+            "id": "1.12.2-forge-14.23.5.2864",
+            "type": "release",
+            "mainClass": "net.minecraft.launchwrapper.Launch",
+            "libraries": [],
+            "arguments": {
+                "game": [
+                    "--fml.forgeVersion", "14.23.5.2864",
+                    "--fml.mcVersion", "1.12.2"
+                ]
+            }
+        }"#;
+        tokio::fs::write(inst_dir.join(format!("{version_id}.json")), json_content).await.unwrap();
+        // Create client jar
+        tokio::fs::write(inst_dir.join(format!("{version_id}.jar")), b"fake client jar").await.unwrap();
+
+        let report = check_version_files(root, version_id).await.unwrap();
+        assert_eq!(report.missing_count, 0, "Forge 1.12.2 must not report missing forge-...-client.jar");
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_check_version_files_modern_forge_without_client_ref_is_complete() {
+        // Externally imported modern Forge profiles (PCL style: FMLLoader libs,
+        // no `:client` artifact) launch from the version jar directly. The
+        // preflight must not demand `forge-...-client.jar`, otherwise every
+        // healthy modded version reports `missingCount > 0` and forces a
+        // redundant "complete files" re-download on each launch.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_chk_modern_forge_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp_dir.as_path();
+        let version_id = "1.20.1-Forge_47.4.16";
+        let inst_dir = root.join("versions").join(version_id);
+        tokio::fs::create_dir_all(&inst_dir).await.unwrap();
+
+        // No `:client` library entry and no downloadable libraries: the only
+        // loader signal comes from arguments/id, mirroring PCL-imported
+        // profiles whose dependencies live outside this check.
+        let json_content = r#"{
+            "id": "1.20.1-Forge_47.4.16",
+            "type": "release",
+            "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+            "libraries": [],
+            "arguments": {
+                "game": [
+                    "--fml.forgeVersion", "47.4.16",
+                    "--fml.mcVersion", "1.20.1"
+                ]
+            }
+        }"#;
+        tokio::fs::write(inst_dir.join(format!("{version_id}.json")), json_content)
+            .await
+            .unwrap();
+        tokio::fs::write(inst_dir.join(format!("{version_id}.jar")), b"fake client jar")
+            .await
+            .unwrap();
+
+        let report = check_version_files(root, version_id).await.unwrap();
+        assert_eq!(
+            report.missing_count, 0,
+            "Modern Forge without a :client reference must not require forge-...-client.jar"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 
     #[test]

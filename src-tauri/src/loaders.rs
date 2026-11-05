@@ -940,8 +940,13 @@ pub async fn ensure_forge_or_neoforge_client_jar(
     loader_type: &str,
     loader_version: &str,
     java_override: Option<&Path>,
+    target_instance_id: Option<&str>,
 ) -> Result<(), String> {
     let clean_mc = mc_version.split('-').next().unwrap_or(mc_version).trim();
+    let clean_loader_ver = loader_version
+        .strip_prefix(&format!("{clean_mc}-"))
+        .unwrap_or(loader_version)
+        .trim();
     let parts: Vec<u32> = clean_mc
         .split('.')
         .filter_map(|p| p.parse::<u32>().ok())
@@ -953,10 +958,10 @@ pub async fn ensure_forge_or_neoforge_client_jar(
 
     let libraries_dir = root.join("libraries");
     let client_rel_path = if loader_type == "neoforge" {
-        format!("net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-client.jar")
+        format!("net/neoforged/neoforge/{clean_loader_ver}/neoforge-{clean_loader_ver}-client.jar")
     } else {
         format!(
-            "net/minecraftforge/forge/{clean_mc}-{loader_version}/forge-{clean_mc}-{loader_version}-client.jar"
+            "net/minecraftforge/forge/{clean_mc}-{clean_loader_ver}/forge-{clean_mc}-{clean_loader_ver}-client.jar"
         )
     };
     let client_jar_path = libraries_dir.join(&client_rel_path);
@@ -980,37 +985,96 @@ pub async fn ensure_forge_or_neoforge_client_jar(
         let _ = tokio::fs::write(&profiles_json, b"{\"profiles\":{}}").await;
     }
 
-    // Ensure versions/<clean_mc>/<clean_mc>.jar and .json exist
+    // Record whether prerequisite directories existed before running the installer
     let vanilla_ver_dir = root.join("versions").join(clean_mc);
+    let vanilla_dir_existed_before = vanilla_ver_dir.exists();
+
+    let default_target_id = if loader_type == "neoforge" {
+        format!("neoforge-{clean_loader_ver}")
+    } else {
+        format!("{clean_mc}-forge-{clean_loader_ver}")
+    };
+    let default_target_dir = root.join("versions").join(&default_target_id);
+    let default_target_dir_existed_before = default_target_dir.exists();
+
+    // Ensure versions/<clean_mc>/<clean_mc>.jar and .json exist
     let vanilla_jar = vanilla_ver_dir.join(format!("{clean_mc}.jar"));
     let vanilla_json = vanilla_ver_dir.join(format!("{clean_mc}.json"));
     let _ = tokio::fs::create_dir_all(&vanilla_ver_dir).await;
 
     if !vanilla_jar.is_file() {
-        // Search versions/ for any matching jar
-        let versions_dir = root.join("versions");
+        // 1. Check if the target imported version itself has a client jar
         let mut found_jar = None;
-        if let Ok(mut entries) = tokio::fs::read_dir(&versions_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let p = entry.path();
-                if p.is_dir() {
-                    let candidate = p.join(format!(
-                        "{}.jar",
-                        p.file_name().unwrap_or_default().to_string_lossy()
-                    ));
-                    if candidate.is_file() {
-                        if let Ok(m) = candidate.metadata() {
-                            if m.len() > 10 * 1024 * 1024 {
-                                found_jar = Some(candidate);
-                                break;
+        if let Some(target_id) = target_instance_id {
+            let target_jar = root
+                .join("versions")
+                .join(target_id)
+                .join(format!("{target_id}.jar"));
+            if target_jar.is_file() {
+                if let Ok(m) = target_jar.metadata() {
+                    if m.len() > 10 * 1024 * 1024 {
+                        found_jar = Some(target_jar);
+                    }
+                }
+            }
+        }
+
+        // 2. Check meta cache
+        if found_jar.is_none() {
+            let meta_jar = root
+                .join("meta")
+                .join("versions")
+                .join(clean_mc)
+                .join(format!("{clean_mc}.jar"));
+            if meta_jar.is_file() {
+                if let Ok(m) = meta_jar.metadata() {
+                    if m.len() > 10 * 1024 * 1024 {
+                        found_jar = Some(meta_jar);
+                    }
+                }
+            }
+        }
+
+        // 3. Search versions/ for any matching jar
+        if found_jar.is_none() {
+            let versions_dir = root.join("versions");
+            if let Ok(mut entries) = tokio::fs::read_dir(&versions_dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let folder_name = p.file_name().unwrap_or_default().to_string_lossy();
+                        let candidate = p.join(format!("{folder_name}.jar"));
+                        if candidate.is_file() {
+                            if let Ok(m) = candidate.metadata() {
+                                if m.len() > 10 * 1024 * 1024 {
+                                    if folder_name.starts_with(clean_mc) {
+                                        found_jar = Some(candidate);
+                                        break;
+                                    } else if found_jar.is_none() {
+                                        found_jar = Some(candidate);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
         if let Some(src) = found_jar {
             let _ = tokio::fs::copy(&src, &vanilla_jar).await;
+        } else {
+            let vanilla_client_url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client");
+            let _ = net::download_file_multithreaded(
+                &vanilla_client_url,
+                &vanilla_jar,
+                None,
+                None,
+                net::download_threads(),
+                None,
+                None,
+            )
+            .await;
         }
     }
 
@@ -1028,13 +1092,25 @@ pub async fn ensure_forge_or_neoforge_client_jar(
             let _ = tokio::fs::copy(&flat_meta_json, &vanilla_json).await;
         } else if nested_meta_json.is_file() {
             let _ = tokio::fs::copy(&nested_meta_json, &vanilla_json).await;
+        } else {
+            let vanilla_json_url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/json");
+            let _ = net::download_file_multithreaded(
+                &vanilla_json_url,
+                &vanilla_json,
+                None,
+                None,
+                net::download_threads(),
+                None,
+                None,
+            )
+            .await;
         }
     }
 
     // Ensure installer jar exists
     let installers_dir = root.join("meta").join("installers");
     let _ = tokio::fs::create_dir_all(&installers_dir).await;
-    let (installer_urls, _, file_name) = get_installer_info(clean_mc, loader_type, loader_version);
+    let (installer_urls, _, file_name) = get_installer_info(clean_mc, loader_type, clean_loader_ver);
     let installer_path = installers_dir.join(&file_name);
 
     if !net::looks_complete(&installer_path, None) {
@@ -1065,11 +1141,6 @@ pub async fn ensure_forge_or_neoforge_client_jar(
     }
 
     // Backup any existing full version JSON at the Forge/NeoForge default version ID so --installClient doesn't overwrite a merged profile with a thin stub
-    let default_target_id = if loader_type == "neoforge" {
-        format!("neoforge-{loader_version}")
-    } else {
-        format!("{clean_mc}-forge-{loader_version}")
-    };
     let default_target_json = root
         .join("versions")
         .join(&default_target_id)
@@ -1115,6 +1186,53 @@ pub async fn ensure_forge_or_neoforge_client_jar(
     if let Some(prev_bytes) = backup_target_json {
         if prev_bytes.len() > 20_000 {
             let _ = tokio::fs::write(&default_target_json, prev_bytes).await;
+        }
+    }
+
+    // Clean up unwanted duplicate directories created as side effects by the Forge / NeoForge installer
+    if let Some(target_id) = target_instance_id {
+        // 1. Forge installer unconditionally creates versions/<default_target_id> (<clean_mc>-forge-<loader_ver>).
+        // If the target version we are operating on has a different name (e.g. an externally imported version "1.18.2-Forge_40.3.12")
+        // and default_target_dir did not exist before running the installer, remove the duplicate stub directory.
+        if !default_target_dir_existed_before && default_target_dir.exists() {
+            if !target_id.eq_ignore_ascii_case(&default_target_id) {
+                let _ = tokio::fs::remove_dir_all(&default_target_dir).await;
+            }
+        }
+
+        // 2. Forge installer requires versions/<clean_mc> as a base vanilla dependency.
+        // If versions/<clean_mc> did not exist before this operation and target is not this vanilla version,
+        // remove the temporary vanilla directory so it doesn't show up as an unwanted extra version.
+        if !vanilla_dir_existed_before && vanilla_ver_dir.exists() {
+            if !target_id.eq_ignore_ascii_case(clean_mc) {
+                let _ = tokio::fs::remove_dir_all(&vanilla_ver_dir).await;
+            }
+        }
+
+        // 3. Clean up the side-effect profile from launcher_profiles.json
+        if !target_id.eq_ignore_ascii_case(&default_target_id) && profiles_json.exists() {
+            if let Ok(text) = tokio::fs::read_to_string(&profiles_json).await {
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(profiles) = json.get_mut("profiles").and_then(|p| p.as_object_mut()) {
+                        let to_remove: Vec<String> = profiles
+                            .iter()
+                            .filter(|(_, v)| {
+                                v.get("lastVersionId")
+                                    .and_then(|id| id.as_str())
+                                    .map(|id| id.eq_ignore_ascii_case(&default_target_id))
+                                    .unwrap_or(false)
+                            })
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        for key in to_remove {
+                            profiles.remove(&key);
+                        }
+                    }
+                    if let Ok(new_text) = serde_json::to_string_pretty(&json) {
+                        let _ = tokio::fs::write(&profiles_json, new_text).await;
+                    }
+                }
+            }
         }
     }
 
@@ -1345,5 +1463,51 @@ mod tests {
             "Fabric loaders for 1.20.1 should not be empty"
         );
         assert!(items.iter().any(|i| i.stable));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_forge_client_jar_skips_when_valid() {
+        let temp_dir = std::env::temp_dir().join(format!("test_forge_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = temp_dir.as_path();
+        let target_instance = "1.18.2-Forge_40.3.12";
+
+        // Create target instance dir and json
+        let inst_dir = root.join("versions").join(target_instance);
+        tokio::fs::create_dir_all(&inst_dir).await.unwrap();
+        tokio::fs::write(inst_dir.join(format!("{target_instance}.json")), b"{}").await.unwrap();
+
+        // Create libraries forge client jar with valid zip containing net/minecraft/client/Minecraft.class
+        let forge_lib_dir = root.join("libraries").join("net/minecraftforge/forge/1.18.2-40.3.12");
+        tokio::fs::create_dir_all(&forge_lib_dir).await.unwrap();
+        let client_jar_path = forge_lib_dir.join("forge-1.18.2-40.3.12-client.jar");
+
+        {
+            let file = std::fs::File::create(&client_jar_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("net/minecraft/client/Minecraft.class", options).unwrap();
+            use std::io::Write;
+            let padding = vec![0u8; 120 * 1024];
+            zip.write_all(&padding).unwrap();
+            zip.finish().unwrap();
+        }
+
+        // Run ensure_forge_or_neoforge_client_jar
+        let res = ensure_forge_or_neoforge_client_jar(
+            root,
+            "1.18.2",
+            "forge",
+            "40.3.12",
+            None,
+            Some(target_instance),
+        ).await;
+
+        assert!(res.is_ok());
+        // Verify no duplicate 1.18.2-forge-40.3.12 or 1.18.2 was created in versions/
+        assert!(!root.join("versions").join("1.18.2-forge-40.3.12").exists());
+        assert!(!root.join("versions").join("1.18.2").exists());
+        assert!(root.join("versions").join(target_instance).exists());
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }

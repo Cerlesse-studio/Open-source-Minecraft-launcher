@@ -461,12 +461,34 @@ export function DownloadsView({
   const [cleanResidualsOnClear, setCleanResidualsOnClear] = useState(true);
 
   const activeProgress = installProgress ?? lastProgress;
-  const isDownloading = Boolean(installingVersion && installProgress);
-  const speedBps = isDownloading ? (installProgress?.speedBps ?? 0) : 0;
-  const activeThreads = isDownloading ? (installProgress?.activeThreads ?? 0) : 0;
-  const downloadedBytes = activeProgress?.downloadedBytes ?? 0;
-  const totalBytes = activeProgress?.totalBytes ?? 0;
-  const activeTasks = isDownloading ? (installProgress?.activeTasks ?? []) : [];
+  const versionDownloading = Boolean(installingVersion && installProgress);
+  // 后台任务（EasyTier 内核、内容包等）不走版本安装流程，但同样是下载：
+  // 顶部实时速率/线程/流量需要把它们聚合进来，否则这些任务下载时顶部
+  // 一直显示 0 B/s、0 活跃线程。
+  const runningBgTasks = backgroundTasks.filter((task) => task.status === "running");
+  const hasRunningBg = runningBgTasks.length > 0;
+  const bgSpeedBps = runningBgTasks.reduce((sum, task) => sum + (task.speedBps || 0), 0);
+  const bgActiveThreads = runningBgTasks.reduce((sum, task) => sum + (task.threads || 0), 0);
+  const bgDownloadedBytes = runningBgTasks.reduce((sum, task) => sum + (task.doneBytes || 0), 0);
+  const bgTotalBytes = runningBgTasks.reduce((sum, task) => sum + (task.totalBytes || 0), 0);
+  const versionSpeedBps = versionDownloading ? (installProgress?.speedBps ?? 0) : 0;
+  const versionActiveThreads = versionDownloading ? (installProgress?.activeThreads ?? 0) : 0;
+  const versionDownloadedBytes = installProgress?.downloadedBytes ?? 0;
+  const versionTotalBytes = installProgress?.totalBytes ?? 0;
+  const isDownloading = versionDownloading || hasRunningBg;
+  const speedBps = versionSpeedBps + bgSpeedBps;
+  const activeThreads = versionActiveThreads + bgActiveThreads;
+  const downloadedBytes = versionDownloading
+    ? versionDownloadedBytes
+    : hasRunningBg
+      ? bgDownloadedBytes
+      : (activeProgress?.downloadedBytes ?? 0);
+  const totalBytes = versionDownloading
+    ? versionTotalBytes
+    : hasRunningBg
+      ? bgTotalBytes
+      : (activeProgress?.totalBytes ?? 0);
+  const activeTasks = versionDownloading ? (installProgress?.activeTasks ?? []) : [];
 
   const stages = useMemo<StageProgress[]>(() => {
     if (activeProgress?.stages && activeProgress.stages.length > 0) {
@@ -476,21 +498,36 @@ export function DownloadsView({
   }, [activeProgress]);
 
   const overallPercent = useMemo(() => {
+    // 后台任务进行时按后台任务的字节数计算，不依赖版本安装的进度对象。
+    if (!versionDownloading && hasRunningBg) {
+      if (bgTotalBytes > 0) {
+        return Math.max(0, Math.min(100, Math.round((bgDownloadedBytes / bgTotalBytes) * 100)));
+      }
+      return 0;
+    }
     if (!activeProgress) return 0;
     if (activeProgress.stage === "done") return 100;
     if (totalBytes > 0) {
       return Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)));
     }
     return progressPercent(activeProgress.done, activeProgress.total) ?? 0;
-  }, [activeProgress, downloadedBytes, totalBytes]);
+  }, [
+    activeProgress,
+    downloadedBytes,
+    totalBytes,
+    versionDownloading,
+    hasRunningBg,
+    bgDownloadedBytes,
+    bgTotalBytes,
+  ]);
 
   // Tab Counts
-  const runningBackground = backgroundTasks.filter((task) => task.status === "running");
+  const runningBackground = runningBgTasks;
   const pausedBackground = backgroundTasks.filter((task) => task.status === "paused");
   const finishedBackground = backgroundTasks.filter(
     (task) => task.status === "done" || task.status === "error",
   );
-  const activeCount = (isDownloading ? 1 : 0) + runningBackground.length;
+  const activeCount = (versionDownloading ? 1 : 0) + runningBackground.length;
   const queuedCount = installQueue.length;
   const pausedCount =
     history.filter((h) => h.status === "paused").length + pausedBackground.length;
@@ -546,7 +583,7 @@ export function DownloadsView({
   }, [history, activeTab, searchQuery]);
 
   const showActiveRow =
-    isDownloading &&
+    versionDownloading &&
     (activeTab === "all" || activeTab === "active") &&
     (!searchQuery.trim() ||
       (installingVersion && installingVersion.toLowerCase().includes(searchQuery.trim().toLowerCase())));
@@ -979,11 +1016,11 @@ export function DownloadsView({
                 <div className="flex items-center gap-3">
                   <div className="text-right">
                     <p className="font-mono text-[14px] font-semibold text-foreground">
-                      {formatSpeed(speedBps)}
+                      {formatSpeed(versionSpeedBps)}
                     </p>
                     <p className="font-mono text-[10.5px] text-muted-foreground">
-                      {formatBytes(downloadedBytes)} /{" "}
-                      {totalBytes > 0 ? formatBytes(totalBytes) : "计算中"}
+                      {formatBytes(versionDownloadedBytes)} /{" "}
+                      {versionTotalBytes > 0 ? formatBytes(versionTotalBytes) : "计算中"}
                     </p>
                   </div>
 
@@ -1042,7 +1079,7 @@ export function DownloadsView({
                 />
                 <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
                   <span>
-                    并发池: {activeThreads} / {downloadThreads} 线程 · Range 多分片并行拉取
+                    并发池: {versionActiveThreads} / {downloadThreads} 线程 · Range 多分片并行拉取
                   </span>
                   <span className="font-semibold text-primary">{overallPercent}%</span>
                 </div>
@@ -1065,7 +1102,7 @@ export function DownloadsView({
                           : "text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      实时线程工作池 ({activeTasks.length > 0 ? activeTasks.length : activeThreads})
+                      实时线程工作池 ({activeTasks.length > 0 ? activeTasks.length : versionActiveThreads})
                     </button>
                     <button
                       type="button"
@@ -1201,7 +1238,7 @@ export function DownloadsView({
               )}
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
                   <span
                     className={cn(
                       "flex size-9 shrink-0 items-center justify-center rounded-lg border",
@@ -1223,7 +1260,7 @@ export function DownloadsView({
                     )}
                   </span>
 
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-[13.5px] font-medium text-foreground">
                         {task.title}
@@ -1292,7 +1329,7 @@ export function DownloadsView({
                     </p>
 
                     {percent !== null ? (
-                      <div className="mt-2 w-full max-w-sm space-y-1">
+                      <div className="mt-2 w-full space-y-1">
                         <Progress
                           value={percent}
                           className={cn(
@@ -1534,7 +1571,7 @@ export function DownloadsView({
                     </div>
 
                     {isPaused && item.totalBytes > 0 ? (
-                      <div className="mt-2 w-full max-w-sm space-y-1">
+                      <div className="mt-2 w-full space-y-1">
                         <Progress
                           value={Math.min(100, Math.round(((item.downloadedBytes || 0) / item.totalBytes) * 100))}
                           className="h-1 rounded-sm bg-amber-500/15 [&_[data-slot=progress-indicator]]:bg-amber-400"
