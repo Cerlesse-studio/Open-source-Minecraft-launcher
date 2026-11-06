@@ -1,4 +1,8 @@
-//! Microsoft (正版) account sign-in.
+//! Microsoft (正版) account sign-in and storage.
+//!
+//! LittleSkin is a fully separate login method (see [`crate::littleskin`]):
+//! it keeps its own `littleskin_account.json` next to the Microsoft
+//! `account.json`, so signing in with one never signs the other out.
 //!
 //! The launcher signs in once and then uses that account for both editions:
 //! the Java session token comes from `login_with_xbox`, while Bedrock ownership
@@ -38,6 +42,9 @@ const PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 const ENTITLEMENTS_URL: &str = "https://api.minecraftservices.com/entitlements/license";
 
 const ACCOUNT_FILE: &str = "account.json";
+/// LittleSkin's own account slot: a separate login method must never share
+/// Microsoft's file, otherwise the two sign-ins would overwrite each other.
+const LITTLESKIN_ACCOUNT_FILE: &str = "littleskin_account.json";
 /// Refresh a little before expiry so a launch never fails on a dead session.
 const SESSION_SLACK_SECS: u64 = 300;
 
@@ -91,6 +98,11 @@ pub fn account_path(data_dir: &Path) -> PathBuf {
     data_dir.join(ACCOUNT_FILE)
 }
 
+/// LittleSkin's own slot, next to the Microsoft one.
+pub fn littleskin_account_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(LITTLESKIN_ACCOUNT_FILE)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MsProfile {
@@ -124,21 +136,47 @@ pub struct MinecraftToken {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
+    /// Which provider signed this account in: `microsoft` or `littleskin`.
+    /// Older account files predate the field and are all Microsoft accounts.
+    #[serde(default = "default_provider")]
+    pub provider: String,
     pub client_id: String,
-    /// Microsoft refresh token — the only long-lived credential we keep.
+    /// Long-lived credential: the Microsoft refresh token, or the LittleSkin
+    /// OAuth refresh token (`offline_access`).
     pub refresh_token: String,
-    /// Microsoft access token expiry (unix seconds).
+    /// Access token expiry (unix seconds).
     pub expires_at: u64,
+    /// OAuth access token for external (Yggdrasil) providers. Kept because a
+    /// new Minecraft session is minted from it without another browser login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_access_token: Option<String>,
+    /// Yggdrasil API root of the external login service, e.g.
+    /// `https://littleskin.cn/api/yggdrasil`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yggdrasil_api: Option<String>,
     pub minecraft: MinecraftToken,
     pub profile: MsProfile,
     pub entitlements: Entitlements,
     pub saved_at: u64,
 }
 
+fn default_provider() -> String {
+    "microsoft".to_string()
+}
+
+impl AccountRecord {
+    /// External login (LittleSkin and other Yggdrasil services) instead of Xbox.
+    pub fn is_external(&self) -> bool {
+        self.provider == "littleskin"
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
     pub signed_in: bool,
+    /// `microsoft` or `littleskin`; the UI labels the account from this.
+    pub provider: String,
     pub client_id: String,
     pub uuid: String,
     pub name: String,
@@ -156,6 +194,7 @@ impl AccountRecord {
     pub fn view(&self) -> AccountView {
         AccountView {
             signed_in: true,
+            provider: self.provider.clone(),
             client_id: self.client_id.clone(),
             uuid: self.profile.id.clone(),
             name: self.profile.name.clone(),
@@ -591,9 +630,12 @@ pub async fn authorize_chain(ms_access_token: &str) -> Result<AccountRecord, Str
     let entitlements = fetch_entitlements(&access_token).await?;
 
     Ok(AccountRecord {
+        provider: "microsoft".to_string(),
         client_id: DEFAULT_CLIENT_ID.to_string(),
         refresh_token: String::new(),
         expires_at: now_secs(),
+        oauth_access_token: None,
+        yggdrasil_api: None,
         minecraft: MinecraftToken {
             access_token,
             expires_at: session_expires_at,
@@ -765,15 +807,66 @@ pub fn load_account(data_dir: &Path) -> Option<AccountRecord> {
     serde_json::from_str(&text).ok()
 }
 
-pub fn store_account(data_dir: &Path, record: &AccountRecord) -> Result<(), String> {
-    let path = account_path(data_dir);
+fn write_record(path: &Path, record: &AccountRecord) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建账号目录: {error}"))?;
     }
     let json =
         serde_json::to_string_pretty(record).map_err(|error| format!("序列化账号失败: {error}"))?;
-    std::fs::write(&path, json).map_err(|error| format!("无法保存账号: {error}"))?;
-    restrict_permissions(&path);
+    std::fs::write(path, json).map_err(|error| format!("无法保存账号: {error}"))?;
+    restrict_permissions(path);
+    Ok(())
+}
+
+pub fn store_account(data_dir: &Path, record: &AccountRecord) -> Result<(), String> {
+    // Never let a Microsoft sign-in destroy a LittleSkin sign-in that still
+    // lives in the legacy shared slot: move it to its own file first.
+    migrate_legacy_external_account(data_dir);
+    write_record(&account_path(data_dir), record)
+}
+
+/// One-time move from the old layout where both providers shared one file:
+/// a `provider = "littleskin"` record in `account.json` belongs to LittleSkin's
+/// own slot, so relocate it instead of leaving it where Microsoft reads.
+fn migrate_legacy_external_account(data_dir: &Path) {
+    if littleskin_account_path(data_dir).exists() {
+        return;
+    }
+    let Some(record) = load_account(data_dir) else {
+        return;
+    };
+    if !record.is_external() {
+        return;
+    }
+    if write_record(&littleskin_account_path(data_dir), &record).is_ok() {
+        let _ = clear_account(data_dir);
+    }
+}
+
+pub fn load_littleskin_account(data_dir: &Path) -> Option<AccountRecord> {
+    migrate_legacy_external_account(data_dir);
+    let path = littleskin_account_path(data_dir);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let record: AccountRecord = serde_json::from_str(&text).ok()?;
+    // The slot is LittleSkin's; a Microsoft record here means a corrupt or
+    // hand-edited file, not a sign-in.
+    if record.is_external() {
+        Some(record)
+    } else {
+        None
+    }
+}
+
+pub fn store_littleskin_account(data_dir: &Path, record: &AccountRecord) -> Result<(), String> {
+    migrate_legacy_external_account(data_dir);
+    write_record(&littleskin_account_path(data_dir), record)
+}
+
+pub fn clear_littleskin_account(data_dir: &Path) -> Result<(), String> {
+    let path = littleskin_account_path(data_dir);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|error| format!("无法删除账号文件: {error}"))?;
+    }
     Ok(())
 }
 
@@ -805,6 +898,11 @@ fn restrict_permissions(path: &Path) {
 /// command reads it straight from this store.
 pub async fn session_for_launch(data_dir: &Path) -> Option<AccountRecord> {
     let record = load_account(data_dir)?;
+    // Microsoft's slot never launches a LittleSkin session (and vice versa):
+    // the two login methods are independent from storage up to the game.
+    if record.is_external() {
+        return None;
+    }
     if record.session_alive() {
         return Some(record);
     }
@@ -817,11 +915,31 @@ pub async fn session_for_launch(data_dir: &Path) -> Option<AccountRecord> {
     }
 }
 
-/// The stored session, renewed when the Java token aged out. The view keeps
-/// showing the identity even when renewal fails, so the user can see who is
-/// signed in and retry from the UI instead of being silently signed out.
+/// LittleSkin's own launch session, refreshed with its own provider.
+pub async fn littleskin_session_for_launch(data_dir: &Path) -> Option<AccountRecord> {
+    let record = load_littleskin_account(data_dir)?;
+    if record.session_alive() {
+        return Some(record);
+    }
+    match crate::littleskin::refresh_account(&record).await {
+        Ok(next) => {
+            let _ = store_littleskin_account(data_dir, &next);
+            Some(next)
+        }
+        Err(_) => None,
+    }
+}
+
+/// The stored Microsoft session, renewed when the Java token aged out. The
+/// view keeps showing the identity even when renewal fails, so the user can
+/// see who is signed in and retry from the UI instead of being silently
+/// signed out. A LittleSkin record is never reported here: LittleSkin is a
+/// separate login method with its own view.
 pub async fn account_view(data_dir: &Path, custom_client_id: Option<&str>) -> Option<AccountView> {
     let record = load_account(data_dir)?;
+    if record.is_external() {
+        return None;
+    }
     let wanted = client_id_of(custom_client_id);
     if record.session_alive() {
         let mut view = record.view();
@@ -842,15 +960,38 @@ pub async fn account_view(data_dir: &Path, custom_client_id: Option<&str>) -> Op
     }
 }
 
+/// LittleSkin's own account view, renewed with its own provider. `None` means
+/// no LittleSkin sign-in is stored — independent of the Microsoft account.
+pub async fn littleskin_account_view(data_dir: &Path) -> Option<crate::littleskin::LittleSkinView> {
+    let record = load_littleskin_account(data_dir)?;
+    if record.session_alive() {
+        return Some(crate::littleskin::view(&record));
+    }
+    match crate::littleskin::refresh_account(&record).await {
+        Ok(next) => {
+            let _ = store_littleskin_account(data_dir, &next);
+            Some(crate::littleskin::view(&next))
+        }
+        Err(error) => {
+            let mut view = crate::littleskin::view(&record);
+            view.session_error = Some(error);
+            Some(view)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn sample_record() -> AccountRecord {
         AccountRecord {
+            provider: "microsoft".to_string(),
             client_id: DEFAULT_CLIENT_ID.to_string(),
             refresh_token: "refresh-token".to_string(),
             expires_at: now_secs() + 3600,
+            oauth_access_token: None,
+            yggdrasil_api: None,
             minecraft: MinecraftToken {
                 access_token: "mc-token".to_string(),
                 expires_at: now_secs() + 86_400,
@@ -997,10 +1138,74 @@ mod tests {
         let view = loaded.view();
         assert!(view.signed_in);
         assert_eq!(view.uuid, record.profile.id);
+        assert_eq!(view.provider, "microsoft");
 
         clear_account(&dir).unwrap();
         assert!(load_account(&dir).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two login methods keep separate files: signing one in, reading it
+    /// or signing it out must never touch the other slot.
+    #[test]
+    fn microsoft_and_littleskin_accounts_live_in_separate_slots() {
+        let dir = std::env::temp_dir().join(format!("cobble-account-{}", uuid_v4()));
+        let mut ms = sample_record();
+        let mut ls = sample_record();
+        ls.provider = "littleskin".to_string();
+        ls.profile.name = "LittleSteve".to_string();
+
+        store_account(&dir, &ms).unwrap();
+        store_littleskin_account(&dir, &ls).unwrap();
+        assert_eq!(load_account(&dir).unwrap().profile.name, "Steve");
+        assert_eq!(load_littleskin_account(&dir).unwrap().profile.name, "LittleSteve");
+
+        // Signing out of Microsoft leaves the LittleSkin sign-in alone.
+        clear_account(&dir).unwrap();
+        assert!(load_account(&dir).is_none());
+        assert!(load_littleskin_account(&dir).is_some());
+
+        // And the other way round.
+        ms.profile.name = "SteveAgain".to_string();
+        store_account(&dir, &ms).unwrap();
+        clear_littleskin_account(&dir).unwrap();
+        assert!(load_littleskin_account(&dir).is_none());
+        assert_eq!(load_account(&dir).unwrap().profile.name, "SteveAgain");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Old files predate the split: a lone `provider = "littleskin"` record
+    /// in `account.json` moves to its own slot instead of shadowing Microsoft.
+    #[test]
+    fn legacy_shared_slot_migrates_the_external_record() {
+        let dir = std::env::temp_dir().join(format!("cobble-account-{}", uuid_v4()));
+        let mut ls = sample_record();
+        ls.provider = "littleskin".to_string();
+        write_record(&account_path(&dir), &ls).unwrap();
+
+        let moved = load_littleskin_account(&dir).expect("migrated record loads");
+        assert_eq!(moved.profile.name, "Steve");
+        assert!(!account_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Account files written before LittleSkin support must still load: they
+    /// carry no `provider` and are Microsoft accounts by definition.
+    #[test]
+    fn legacy_account_files_default_to_the_microsoft_provider() {
+        let json = serde_json::json!({
+            "client_id": DEFAULT_CLIENT_ID,
+            "refresh_token": "r",
+            "expires_at": 0,
+            "minecraft": {"access_token": "t", "expires_at": 1, "xuid": "", "uhs": ""},
+            "profile": {"id": "uuid", "name": "Steve", "skin_url": null},
+            "entitlements": {"java": true, "bedrock": false, "gamePass": false, "items": []},
+            "saved_at": 0
+        });
+        let record: AccountRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(record.provider, "microsoft");
+        assert!(!record.is_external());
+        assert!(record.oauth_access_token.is_none());
     }
 
     #[test]

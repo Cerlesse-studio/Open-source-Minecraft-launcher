@@ -90,6 +90,8 @@ async fn main() -> Result<(), String> {
         language: None,
         auth: None,
         offline: false,
+        authlib_injector: None,
+        auth_provider: None,
     };
 
     println!("Preparing Java and launch arguments…");

@@ -59,6 +59,7 @@ export const defaultSettings: LauncherSettings = {
   customSkinPath: "",
   mojangSkinName: "",
   msClientId: "",
+  littleskinClientId: "",
   bedrockApiSource: "endstone",
   versionIsolation: "all",
   windowTitle: "",
@@ -136,6 +137,8 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.mojangSkinName === "string" ? parsed.mojangSkinName : "",
       msClientId:
         typeof parsed.msClientId === "string" ? parsed.msClientId.trim() : "",
+      littleskinClientId:
+        typeof parsed.littleskinClientId === "string" ? parsed.littleskinClientId.trim() : "",
       bedrockApiSource:
         parsed.bedrockApiSource === "mcserverjars" || parsed.bedrockApiSource === "azure_mirror"
           ? parsed.bedrockApiSource

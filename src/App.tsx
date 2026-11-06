@@ -145,6 +145,7 @@ import {
   deleteVersion,
   detectJava,
   getInstalledVersions,
+  getLittleSkinAccount,
   getMsAccount,
   getMultiplayerInstallState,
   getSystemInfo,
@@ -173,6 +174,7 @@ import {
   type VersionLaunchSettings,
 } from "./lib/versionSettings";
 import type {
+  AccountKind,
   BackgroundDownloadTask,
   ContentDownloadProgress,
   BedrockVersionItem,
@@ -184,6 +186,7 @@ import type {
   JavaInstall,
   LauncherSettings,
   LauncherVisibility,
+  LittleSkinAccount,
   LoaderSelection,
   MsAccount,
   MultiplayerInstallState,
@@ -245,18 +248,38 @@ export default function App() {
   const [javaInstalls, setJavaInstalls] = useState<JavaInstall[]>([]);
   const [javaDetecting, setJavaDetecting] = useState(true);
   const [selectedVersion, setSelectedVersion] = useState("");
-  const [account, setAccount] = useState<MsAccount | null>(null);
+  const [msAccount, setMsAccount] = useState<MsAccount | null>(null);
+  const [lsAccount, setLsAccount] = useState<LittleSkinAccount | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
-  // Playing offline no longer requires signing out: the Microsoft sign-in is
-  // kept and the player can switch between the two from the login menu.
-  const [offlineMode, setOfflineMode] = useState(
-    () => localStorage.getItem("osml.offlineMode") === "1",
-  );
+  // Microsoft and LittleSkin are independent sign-ins; the player picks which
+  // one launches use (or the offline account) from the login menu. Either
+  // sign-in is kept while the other one is used.
+  const [accountKind, setAccountKind] = useState<"offline" | AccountKind>(() => {
+    const saved = localStorage.getItem("osml.accountKind");
+    // Migrate the old offline toggle: `1` meant "play offline", `0`/missing
+    // meant "use the Microsoft sign-in".
+    if (saved === "microsoft" || saved === "littleskin" || saved === "offline") {
+      return saved;
+    }
+    return localStorage.getItem("osml.offlineMode") === "1" ? "offline" : "microsoft";
+  });
   useEffect(() => {
-    localStorage.setItem("osml.offlineMode", offlineMode ? "1" : "0");
-  }, [offlineMode]);
+    localStorage.setItem("osml.accountKind", accountKind);
+    localStorage.setItem("osml.offlineMode", accountKind === "offline" ? "1" : "0");
+  }, [accountKind]);
   /** The account launches actually use; `null` means the offline account. */
-  const activeAccount = account?.signedIn && !offlineMode ? account : null;
+  const activeAccount =
+    accountKind === "microsoft"
+      ? msAccount?.signedIn
+        ? msAccount
+        : null
+      : accountKind === "littleskin"
+        ? lsAccount?.signedIn
+          ? lsAccount
+          : null
+        : null;
+  /** Only a Microsoft sign-in can drive the Store Bedrock client. */
+  const bedrockSignedIn = accountKind === "microsoft" && Boolean(msAccount?.signedIn);
   const [installTarget, setInstallTarget] = useState<VersionSummary | null>(null);
   const [view, setView] = useState<ViewId>("home");
   const [settingsTab, setSettingsTab] = useState<
@@ -415,25 +438,35 @@ export default function App() {
     [],
   );
 
-  // The account decides which Bedrock core a launch may use, so the preference
-  // is pushed once here instead of at every launch button.
+  // The Microsoft sign-in decides which Bedrock core a launch may use, so the
+  // preference is pushed once here instead of at every launch button.
+  // LittleSkin never counts: it only works with Java + authlib-injector.
   useEffect(() => {
-    setBedrockAccountMode(Boolean(activeAccount));
-  }, [activeAccount]);
+    setBedrockAccountMode(bedrockSignedIn);
+  }, [bedrockSignedIn]);
 
-  // Pick up an already signed-in account on startup; the backend renews the
+  // Pick up already signed-in accounts on startup; the backend renews each
   // session when it aged out (and reports why when it could not).
   useEffect(() => {
     let alive = true;
     getMsAccount(settings.msClientId || undefined)
       .then((value) => {
         if (!alive) return;
-        setAccount(value);
+        setMsAccount(value);
         if (value?.sessionError) {
           pushToast("info", `${value.name} 的登录状态需要刷新`, value.sessionError);
         }
       })
       .catch((error) => console.warn("无法读取 Microsoft 账户", error));
+    getLittleSkinAccount()
+      .then((value) => {
+        if (!alive) return;
+        setLsAccount(value);
+        if (value?.sessionError) {
+          pushToast("info", `${value.name} 的登录状态需要刷新`, value.sessionError);
+        }
+      })
+      .catch((error) => console.warn("无法读取 LittleSkin 账户", error));
     return () => {
       alive = false;
     };
@@ -1462,12 +1495,15 @@ export default function App() {
                   .replace(/^bedrock-/, "")
                   .replace(/^(Minecraft\s*)?基岩版\s*/, "")
                   .trim();
-          const currentBedrockName = activeAccount ? activeAccount.name : settings.playerName.trim();
+          // 基岩版只认微软登录：LittleSkin 在这里按离线处理。
+          const bedrockName = bedrockSignedIn
+            ? (msAccount?.name ?? settings.playerName.trim())
+            : settings.playerName.trim();
           const msg = await launchBedrock(
             target,
             settingsRef.current.gameRoot,
-            !activeAccount,
-            currentBedrockName,
+            !bedrockSignedIn,
+            bedrockName,
           );
           pushToast("success", "已唤起 Minecraft 基岩版", msg);
           pushLog("cobble", `成功启动 Minecraft 基岩版: ${msg}`);
@@ -1560,6 +1596,7 @@ export default function App() {
         jvmArgs: launchSettings.jvmArgs || null,
         language: launchSettings.language || null,
         offline: !activeAccount,
+        authProvider: accountKind === "offline" ? null : accountKind,
       };
 
       // A version folder can look installed while a download was interrupted
@@ -1685,7 +1722,10 @@ export default function App() {
       selectedVersion,
       settings.javaPath,
       settings.playerName,
+      accountKind,
       activeAccount,
+      bedrockSignedIn,
+      msAccount,
     ],
   );
 
@@ -1780,7 +1820,9 @@ export default function App() {
           customSkinPath={settings.customSkinPath}
           mojangSkinName={settings.mojangSkinName}
           signedInName={activeAccount ? activeAccount.name : null}
-          skinUrl={activeAccount?.skinUrl ?? null}
+          skinUrl={
+            activeAccount && "skinUrl" in activeAccount ? (activeAccount.skinUrl ?? null) : null
+          }
           extensionsEnabled={settings.enableExtensions}
         />
 
@@ -1821,12 +1863,12 @@ export default function App() {
                 selectedBedrockVersion={selectedBedrockVersion}
                 settings={settings}
                 onUpdateSettings={updateSettings}
-                accountType={activeAccount ? "microsoft" : "offline"}
+                accountType={accountKind}
                 account={activeAccount}
-                storedAccount={account}
+                storedMsAccount={msAccount}
+                storedLsAccount={lsAccount}
                 onOpenAccount={() => setAccountOpen(true)}
-                onSelectOffline={() => setOfflineMode(true)}
-                onSelectMicrosoft={() => setOfflineMode(false)}
+                onSelectAccount={(kind) => setAccountKind(kind)}
               />
             </div>
           ) : (
@@ -2053,21 +2095,43 @@ export default function App() {
           <AccountDialog
             open={accountOpen}
             onClose={() => setAccountOpen(false)}
-            account={account}
+            msAccount={msAccount}
+            lsAccount={lsAccount}
             clientId={settings.msClientId ?? ""}
             onClientIdChange={(msClientId) => updateSettings({ msClientId })}
-            onSignedIn={async (next) => {
-              setAccount(next);
-              setOfflineMode(false);
+            littleskinClientId={settings.littleskinClientId ?? ""}
+            onLittleskinClientIdChange={(littleskinClientId) =>
+              updateSettings({ littleskinClientId })
+            }
+            onMsSignedIn={async (next) => {
+              setMsAccount(next);
+              setAccountKind("microsoft");
               // 登录成功后从后端重新获取以确保主界面立即更新
               try {
                 const fresh = await getMsAccount(settings.msClientId || undefined);
-                if (fresh) setAccount(fresh);
+                if (fresh) setMsAccount(fresh);
               } catch {
                 // 忽略错误，使用对话框传入的账户即可
               }
             }}
-            onSignedOut={() => setAccount(null)}
+            onLsSignedIn={async (next) => {
+              setLsAccount(next);
+              setAccountKind("littleskin");
+              try {
+                const fresh = await getLittleSkinAccount();
+                if (fresh) setLsAccount(fresh);
+              } catch {
+                // 忽略错误，使用对话框传入的账户即可
+              }
+            }}
+            onMsSignedOut={() => {
+              setMsAccount(null);
+              setAccountKind((kind) => (kind === "microsoft" ? "offline" : kind));
+            }}
+            onLsSignedOut={() => {
+              setLsAccount(null);
+              setAccountKind((kind) => (kind === "littleskin" ? "offline" : kind));
+            }}
             onNotify={pushToast}
           />
         </Suspense>

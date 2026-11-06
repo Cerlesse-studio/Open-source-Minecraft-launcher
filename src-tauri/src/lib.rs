@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod content;
 pub mod extension;
 pub mod java;
+pub mod littleskin;
 pub mod loaders;
 pub mod mcmod;
 pub mod minecraft;
@@ -730,26 +731,51 @@ async fn launch_game(
     // A signed-in account launches online: the session token is read from the
     // account store instead of travelling through the web UI. Downloading it
     // from the frontend would put a live credential in JavaScript.
+    // Microsoft and LittleSkin keep separate slots; the UI tells the launch
+    // which login method to use via `auth_provider`.
     let mut request = request;
     if request.auth.is_none() && !request.offline {
         if let Ok(dir) = account_dir(&app) {
-            if let Some(record) = auth::session_for_launch(&dir).await {
+            let want_littleskin = request.auth_provider.as_deref() == Some("littleskin");
+            let record = if want_littleskin {
+                auth::littleskin_session_for_launch(&dir).await
+            } else {
+                auth::session_for_launch(&dir).await
+            };
+            if let Some(record) = record {
+                let external = record.is_external();
                 let _ = app.emit(
                     "game:log",
                     GameLogPayload {
                         stream: "cobble".to_string(),
-                        line: format!(
-                            "使用正版账户 {} 启动（UUID {}）",
-                            record.profile.name, record.profile.id
-                        ),
+                        line: if external {
+                            format!(
+                                "使用 LittleSkin 外置登录启动：{}（UUID {}）",
+                                record.profile.name, record.profile.id
+                            )
+                        } else {
+                            format!(
+                                "使用正版账户 {} 启动（UUID {}）",
+                                record.profile.name, record.profile.id
+                            )
+                        },
                     },
                 );
+                if external {
+                    // 没有 injector 就登不进外置登录服务器，宁可先修好再启动。
+                    let injector = littleskin::ensure_injector(&dir).await.map_err(|error| {
+                        format!("外置登录需要 authlib-injector，但准备失败: {error}")
+                    })?;
+                    request.authlib_injector = Some(injector.to_string_lossy().to_string());
+                }
                 request.auth = Some(minecraft::LaunchAuth {
                     access_token: record.minecraft.access_token.clone(),
                     uuid: record.profile.id.clone(),
                     name: record.profile.name.clone(),
                     xuid: Some(record.minecraft.xuid.clone()),
                     client_id: Some(record.client_id.clone()),
+                    user_type: Some(if external { "mojang" } else { "msa" }.to_string()),
+                    yggdrasil_api: record.yggdrasil_api.clone(),
                 });
             }
         }
@@ -1927,12 +1953,61 @@ async fn get_ms_account(
     client_id: Option<String>,
 ) -> Result<Option<auth::AccountView>, String> {
     let dir = account_dir(&app)?;
+    // 只读微软自己的槽位；LittleSkin 有独立的槽位和命令。
     Ok(auth::account_view(&dir, client_id.as_deref()).await)
+}
+
+async fn get_littleskin_account(
+    app: AppHandle,
+) -> Result<Option<littleskin::LittleSkinView>, String> {
+    let dir = account_dir(&app)?;
+    Ok(auth::littleskin_account_view(&dir).await)
+}
+
+// ---------------------------------------------------------------------------
+// LittleSkin（外置登录）
+// ---------------------------------------------------------------------------
+
+async fn littleskin_login_begin(client_id: String) -> Result<auth::DeviceCodeInfo, String> {
+    littleskin::begin_device_login(&client_id).await
+}
+
+async fn littleskin_login_poll(
+    app: AppHandle,
+    device_code: String,
+    client_id: String,
+) -> Result<littleskin::LoginPoll, String> {
+    let dir = account_dir(&app)?;
+    let outcome = littleskin::poll_device_login(&client_id, &device_code).await?;
+    if let littleskin::LoginOutcome::Done(record) = &outcome {
+        auth::store_littleskin_account(&dir, record)?;
+    }
+    Ok(outcome.into_poll())
+}
+
+fn littleskin_cancel_login(pending_id: String) {
+    littleskin::cancel_pending(&pending_id);
+}
+
+async fn littleskin_select_profile(
+    app: AppHandle,
+    pending_id: String,
+    uuid: String,
+) -> Result<littleskin::LoginPoll, String> {
+    let dir = account_dir(&app)?;
+    let record = littleskin::select_profile(&pending_id, &uuid).await?;
+    auth::store_littleskin_account(&dir, &record)?;
+    Ok(littleskin::LoginPoll::success(&record))
 }
 
 async fn ms_sign_out(app: AppHandle) -> Result<(), String> {
     let dir = account_dir(&app)?;
     auth::clear_account(&dir)
+}
+
+async fn littleskin_sign_out(app: AppHandle) -> Result<(), String> {
+    let dir = account_dir(&app)?;
+    auth::clear_littleskin_account(&dir)
 }
 
 pub async fn list_extensions(

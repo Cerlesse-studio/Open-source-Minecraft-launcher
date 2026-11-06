@@ -75,6 +75,9 @@ import type {
   LoaderSelection,
   LocalIpv6Address,
   MinecraftHostStatus,
+  LittleSkinAccount,
+  LsDeviceCode,
+  LsLoginPoll,
   MsAccount,
   MsDeviceCode,
   MsLoginPoll,
@@ -485,9 +488,11 @@ export async function launchBedrock(
 // Microsoft account
 // ---------------------------------------------------------------------------
 
-/** Preview builds keep the demo account in localStorage so the UI can be
- * exercised (sign in, both-edition badges, sign out) without a real login. */
+/** Preview builds keep demo accounts in localStorage so the UI can be
+ * exercised (sign in, badges, sign out) without a real login. Microsoft and
+ * LittleSkin are separate slots here too. */
 const DEMO_ACCOUNT_KEY = "cobble.demo.account";
+const DEMO_LITTLESKIN_KEY = "cobble.demo.littleskin";
 let demoLoginPolls = 0;
 
 function demoMsAccount(): MsAccount | null {
@@ -503,6 +508,24 @@ function demoStoreAccount(account: MsAccount | null): void {
   try {
     if (account) localStorage.setItem(DEMO_ACCOUNT_KEY, JSON.stringify(account));
     else localStorage.removeItem(DEMO_ACCOUNT_KEY);
+  } catch {
+    // Preview only; storage may be unavailable.
+  }
+}
+
+function demoLsAccount(): LittleSkinAccount | null {
+  try {
+    const raw = localStorage.getItem(DEMO_LITTLESKIN_KEY);
+    return raw ? (JSON.parse(raw) as LittleSkinAccount) : null;
+  } catch {
+    return null;
+  }
+}
+
+function demoStoreLsAccount(account: LittleSkinAccount | null): void {
+  try {
+    if (account) localStorage.setItem(DEMO_LITTLESKIN_KEY, JSON.stringify(account));
+    else localStorage.removeItem(DEMO_LITTLESKIN_KEY);
   } catch {
     // Preview only; storage may be unavailable.
   }
@@ -591,6 +614,96 @@ export async function signOutMsAccount(): Promise<void> {
     return;
   }
   await invoke("ms_sign_out");
+}
+
+/** The stored LittleSkin sign-in, independent of the Microsoft account. */
+export async function getLittleSkinAccount(): Promise<LittleSkinAccount | null> {
+  if (!isDesktop) return demoLsAccount();
+  return invoke<LittleSkinAccount | null>("get_littleskin_account");
+}
+
+export async function signOutLittleSkinAccount(): Promise<void> {
+  if (!isDesktop) {
+    demoStoreLsAccount(null);
+    return;
+  }
+  await invoke("littleskin_sign_out");
+}
+
+// ---------------------------------------------------------------------------
+// LittleSkin (external / Yggdrasil login)
+// ---------------------------------------------------------------------------
+
+/**
+ * Step 1 of the LittleSkin device flow. The OAuth application id is required:
+ * LittleSkin only issues device codes to applications on its whitelist.
+ */
+export async function beginLittleSkinLogin(clientId: string): Promise<LsDeviceCode> {
+  if (!isDesktop) {
+    lsDemoPolls = 0;
+    return {
+      userCode: "DEMO-LS01",
+      deviceCode: "demo-ls-device-code",
+      verificationUri: "https://open.littleskin.cn/oauth/link",
+      verificationUriComplete: "https://open.littleskin.cn/oauth/link?user_code=DEMO-LS01",
+      expiresIn: 300,
+      interval: 5,
+      message: "预览模式：把下面的代码填进 LittleSkin 授权页即可（不会真的登录）。",
+    };
+  }
+  return invoke<LsDeviceCode>("littleskin_login_begin", { clientId });
+}
+
+let lsDemoPolls = 0;
+
+/** Step 2: poll until the browser side finishes; the backend stores the account. */
+export async function pollLittleSkinLogin(
+  deviceCode: string,
+  clientId: string,
+): Promise<LsLoginPoll> {
+  if (!isDesktop) {
+    lsDemoPolls += 1;
+    if (lsDemoPolls < 3) {
+      return { state: "pending", message: null, account: null, profiles: [] };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const account: LittleSkinAccount = {
+      signedIn: true,
+      clientId: clientId || "demo-ls-client",
+      uuid: "5f1c1a7e8c8f4d5b9c2c4a1d3e6b7f80",
+      name: "LittleSteve",
+      yggdrasilApi: "https://littleskin.cn/api/yggdrasil",
+      sessionExpiresAt: now + 604_800,
+      refreshExpiresAt: now + 3600,
+      sessionError: null,
+    };
+    demoStoreLsAccount(account);
+    return { state: "success", message: null, account, profiles: [] };
+  }
+  return invoke<LsLoginPoll>("littleskin_login_poll", { deviceCode, clientId });
+}
+
+/** Step 3, only for accounts with several characters. */
+export async function selectLittleSkinProfile(
+  pendingId: string,
+  uuid: string,
+): Promise<LsLoginPoll> {
+  if (!isDesktop) {
+    const stored = demoLsAccount();
+    return { state: "success", message: null, account: stored, profiles: [] };
+  }
+  return invoke<LsLoginPoll>("littleskin_select_profile", { pendingId, uuid });
+}
+
+/** Drops the backend-side pending login (used when the user cancels). */
+export async function cancelLittleSkinLogin(pendingId: string): Promise<void> {
+  if (!isDesktop) return;
+  await invoke("littleskin_cancel_login", { pendingId });
+}
+
+/** Opens the LittleSkin authorization page in the system browser. */
+export async function openLittleSkinAuthorization(url: string): Promise<void> {
+  await openExternalUrl(url);
 }
 
 export async function getBedrockRuntimeStatus(force = false): Promise<BedrockRuntimeStatus> {

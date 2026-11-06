@@ -41,6 +41,7 @@ release/
 /build/
 
 # Local runtime leftovers
+/.minecraft/
 *.pid
 /module-info.class
 /forge_version.json

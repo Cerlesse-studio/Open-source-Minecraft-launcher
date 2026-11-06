@@ -764,7 +764,9 @@ pub async fn ensure_java(
         }
     };
 
-    let download_result = net::download_file_multithreaded(
+    // Adoptium 的包链接一般指向 GitHub Releases，国内直连经常很慢甚至超时。
+    // 走带镜像回退的下载器，失败时能自动切到加速镜像，而不是让用户干等。
+    let download_result = net::download_file_with_mirrors(
         &package.link,
         &archive_path,
         None,

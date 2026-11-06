@@ -469,8 +469,10 @@ export interface LaunchRequest {
   language?: string | null;
   /** Microsoft account session; omitted for offline accounts. */
   auth?: LaunchAuth | null;
-  /** Launch with the offline account even when a Microsoft account is stored. */
+  /** Launch with the offline account even when a signed-in account is stored. */
   offline?: boolean;
+  /** Which stored login method to launch with: `"microsoft"` or `"littleskin"`. */
+  authProvider?: AccountKind | null;
 }
 
 /** Credentials the game receives when the player signed in with a real account. */
@@ -492,6 +494,10 @@ export interface MsEntitlements {
   items: string[];
 }
 
+/** Which login method a launch or menu slot uses. Microsoft and LittleSkin
+ * are independent accounts: signing in with one never signs the other out. */
+export type AccountKind = "microsoft" | "littleskin";
+
 export interface MsAccount {
   signedIn: boolean;
   clientId: string;
@@ -500,6 +506,22 @@ export interface MsAccount {
   skinUrl: string | null;
   xuid: string;
   entitlements: MsEntitlements;
+  /** Unix seconds; the Java session must still be valid when the game starts. */
+  sessionExpiresAt: number;
+  refreshExpiresAt: number;
+  /** Set when the stored session could not be renewed. */
+  sessionError: string | null;
+}
+
+/** A LittleSkin sign-in. Deliberately not an `MsAccount`: it has no Microsoft
+ * entitlements, no XUID and no skin URL — only the Yggdrasil identity the
+ * game launches with through authlib-injector. */
+export interface LittleSkinAccount {
+  signedIn: boolean;
+  clientId: string;
+  uuid: string;
+  name: string;
+  yggdrasilApi: string | null;
   /** Unix seconds; the Java session must still be valid when the game starts. */
   sessionExpiresAt: number;
   refreshExpiresAt: number;
@@ -523,6 +545,32 @@ export interface MsLoginPoll {
   state: "pending" | "slow_down" | "success";
   message: string | null;
   account: MsAccount | null;
+}
+
+/** One character of a LittleSkin account, used when the user has several. */
+export interface LsProfileChoice {
+  id: string;
+  name: string;
+}
+
+/** Device code of the LittleSkin OAuth flow (same shape as Microsoft's). */
+export interface LsDeviceCode {
+  userCode: string;
+  deviceCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string | null;
+  expiresIn: number;
+  interval: number;
+  message: string;
+}
+
+/** One LittleSkin device-flow poll; `select_profile` asks the user to pick. */
+export interface LsLoginPoll {
+  state: "pending" | "slow_down" | "success" | "select_profile";
+  message: string | null;
+  account: LittleSkinAccount | null;
+  profiles: LsProfileChoice[];
+  pendingId?: string | null;
 }
 
 export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
@@ -574,6 +622,8 @@ export interface LauncherSettings {
   mojangSkinName?: string;
   /** Azure application id for Microsoft login; empty uses the built-in one. */
   msClientId?: string;
+  /** LittleSkin OAuth application id; required for LittleSkin device login. */
+  littleskinClientId?: string;
   bedrockApiSource?: "endstone" | "mcserverjars" | "azure_mirror";
   versionIsolation: VersionIsolation;
   windowTitle: string;

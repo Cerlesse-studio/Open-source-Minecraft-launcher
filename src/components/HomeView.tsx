@@ -70,6 +70,7 @@ import { joinPath } from "../lib/format";
 import { looksLikePclHomepage, renderPclHomepage } from "../lib/pcl-homepage";
 import { getEffectivePrimaryColor } from "../lib/theme";
 import type {
+  AccountKind,
   BedrockStatus,
   GameEdition,
   GameStateName,
@@ -77,6 +78,7 @@ import type {
   InstallProgress,
   InstalledVersion,
   LauncherSettings,
+  LittleSkinAccount,
   MsAccount,
 } from "../lib/types";
 import { Avatar, GrassBlock, StatusDot, TypeBadge } from "./ui";
@@ -109,19 +111,16 @@ interface HomeViewProps {
   selectedBedrockVersion?: string;
   settings?: LauncherSettings;
   onUpdateSettings?: (patch: Partial<LauncherSettings>) => void;
-  accountType?: "offline" | "microsoft";
-  /** The signed-in Microsoft account, shared by both editions. */
-  account?: MsAccount | null;
-  /**
-   * The stored Microsoft account, kept even while the player chose to play
-   * offline so the login menu can switch back without signing in again.
-   */
-  storedAccount?: MsAccount | null;
+  accountType?: "offline" | AccountKind;
+  /** The account launches actually use: Microsoft, LittleSkin, or null. */
+  account?: MsAccount | LittleSkinAccount | null;
+  /** Stored Microsoft sign-in, kept while another login method is used. */
+  storedMsAccount?: MsAccount | null;
+  /** Stored LittleSkin sign-in, kept while another login method is used. */
+  storedLsAccount?: LittleSkinAccount | null;
   onOpenAccount?: () => void;
-  /** Play with the offline account while keeping the Microsoft sign-in. */
-  onSelectOffline?: () => void;
-  /** Switch back to the stored Microsoft account. */
-  onSelectMicrosoft?: () => void;
+  /** Switch the login method used for launches. */
+  onSelectAccount?: (kind: "offline" | AccountKind) => void;
 }
 
 /** Directory part of a home page path, used to resolve its relative resources. */
@@ -473,10 +472,10 @@ export function HomeView({
   onUpdateSettings,
   accountType = "offline",
   account = null,
-  storedAccount = null,
+  storedMsAccount = null,
+  storedLsAccount = null,
   onOpenAccount,
-  onSelectOffline,
-  onSelectMicrosoft,
+  onSelectAccount,
 }: HomeViewProps) {
   const { t, language } = useI18n();
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
@@ -499,6 +498,12 @@ export function HomeView({
   const menuAnchorHomeRef = useRef<HTMLDivElement | null>(null);
   const menuAnchorLaunchRef = useRef<HTMLDivElement | null>(null);
   const isOffline = accountType === "offline";
+  /** Microsoft-only helpers: LittleSkin accounts carry no XUID, skin URL or
+   * Bedrock entitlements, so every Microsoft-specific surface reads these. */
+  const msActive =
+    accountType === "microsoft" && account?.signedIn ? (account as MsAccount) : null;
+  const lsActive =
+    accountType === "littleskin" && account?.signedIn ? (account as LittleSkinAccount) : null;
 
   // Custom home page: the left panel shows the player's own HTML instead of the
   // news feed. `preset` is the built-in news panel and needs no loading.
@@ -655,8 +660,9 @@ export function HomeView({
         activeBedrockVersion === "uwp" || !activeBedrockVersion
           ? undefined
           : activeBedrockVersion;
-      const currentName = isOffline ? playerName : (account?.name || playerName);
-      const msg = await launchBedrock(target, gameRoot, isOffline, currentName);
+      // 基岩版只认微软登录：LittleSkin 在这里按离线处理。
+      const currentName = msActive ? msActive.name : playerName;
+      const msg = await launchBedrock(target, gameRoot, !msActive, currentName);
       onNotify?.("success", "基岩版启动 / 自动程序处理中", msg);
       await refreshBedrockStatus();
     } catch (e) {
@@ -1373,7 +1379,7 @@ export function HomeView({
                       : account.name
                     : settings?.mojangSkinName
                 }
-                skinUrl={account?.skinUrl}
+                skinUrl={msActive?.skinUrl}
               />
               <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
                 {isOffline ? t("离线档案") : t("在线档案")}
@@ -1418,11 +1424,13 @@ export function HomeView({
               </p>
               <p className="mt-1 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
                 <span className="size-1.5 rounded-[1px] bg-primary/80" />
-                {account?.signedIn
+                {msActive
                   ? t("正版账户 · Java 与基岩版共用 · XUID {xuid}", {
-                      xuid: account.xuid || "—",
+                      xuid: msActive.xuid || "—",
                     })
-                  : settings?.customSlogan?.trim() || t("本地玩家档案 · Java 与基岩版混用共存")}
+                  : lsActive
+                    ? t("LittleSkin 外置登录 · 仅 Java 版 · 需外置登录服务器")
+                    : settings?.customSlogan?.trim() || t("本地玩家档案 · Java 与基岩版混用共存")}
               </p>
             </div>
           </div>
@@ -1479,40 +1487,40 @@ export function HomeView({
                 <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
                   {t("选择登录方式")}
                 </DropdownMenuLabel>
-                <DropdownMenuItem className="gap-2.5" onSelect={() => onSelectOffline?.()}>
-                  {account?.signedIn ? (
-                    <span className="size-3.5 rounded-full border border-muted-foreground/40" />
-                  ) : (
+                <DropdownMenuItem className="gap-2.5" onSelect={() => onSelectAccount?.("offline")}>
+                  {isOffline ? (
                     <Check className="size-3.5 text-primary" />
+                  ) : (
+                    <span className="size-3.5 rounded-full border border-muted-foreground/40" />
                   )}
                   {t("离线账户")}
                   <span className="ml-auto text-[9px] text-muted-foreground/70">
-                    {account?.signedIn ? t("切换") : t("当前")}
+                    {isOffline ? t("当前") : t("切换")}
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   className="gap-2.5"
                   onSelect={() =>
-                    storedAccount?.signedIn && !account?.signedIn
-                      ? onSelectMicrosoft?.()
+                    storedMsAccount?.signedIn && !msActive
+                      ? onSelectAccount?.("microsoft")
                       : onOpenAccount?.()
                   }
                 >
-                  {account?.signedIn ? (
+                  {msActive ? (
                     <Check className="size-3.5 text-primary" />
                   ) : (
                     <span className="size-3.5 rounded-full border border-muted-foreground/40" />
                   )}
                   <span className="min-w-0 flex-1 truncate">
-                    {storedAccount?.signedIn ? storedAccount.name : t("微软账户")}
+                    {storedMsAccount?.signedIn ? storedMsAccount.name : t("微软账户")}
                   </span>
-                  {storedAccount?.signedIn ? (
+                  {storedMsAccount?.signedIn ? (
                     <span className="ml-auto flex shrink-0 items-center gap-1">
                       <Badge
                         variant="outline"
                         className={cn(
                           "h-4 px-1.5 text-[9px] font-normal",
-                          storedAccount.entitlements.java
+                          storedMsAccount.entitlements.java
                             ? "border-primary/40 text-primary"
                             : "border-border/80 text-muted-foreground/70",
                         )}
@@ -1523,13 +1531,39 @@ export function HomeView({
                         variant="outline"
                         className={cn(
                           "h-4 px-1.5 text-[9px] font-normal",
-                          storedAccount.entitlements.bedrock
+                          storedMsAccount.entitlements.bedrock
                             ? "border-primary/40 text-primary"
                             : "border-border/80 text-muted-foreground/70",
                         )}
                       >
                         {t("基岩版")}
                       </Badge>
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[9px] text-muted-foreground/70">
+                      {t("点击登录")}
+                    </span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="gap-2.5"
+                  onSelect={() =>
+                    storedLsAccount?.signedIn && !lsActive
+                      ? onSelectAccount?.("littleskin")
+                      : onOpenAccount?.()
+                  }
+                >
+                  {lsActive ? (
+                    <Check className="size-3.5 text-primary" />
+                  ) : (
+                    <span className="size-3.5 rounded-full border border-muted-foreground/40" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    {storedLsAccount?.signedIn ? storedLsAccount.name : "LittleSkin"}
+                  </span>
+                  {storedLsAccount?.signedIn ? (
+                    <span className="ml-auto shrink-0 text-[9px] text-muted-foreground/70">
+                      {t("外置登录")}
                     </span>
                   ) : (
                     <span className="ml-auto text-[9px] text-muted-foreground/70">

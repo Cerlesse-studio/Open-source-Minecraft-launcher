@@ -411,6 +411,33 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             to_value(crate::get_ms_account(app.clone(), argument(&args, "clientId")?).await?)
         }
         "ms_sign_out" => to_value(crate::ms_sign_out(app.clone()).await?),
+        "get_littleskin_account" => {
+            to_value(crate::get_littleskin_account(app.clone()).await?)
+        }
+        "littleskin_sign_out" => to_value(crate::littleskin_sign_out(app.clone()).await?),
+        "littleskin_login_begin" => to_value(
+            crate::littleskin_login_begin(argument(&args, "clientId")?).await?,
+        ),
+        "littleskin_login_poll" => to_value(
+            crate::littleskin_login_poll(
+                app.clone(),
+                argument(&args, "deviceCode")?,
+                argument(&args, "clientId")?,
+            )
+            .await?,
+        ),
+        "littleskin_cancel_login" => {
+            crate::littleskin_cancel_login(argument(&args, "pendingId")?);
+            to_value(serde_json::Value::Null)
+        }
+        "littleskin_select_profile" => to_value(
+            crate::littleskin_select_profile(
+                app.clone(),
+                argument(&args, "pendingId")?,
+                argument(&args, "uuid")?,
+            )
+            .await?,
+        ),
         "get_multiplayer_install_state" => {
             to_value(crate::multiplayer::get_multiplayer_install_state(
                 argument(&args, "root")?,

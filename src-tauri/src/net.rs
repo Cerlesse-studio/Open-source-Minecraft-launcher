@@ -425,6 +425,9 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.fabricmc.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://maven.quiltmc.org/repository/release/") {
+        // Quilt 加载器的库此前没有任何镜像回退，官方源一慢就只能干等。
+        mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.minecraftforge.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.neoforged.net/releases/") {
@@ -451,6 +454,14 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
     } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/") {
         mirrors.push(format!("https://piston-data.mojang.com/{path}"));
         mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
+    } else if let Some(path) = trimmed.strip_prefix("https://authlib-injector.yushi.moe/") {
+        // authlib-injector（外置登录必需）的官方 artifact 服务在国内很慢，
+        // BMCLAPI 镜像了同样的路径；校验和仍以官方 JSON 为准。
+        mirrors.push(format!(
+            "https://bmclapi2.bangbang93.com/mirrors/authlib-injector/{path}"
+        ));
+    } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/mirrors/authlib-injector/") {
+        mirrors.push(format!("https://authlib-injector.yushi.moe/{path}"));
     } else if trimmed.contains("github.com/") && trimmed.contains("/releases/download/") {
         mirrors.push(format!("https://ghproxy.net/{trimmed}"));
         mirrors.push(format!("https://gh-proxy.com/{trimmed}"));
@@ -1029,7 +1040,18 @@ async fn download_single_stream<'a>(
 
     let mut downloaded: u64 = 0;
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    // Java 版由数千个小文件组成，绝大多数走这条单连接流程：此前这里没有
+    // 任何停滞检测，一个卡住的文件会占住 worker 直到 600 秒全局超时。
+    // 与分片下载保持一致，30 秒收不到字节就直接报错，重试或换镜像。
+    while let Some(chunk) = tokio::time::timeout(SEGMENT_IDLE_TIMEOUT, stream.next())
+        .await
+        .map_err(|_| {
+            format!(
+                "下载停滞超过 {} 秒 ({url})",
+                SEGMENT_IDLE_TIMEOUT.as_secs()
+            )
+        })?
+    {
         let chunk = chunk.map_err(|e| format!("下载中断 ({url}): {e}"))?;
         file.write_all(&chunk)
             .await

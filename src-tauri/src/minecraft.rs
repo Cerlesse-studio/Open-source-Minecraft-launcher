@@ -1190,6 +1190,61 @@ fn plan_libraries(
 
 pub const DEFAULT_DOWNLOAD_THREADS: usize = 16;
 
+/// 各下载阶段实际可用的连接（= 并发 worker）数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StageThreads {
+    client: usize,
+    libraries: usize,
+    assets: usize,
+    addons: usize,
+}
+
+/// 把用户设定的线程数切分给各下载阶段。
+///
+/// 依赖库和资源基本都是几百 KB 以下的小文件：单个文件切不出有意义的分片，
+/// 下载一个文件只占一个连接，所以吞吐几乎完全取决于同时开几个连接。
+/// 以前把剩余线程按固定 45/55 分给两个阶段，默认 16 线程时资源阶段只剩
+/// 7 个并发连接，几千个资源文件只能排队，这就是「只有 Java 版下载慢」而
+/// 基岩版正常的原因（基岩版是少数几个大文件，分片能把线程数用满）。
+/// 现在按两个阶段的实际字节量切分线程预算，资源占大头时就能拿到接近设定值
+/// 的并发；每个阶段至少保留 2 个连接，避免依赖库被串行化。
+fn split_stage_threads(
+    threads: usize,
+    has_addons: bool,
+    libs_bytes: u64,
+    assets_bytes: u64,
+) -> StageThreads {
+    let threads = threads.max(1);
+    let client = if threads <= 4 {
+        2.min(threads)
+    } else {
+        (threads / 4).clamp(2, 16)
+    };
+    let addons = if has_addons {
+        (threads * 2 / 10).clamp(1, 8)
+    } else {
+        0
+    };
+    let network = threads.saturating_sub(addons).max(2);
+    let assets_share = if libs_bytes + assets_bytes == 0 {
+        0.55
+    } else {
+        assets_bytes as f64 / (libs_bytes + assets_bytes) as f64
+    };
+    let libs_floor = 2.min(network.saturating_sub(1)).max(1);
+    let libs_cap = network.saturating_sub(1).max(1);
+    let libraries = (((network as f64) * (1.0 - assets_share)).round() as usize)
+        .max(libs_floor)
+        .min(libs_cap);
+    let assets = network.saturating_sub(libraries).max(1);
+    StageThreads {
+        client,
+        libraries,
+        assets,
+        addons,
+    }
+}
+
 struct DownloadTracker {
     version_id: String,
     threads: usize,
@@ -2407,23 +2462,16 @@ pub async fn install_version_with_options(
     tracker.add_stage_completed("prepare", 1, 0);
     tracker.set_stage_status("prepare", "done");
 
-    let client_threads = if threads <= 4 {
-        2.min(threads)
-    } else {
-        (threads / 4).clamp(2, 16)
-    };
-    let available = threads.saturating_sub(client_threads).max(2);
-    let (libs_threads, assets_threads, addons_threads) = if has_addons {
-        let addon = (available * 2 / 10).clamp(1, 8);
-        let rem = available.saturating_sub(addon);
-        let libs = (rem * 45 / 100).max(1);
-        let assets = rem.saturating_sub(libs).max(1);
-        (libs, assets, addon)
-    } else {
-        let libs = (available * 45 / 100).max(1);
-        let assets = available.saturating_sub(libs).max(1);
-        (libs, assets, 0)
-    };
+    let assets_total_bytes = prepared_assets
+        .as_ref()
+        .map(|plan| plan.total_bytes.max(initial_assets_bytes))
+        .unwrap_or(initial_assets_bytes);
+    let StageThreads {
+        client: client_threads,
+        libraries: libs_threads,
+        assets: assets_threads,
+        addons: addons_threads,
+    } = split_stage_threads(threads, has_addons, libs_bytes, assets_total_bytes);
 
     let client_offset = 0;
     let libs_offset = client_offset + client_threads;
@@ -2603,6 +2651,14 @@ pub struct LaunchRequest {
     /// Microsoft session, even though the user is still signed in.
     #[serde(default)]
     pub offline: bool,
+    /// Which stored login method to launch with: `"microsoft"` (default) or
+    /// `"littleskin"`. The two methods keep separate account slots.
+    #[serde(default)]
+    pub auth_provider: Option<String>,
+    /// Path of `authlib-injector.jar`, resolved by the launcher for external
+    /// (LittleSkin) accounts. Empty means no agent is injected.
+    #[serde(default)]
+    pub authlib_injector: Option<String>,
 }
 
 /// Credentials handed to the game when the user signed in with a real account.
@@ -2621,6 +2677,12 @@ pub struct LaunchAuth {
     pub xuid: Option<String>,
     #[serde(default)]
     pub client_id: Option<String>,
+    /// `msa` for Microsoft accounts, `mojang` for external Yggdrasil logins.
+    #[serde(default)]
+    pub user_type: Option<String>,
+    /// Yggdrasil API root of an external login service (LittleSkin).
+    #[serde(default)]
+    pub yggdrasil_api: Option<String>,
 }
 
 /// The six auth values the launch arguments are built from.
@@ -2654,7 +2716,13 @@ fn auth_vars(request: &LaunchRequest, fallback_uuid: &str, fallback_name: &str) 
                 access_token: auth.access_token.trim().to_string(),
                 xuid: auth.xuid.clone().unwrap_or_default(),
                 client_id: auth.client_id.clone().unwrap_or_default(),
-                user_type: "msa".to_string(),
+                // 外置登录（LittleSkin）必须声明为 `mojang`，正版才是 `msa`。
+                user_type: auth
+                    .user_type
+                    .clone()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "msa".to_string()),
             }
         }
         None => AuthVars {
@@ -4418,6 +4486,31 @@ fn build_launch_spec(
 
     // 启动前 VM 自检：确保最终参数能让 JVM 成功创建，否则逐级安全降级
     let mut jvm_args = ensure_vm_bootable(&java, sanitized_args, is_64bit, &mut launch_notes);
+
+    // 外置登录：authlib-injector 在这里才注入，而不是更早 —— 上面的 VM 自检会
+    // 真的启动一次 JVM，太早注入会让自检也去加载 agent。
+    if let Some(agent) = request
+        .authlib_injector
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        match request
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.yggdrasil_api.as_deref())
+            .map(str::trim)
+            .filter(|api| !api.is_empty())
+        {
+            Some(api) => {
+                jvm_args.push(format!("-javaagent:{agent}={api}"));
+                launch_notes.push(format!("已启用外置登录（authlib-injector → {api}）"));
+            }
+            None => launch_notes.push(
+                "已指定 authlib-injector，但账号没有外置登录地址，已跳过注入".to_string(),
+            ),
+        }
+    }
 
     jvm_args.push(version.main_class.clone());
 
@@ -6345,6 +6438,34 @@ mod tests {
         serde_json::from_value(json).expect("version detail")
     }
 
+    /// 资源占绝大多数体积时，资源阶段必须拿到尽可能多的并发连接——Java 版
+    /// 装着几千个小文件，这一项直接决定安装速度；旧的固定 45/55 分法只给了
+    /// 7 个连接（默认 16 线程）。
+    #[test]
+    fn assets_stage_gets_most_connections_for_a_java_install() {
+        let split = split_stage_threads(16, false, 30_000_000, 500_000_000);
+        assert_eq!(split.assets, 14);
+        assert_eq!(split.libraries, 2);
+        assert_eq!(split.client, 4);
+    }
+
+    /// 任何线程数（含 1）都不能 panic，两个阶段之和不能超过预算。
+    #[test]
+    fn stage_split_stays_within_budget_for_every_thread_count() {
+        for threads in 1..=64usize {
+            for has_addons in [false, true] {
+                let split = split_stage_threads(threads, has_addons, 40_000_000, 120_000_000);
+                assert!(split.libraries >= 1 && split.assets >= 1);
+                // 依赖库与资源共享剩余预算（addons 已从预算里扣掉），
+                // 只有线程数低于 2 时才会有下限带来的微小超出。
+                assert!(
+                    split.libraries + split.assets <= threads.max(2),
+                    "threads={threads} 超出预算: {split:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_detect_loader_and_resolve_clean_mc() {
         let text = r#"{
@@ -6595,6 +6716,8 @@ mod tests {
             language: None,
             auth,
             offline: false,
+            authlib_injector: None,
+            auth_provider: None,
         };
 
         let offline = auth_vars(&request(None), "offline-uuid", "OfflineName");
@@ -6611,6 +6734,8 @@ mod tests {
                 name: "Notch".to_string(),
                 xuid: Some("2535410000000000".to_string()),
                 client_id: Some("launcher-client".to_string()),
+                user_type: None,
+                yggdrasil_api: None,
             })),
             "offline-uuid",
             "OfflineName",
@@ -6632,6 +6757,8 @@ mod tests {
                 name: String::new(),
                 xuid: None,
                 client_id: None,
+                user_type: None,
+                yggdrasil_api: None,
             })),
             "offline-uuid",
             "OfflineName",
