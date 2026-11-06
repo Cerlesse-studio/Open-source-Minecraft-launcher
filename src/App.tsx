@@ -251,6 +251,7 @@ export default function App() {
   const [msAccount, setMsAccount] = useState<MsAccount | null>(null);
   const [lsAccount, setLsAccount] = useState<LittleSkinAccount | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [accountDialogProvider, setAccountDialogProvider] = useState<AccountKind | undefined>();
   // Microsoft and LittleSkin are independent sign-ins; the player picks which
   // one launches use (or the offline account) from the login menu. Either
   // sign-in is kept while the other one is used.
@@ -1867,7 +1868,10 @@ export default function App() {
                 account={activeAccount}
                 storedMsAccount={msAccount}
                 storedLsAccount={lsAccount}
-                onOpenAccount={() => setAccountOpen(true)}
+                onOpenAccount={(provider) => {
+                  setAccountDialogProvider(provider);
+                  setAccountOpen(true);
+                }}
                 onSelectAccount={(kind) => setAccountKind(kind)}
               />
             </div>
@@ -2094,9 +2098,13 @@ export default function App() {
         <Suspense fallback={null}>
           <AccountDialog
             open={accountOpen}
-            onClose={() => setAccountOpen(false)}
+            onClose={() => {
+              setAccountOpen(false);
+              setAccountDialogProvider(undefined);
+            }}
             msAccount={msAccount}
             lsAccount={lsAccount}
+            preferredProvider={accountDialogProvider}
             clientId={settings.msClientId ?? ""}
             onClientIdChange={(msClientId) => updateSettings({ msClientId })}
             littleskinClientId={settings.littleskinClientId ?? ""}

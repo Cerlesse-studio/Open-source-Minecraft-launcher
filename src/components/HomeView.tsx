@@ -118,7 +118,7 @@ interface HomeViewProps {
   storedMsAccount?: MsAccount | null;
   /** Stored LittleSkin sign-in, kept while another login method is used. */
   storedLsAccount?: LittleSkinAccount | null;
-  onOpenAccount?: () => void;
+  onOpenAccount?: (provider?: AccountKind) => void;
   /** Switch the login method used for launches. */
   onSelectAccount?: (kind: "offline" | AccountKind) => void;
 }
@@ -1503,7 +1503,7 @@ export function HomeView({
                   onSelect={() =>
                     storedMsAccount?.signedIn && !msActive
                       ? onSelectAccount?.("microsoft")
-                      : onOpenAccount?.()
+                      : onOpenAccount?.("microsoft")
                   }
                 >
                   {msActive ? (
@@ -1550,7 +1550,7 @@ export function HomeView({
                   onSelect={() =>
                     storedLsAccount?.signedIn && !lsActive
                       ? onSelectAccount?.("littleskin")
-                      : onOpenAccount?.()
+                      : onOpenAccount?.("littleskin")
                   }
                 >
                   {lsActive ? (

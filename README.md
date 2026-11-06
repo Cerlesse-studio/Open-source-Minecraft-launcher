@@ -356,6 +356,6 @@ flowchart LR
 
 <div align="center">
 
-<sub>📄 [MIT License](LICENSE) · Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关，不分发游戏本体。</sub>
+<sub>📄 [GNU GPL v3 或更高版本](LICENSE) · Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无关，不分发游戏本体。</sub>
 
 </div>

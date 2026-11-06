@@ -2,7 +2,7 @@
   "name": "open-source-minecraft-launcher",
   "private": true,
   "version": "0.1.6",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "sideEffects": [
     "*.css",

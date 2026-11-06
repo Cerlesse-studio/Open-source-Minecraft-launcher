@@ -4,7 +4,7 @@ version = "0.1.6"
 description = "Open-source-Minecraft-launcher — an open-source Minecraft launcher"
 authors = ["you"]
 edition = "2024"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

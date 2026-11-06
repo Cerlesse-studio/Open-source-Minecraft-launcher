@@ -46,6 +46,7 @@ interface AccountDialogProps {
   onClose: () => void;
   msAccount: MsAccount | null;
   lsAccount: LittleSkinAccount | null;
+  preferredProvider?: Provider;
   clientId: string;
   onClientIdChange: (value: string) => void;
   littleskinClientId: string;
@@ -148,6 +149,7 @@ export function AccountDialog({
   onClose,
   msAccount,
   lsAccount,
+  preferredProvider,
   clientId,
   onClientIdChange,
   littleskinClientId,
@@ -158,7 +160,11 @@ export function AccountDialog({
   onLsSignedOut,
   onNotify,
 }: AccountDialogProps) {
-  const [provider, setProvider] = useState<Provider>("microsoft");
+  const [provider, setProvider] = useState<Provider>(
+    () =>
+      preferredProvider ??
+      (msAccount?.signedIn ? "microsoft" : lsAccount?.signedIn ? "littleskin" : "microsoft"),
+  );
   const [device, setDevice] = useState<MsDeviceCode | null>(null);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -346,8 +352,12 @@ export function AccountDialog({
       setCopied(false);
       setLsError(null);
       setLsCopied(false);
-      // 打开时默认选中已登录的那一种；两种都登录时优先 Microsoft。
-      setProvider(msAccount?.signedIn ? "microsoft" : lsAccount?.signedIn ? "littleskin" : "microsoft");
+      // HomeView explicitly passes the requested login method; otherwise
+      // default to the signed-in account, preferring Microsoft when both exist.
+      setProvider(
+        preferredProvider ??
+          (msAccount?.signedIn ? "microsoft" : lsAccount?.signedIn ? "littleskin" : "microsoft"),
+      );
     } else {
       setDevice(null);
       setStatus("");
@@ -360,7 +370,7 @@ export function AccountDialog({
       stopLsPolling();
       void closeMsLoginWindow();
     }
-  }, [open, stopPolling, stopLsPolling, msAccount?.signedIn, lsAccount?.signedIn]);
+  }, [open, preferredProvider, stopPolling, stopLsPolling, msAccount?.signedIn, lsAccount?.signedIn]);
 
   if (!open) return null;
 
