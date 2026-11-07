@@ -12,7 +12,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test src/lib/multiplayerHealth.test.ts src/lib/multiplayerP2p.test.ts src/lib/format.test.ts",
+    "test": "node --test src/lib/multiplayerHealth.test.ts src/lib/multiplayerP2p.test.ts src/lib/multiplayerRelay.test.ts src/lib/format.test.ts src/lib/coreResult.test.ts",
     "core:dev": "cargo build --manifest-path src-tauri/Cargo.toml",
     "core:build": "cargo build --release --manifest-path src-tauri/Cargo.toml",
     "start": "npm run core:dev && node electron/dev.cjs",

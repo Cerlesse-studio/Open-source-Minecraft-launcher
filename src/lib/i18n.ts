@@ -200,6 +200,8 @@ const EN: Record<string, string> = {
   终止基岩版: "Stop Bedrock",
   结束游戏: "Stop game",
   "正在启动…": "Launching…",
+  "取消启动": "Cancel launch",
+  "已取消启动": "Launch cancelled",
   启动基岩版: "Launch Bedrock",
   下载基岩版: "Download Bedrock",
   启动游戏: "Launch game",

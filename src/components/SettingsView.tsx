@@ -212,7 +212,8 @@ const LANGUAGE_OPTIONS: Array<{ value: LauncherSettings["language"]; label: stri
 ];
 
 const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
-  official_ap: "官方 / 亚太 CDN",
+  official_ap: "官方 CDN + 镜像容灾",
+  microsoft: "微软官方 (Mojang)",
   bmclapi: "BMCLAPI",
   custom: "自定义镜像",
 };
@@ -649,8 +650,11 @@ export function SettingsView({
     }
   };
 
+  // 微软官方直连与官方 CDN 用的是同一个 Mojang 测试地址，共用一次测速结果。
   const probeFor = (source: DownloadSourceId) =>
-    sourceProbes?.find((probe) => probe.source === source);
+    sourceProbes?.find(
+      (probe) => probe.source === (source === "microsoft" ? "official_ap" : source),
+    );
   const fastestProbe =
     sourceProbes
       ?.filter((probe) => probe.ok)
@@ -1699,7 +1703,7 @@ export function SettingsView({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[12px] font-medium text-foreground">
-                        官方 / 亚太 Anycast CDN (推荐)
+                        官方 CDN + 镜像容灾 (推荐)
                       </span>
                       <Badge
                         variant="outline"
@@ -1718,6 +1722,40 @@ export function SettingsView({
                       <span className="rounded bg-muted/50 px-1 py-0.5">东京</span>
                       <span className="rounded bg-muted/50 px-1 py-0.5">新加坡</span>
                     </div>
+                    <p className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
+                      直接连接 Mojang 官方 CDN，失败时自动回退 BMCLAPI 等镜像，兼顾速度与成功率。
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  htmlFor="src-microsoft"
+                  className={cn(
+                    "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/25",
+                    settings.downloadSource === "microsoft"
+                      ? "border-primary/40 bg-primary/[0.04]"
+                      : "border-border/60",
+                  )}
+                >
+                  <RadioGroupItem value="microsoft" id="src-microsoft" className="mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[12px] font-medium text-foreground">
+                        微软官方 (Mojang)
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className="h-4 border-border/80 px-1 font-mono text-[9px] text-muted-foreground"
+                      >
+                        官方直连
+                      </Badge>
+                      {/* 与官方 CDN 共用同一个测试地址，只显示延迟，不重复标「最快」。 */}
+                      <ProbeBadge probe={probeFor("microsoft")} fastest={false} />
+                    </div>
+                    <p className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
+                      版本清单、客户端、依赖库与资源只从 Mojang / Microsoft 域名下载，不会中途改道第三方镜像；
+                      Fabric、Forge 等第三方依赖仍走各自源。
+                    </p>
                   </div>
                 </label>
 
@@ -1790,7 +1828,10 @@ export function SettingsView({
                     )}
                   </span>
                   {fastestProbe &&
-                  fastestProbe.source !== (settings.downloadSource || "official_ap") ? (
+                  fastestProbe.source !==
+                    (settings.downloadSource === "microsoft"
+                      ? "official_ap"
+                      : settings.downloadSource || "official_ap") ? (
                     <Button
                       variant="outline"
                       size="xs"
@@ -2378,7 +2419,9 @@ export function SettingsView({
 
         {/* 个性化设置 Tab */}
         <TabsContent value="personalization" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-2xl space-y-4">
+          {/* 不限制宽度：设置页本来就占满右侧内容区，卡在 max-w-2xl 会留出
+              一大片空白（其他几个标签页早就是满宽的了）。 */}
+          <div className="space-y-4">
             {/* 语言与地区：放在个性化首项，切换后整个启动器立即跟随 */}
             <SettingsSection
               title={t("语言与地区")}
@@ -2890,7 +2933,7 @@ export function SettingsView({
 
         {/* 关于启动器 Tab */}
         <TabsContent value="about" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-2xl space-y-4">
+          <div className="space-y-4">
             <SettingsSection
               title="软件更新"
               icon={<CloudDownload className="size-4" />}
@@ -3122,7 +3165,7 @@ export function SettingsView({
                 <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 p-2.5">
                   <span className="text-[11.5px] text-muted-foreground">开源协议</span>
                   <Badge variant="outline" className="border-primary/35 bg-primary/10 text-primary font-mono text-[10.5px]">
-                    MIT License
+                    GNU GPL v3+
                   </Badge>
                 </div>
 
@@ -3340,7 +3383,7 @@ export function SettingsView({
         <span className="font-mono">
           Open-source-Minecraft-launcher {systemInfo?.launcherVersion ?? "0.1.4"}
         </span>
-        <span>MIT License</span>
+        <span>GNU GPL v3 or later</span>
       </footer>
     </div>
   );

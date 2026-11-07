@@ -93,7 +93,53 @@ export function chromium108CssCompatPlugin(): Plugin {
     return rgb ? `rgba(${rgb}, ${alpha})` : null;
   }
 
+  /**
+   * Tailwind v4 emits the alpha variant of a colour as an opaque fallback plus a
+   * nested `@supports` override:
+   *
+   * ```css
+   * .bg-success\/10 { background-color: var(--success);
+   *   @supports (color: color-mix(in lab, red, red)) {
+   *     background-color: color-mix(in oklab, var(--success) 10%, transparent);
+   *   } }
+   * ```
+   *
+   * Chromium 108 (Electron 22) has no `color-mix`, so it keeps the opaque
+   * fallback: a solidly filled chip whose text — using the same colour — becomes
+   * invisible. Rewriting the nested block into an `rgba()` declaration leaves the
+   * fallback first and the translucent value after it, so both engines agree.
+   */
+  // Tailwind writes the probe without spaces, Vite dev adds one after the
+  // colon; both spellings have to match.
+  const NESTED_SUPPORTS =
+    /@supports \(\s*color:\s*color-mix\(in lab, red, red\)\s*\)\s*\{([^{}]*)\}/g;
+  const COLOR_MIX_DECL =
+    /([^:;{}]+):\s*color-mix\(in oklab,\s*([^,]+?)\s+([\d.]+)%,\s*transparent\)\s*;?/g;
+
+  function rewriteNestedSupports(code: string): string {
+    return code.replace(NESTED_SUPPORTS, (block: string, declarations: string) => {
+      let unresolved = false;
+      const rewritten = declarations.replace(
+        COLOR_MIX_DECL,
+        (declaration, property: string, colorExpr: string, pct: string) => {
+          const rgbaVal = resolveRgba(colorExpr, pct);
+          if (!rgbaVal) {
+            unresolved = true;
+            return declaration;
+          }
+          return `${property.trim()}:${rgbaVal}`;
+        }
+      );
+      // A colour the map does not know would lose its only translucent value in
+      // engines that do support color-mix, so that block is left untouched.
+      return unresolved ? block : rewritten;
+    });
+  }
+
   function transformCss(code: string): string {
+    // 0. 开发态（Tailwind v4 嵌套形式）先就地改写成 rgba()。
+    code = rewriteNestedSupports(code);
+
     // 1. 提取所有 @supports 块内的规则及其映射
     const supportsRe = /@supports \(color:color-mix\(in lab, red, red\)\)\{([^{}]+?\{[^{}]+?\})\}/g;
     const ruleReplacements = new Map<string, string>();

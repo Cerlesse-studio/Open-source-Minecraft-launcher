@@ -5,7 +5,7 @@ use md5::{Digest as Md5Digest, Md5};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -513,33 +513,30 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
         }
     }
 
+    // 这份清单本身只有一百多 KB，但在慢线路上单连接要十几秒；旧的 4 秒
+    // 总超时（含整份正文）会让每个候选地址都“超时失败”，再依次试下一个，
+    // 于是光拿清单就要 10–20 秒，最后才回退到本地缓存。现在改用多连接
+    // 并行拉取（见 `net::download_metadata`），每个候选地址也给足时间。
     let fetched = async {
-        // Respect the selected mirror and keep the automatic fallback chain.
-        let manifest_urls = net::preferred_urls(VERSION_MANIFEST_URL);
-        let mut last_err = String::new();
-        for u in manifest_urls {
-            match net::client()
-                .get(&u)
-                .timeout(Duration::from_secs(4))
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    if let Ok(text) = response.text().await {
-                        if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
-                            return Ok::<_, String>((manifest, text));
-                        }
-                    }
-                }
-                Ok(response) => {
-                    last_err = format!("HTTP {}", response.status());
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                }
+        match net::download_metadata(
+            VERSION_MANIFEST_URL,
+            &cache,
+            None,
+            None,
+            net::download_threads(),
+        )
+        .await
+        {
+            Ok(_) => {
+                let text = tokio::fs::read_to_string(&cache)
+                    .await
+                    .map_err(|e| format!("读取版本清单失败: {e}"))?;
+                let manifest: VersionManifest =
+                    serde_json::from_str(&text).map_err(|e| format!("版本清单解析失败: {e}"))?;
+                Ok::<_, String>((manifest, text))
             }
+            Err(error) => Err(format!("版本清单请求失败: {error}")),
         }
-        Err(format!("版本清单请求失败: {last_err}"))
     }
     .await;
 
@@ -596,8 +593,11 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
     }
 
     let fetched = async {
-        let response = net::client()
+        // BetaCraft 是境外小站，慢的时候会一直吊着：安装时它只是清单的
+        // 备用来源，不能用全局 600 秒超时去等它。
+        let response = net::api_client()
             .get(BETACRAFT_MANIFEST_URL)
+            .timeout(Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| format!("无法连接 BetaCraft 版本服务: {e}"))?;
@@ -774,13 +774,16 @@ pub async fn delete_version(root: &Path, version_id: &str) -> Result<(), String>
     safe_version_id(clean_id)?;
     let root = net::absolute_path(root);
     let target = versions_dir(&root).join(clean_id);
-    if target.is_dir() {
-        crate::bedrock::force_remove_dir_all(&target)
-            .map_err(|e| format!("删除版本目录失败: {e}"))?;
-        Ok(())
-    } else {
-        Err(format!("版本目录不存在: {}", target.display()))
+    // A missing folder means the files are already gone: the player removed
+    // them by hand, or an earlier delete finished. Deletion is therefore
+    // idempotent, so cleaning up a download-history entry still works after
+    // the installed files disappeared.
+    if !target.is_dir() {
+        return Ok(());
     }
+    crate::bedrock::force_remove_dir_all(&target)
+        .map_err(|e| format!("删除版本目录失败: {e}"))?;
+    Ok(())
 }
 
 fn required_java_major(version: &VersionDetail) -> u32 {
@@ -1208,6 +1211,11 @@ struct StageThreads {
 /// 基岩版正常的原因（基岩版是少数几个大文件，分片能把线程数用满）。
 /// 现在按两个阶段的实际字节量切分线程预算，资源占大头时就能拿到接近设定值
 /// 的并发；每个阶段至少保留 2 个连接，避免依赖库被串行化。
+///
+/// 三个阶段是在同一个时刻并行跑的，所以除了依赖库与资源之外，客户端阶段也
+/// 必须从同一份预算里扣。此前只扣了 addons，客户端那 4–16 个连接是额外多出来
+/// 的，实测线路在单连接被限速时（约 20 KB/s）多开的连接并不提升总吞吐，反而
+/// 让每条连接的速率继续下降。现在三份加起来就是用户设定的线程数。
 fn split_stage_threads(
     threads: usize,
     has_addons: bool,
@@ -1225,7 +1233,10 @@ fn split_stage_threads(
     } else {
         0
     };
-    let network = threads.saturating_sub(addons).max(2);
+    let network = threads
+        .saturating_sub(addons)
+        .saturating_sub(client)
+        .max(2);
     let assets_share = if libs_bytes + assets_bytes == 0 {
         0.55
     } else {
@@ -1245,6 +1256,15 @@ fn split_stage_threads(
     }
 }
 
+/// 每个文件分到的分片数：把线程预算分给此刻真正在下载的文件。
+///
+/// 单连接被限速的线路上（实测约 20 KB/s），总吞吐几乎等于连接数乘上这个值，
+/// 所以宁可让最后几个大文件把闲置的连接吃掉，也不要按工作池大小固定均分。
+fn file_thread_share(budget: usize, active_files: usize) -> usize {
+    let budget = budget.max(1);
+    (budget / active_files.max(1)).clamp(1, budget)
+}
+
 struct DownloadTracker {
     version_id: String,
     threads: usize,
@@ -1255,6 +1275,11 @@ struct DownloadTracker {
     active_tasks: Mutex<HashMap<usize, ActiveDownloadTask>>,
     stages: Mutex<Vec<StageProgress>>,
     pending_file_logs: Mutex<Vec<InstallFileLog>>,
+    /// 此刻全启动器正在下载的文件数（所有阶段合计）。分片数按它分配：
+    /// 别人下完了，剩下的文件就能把闲置的连接拿过去。
+    active_files: AtomicUsize,
+    /// 最近一次进度快照，供心跳重发（速度/线程会重新采样）。
+    last_progress: Mutex<Option<(String, u64, u64, String)>>,
     speed_samples: Mutex<VecDeque<(Instant, u64)>>,
     smoothed_speed: Mutex<net::SpeedSmoother>,
     last_emit: Mutex<Instant>,
@@ -1324,6 +1349,8 @@ impl DownloadTracker {
             active_tasks: Mutex::new(HashMap::new()),
             stages: Mutex::new(stages),
             pending_file_logs: Mutex::new(Vec::new()),
+            active_files: AtomicUsize::new(0),
+            last_progress: Mutex::new(None),
             speed_samples: Mutex::new(samples),
             smoothed_speed: Mutex::new(net::SpeedSmoother::new()),
             last_emit: Mutex::new(now - Duration::from_secs(1)),
@@ -1515,15 +1542,89 @@ impl DownloadTracker {
         }
     }
 
+    /// 累计收到的网络字节数，用作看门狗的“有没有进展”标记。
+    fn downloaded_marker(&self) -> u64 {
+        self.network_bytes.load(Ordering::Relaxed)
+    }
+
+    /// 还有没有阶段没出结果（"done" / "error" 之外都算未完成）。
+    fn has_unfinished_work(&self) -> bool {
+        self.stages
+            .lock()
+            .map(|stages| {
+                stages
+                    .iter()
+                    .any(|stage| stage.status != "done" && stage.status != "error")
+            })
+            .unwrap_or(false)
+    }
+
+    fn unfinished_stage_labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self
+            .stages
+            .lock()
+            .map(|stages| {
+                stages
+                    .iter()
+                    .filter(|stage| stage.status != "done" && stage.status != "error")
+                    .map(|stage| stage.label.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        labels.dedup();
+        labels
+    }
+
+    fn active_file_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .active_tasks
+            .lock()
+            .map(|tasks| tasks.values().map(|task| task.name.clone()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names.dedup();
+        names.truncate(4);
+        names
+    }
+
+    fn remember(&self, stage: &str, done: u64, total: u64, detail: &str) {
+        if let Ok(mut slot) = self.last_progress.lock() {
+            *slot = Some((stage.to_string(), done, total, detail.to_string()));
+        }
+    }
+
+    /// 依赖库与资源阶段是几千个小文件，文件之间可能几秒没有进度回调，
+    /// 界面上的实时速度和线程数就会停住（看起来像“不显示速度”）。
+    /// 只要有文件在下载，就让心跳按最多 250ms 一次的节奏重发当前快照：
+    /// 速度仍然按真实字节增量算，真停了就会自然衰减到 0。
+    fn heartbeat(&self) {
+        if self.active_files.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let snapshot = self
+            .last_progress
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some((stage, done, total, detail)) = snapshot else {
+            return;
+        };
+        self.emit_throttled(&stage, done, total, detail);
+    }
+
     fn emit_now(&self, stage: &str, done: u64, total: u64, detail: impl Into<String>) {
+        let detail = detail.into();
         if let Ok(mut last) = self.last_emit.lock() {
             *last = Instant::now();
         }
-        let snapshot = self.build_snapshot(stage, done, total, detail.into());
+        self.remember(stage, done, total, &detail);
+        let snapshot = self.build_snapshot(stage, done, total, detail);
         (self.progress)(snapshot);
     }
 
     fn emit_throttled(&self, stage: &str, done: u64, total: u64, detail: impl Into<String>) {
+        let detail = detail.into();
+        self.remember(stage, done, total, &detail);
         let should_emit = if let Ok(mut last) = self.last_emit.lock() {
             if last.elapsed() >= Duration::from_millis(90) {
                 *last = Instant::now();
@@ -1535,10 +1636,105 @@ impl DownloadTracker {
             false
         };
         if should_emit {
-            let snapshot = self.build_snapshot(stage, done, total, detail.into());
+            let snapshot = self.build_snapshot(stage, done, total, detail);
             (self.progress)(snapshot);
         }
     }
+}
+
+/// 整份任务假死的兵底：真的没连接了却不结束。
+///
+/// 老版本里一个卡住的连接可以让整个安装永远停在最后的百分比上：界面上既
+/// 看不到速度，也不会报错，任务就是结束不了。这里在下载阶段挂一个看门狗：
+/// 只要还有阶段没收尾，却整整这么久一个字节都没进来，就明确报错结束——
+/// 用户可以重试（已下的文件不会重下），而不是无限等待。
+const INSTALL_STALL_LIMIT: Duration = Duration::from_secs(300);
+/// 低于这个总速率就算“实际上没在下载”。代理/镜像把连接吊住、每几十秒才
+/// 挤一个字节时，字节计数一会一变，光看“有没有字节”发现不了。
+const INSTALL_MIN_RATE_BYTES: f64 = 1024.0;
+/// 每个采样窗口的长度：窗口内的平均速率低于上面的下限就记一次。
+const INSTALL_RATE_WINDOW: Duration = Duration::from_secs(30);
+/// 连续这么多个低速窗口（即大约 3 分钟）才判死，正常慢线路不会被误杀。
+const INSTALL_SLOW_WINDOWS: u32 = 6;
+
+async fn watch_install_stall(
+    tracker: Arc<DownloadTracker>,
+    limit: Duration,
+    window: Duration,
+    slow_windows_limit: u32,
+) -> String {
+    let mut last_marker = tracker.downloaded_marker();
+    let mut last_change = Instant::now();
+    let mut window_marker = last_marker;
+    let mut window_started = Instant::now();
+    let mut slow_windows: u32 = 0;
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let marker = tracker.downloaded_marker();
+        if marker != last_marker {
+            last_marker = marker;
+            last_change = Instant::now();
+        }
+        // 低速窗口：先看总速率，<_1 KB/s 持续三个窗口就明确报错，
+        // 而不是让用户对着一个永远停在 99% 的任务无限等。
+        if window_started.elapsed() >= window {
+            let seconds = window_started.elapsed().as_secs_f64().max(0.001);
+            let rate = marker.saturating_sub(window_marker) as f64 / seconds;
+            window_marker = marker;
+            window_started = Instant::now();
+            if rate < INSTALL_MIN_RATE_BYTES && tracker.has_unfinished_work() {
+                slow_windows += 1;
+            } else {
+                slow_windows = 0;
+            }
+            if slow_windows >= slow_windows_limit {
+                return format!(
+                    "下载停滞：最近 {:.0} 秒的平均速率只有 {:.0} B/S，{}。这条线路（代理/镜像）很可能在限速，换一个下载源或重试通常会快很多。",
+                    window.as_secs_f64() * f64::from(slow_windows),
+                    rate,
+                    describe_pending(&tracker)
+                );
+            }
+        }
+        if last_change.elapsed() < limit || !tracker.has_unfinished_work() {
+            continue;
+        }
+        return format!(
+            "下载停滞：{} 秒内没有收到任何数据，{}。已下载的文件不会重复下载，可以重新点一次安装继续。",
+            last_change.elapsed().as_secs(),
+            describe_pending(&tracker)
+        );
+    }
+}
+
+/// 给报错信息用的“卡在哪”：未完成的阶段名与正在下载的文件名。
+fn describe_pending(tracker: &DownloadTracker) -> String {
+    let stages = tracker.unfinished_stage_labels();
+    let active = tracker.active_file_names();
+    let stage_text = if stages.is_empty() {
+        "未知阶段".to_string()
+    } else {
+        stages.join("、")
+    };
+    if active.is_empty() {
+        format!("仍有阶段未完成（{stage_text}）")
+    } else {
+        format!("仍有阶段未完成（{stage_text}），卡在：{}", active.join("、"))
+    }
+}
+
+/// 下载期间的心跳：只持有 `Weak`，安装结束后自动退出，不会泄露任务。
+fn spawn_progress_heartbeat(tracker: &Arc<DownloadTracker>) {
+    let weak = Arc::downgrade(tracker);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            match weak.upgrade() {
+                Some(tracker) => tracker.heartbeat(),
+                None => break,
+            }
+        }
+    });
 }
 
 async fn download_jobs_with_tracker(
@@ -1608,16 +1804,19 @@ async fn download_jobs_with_tracker(
                 let file_bytes: u64;
                 if !was_skipped {
                     // 单个文件的线程预算：小文件无法切片，交给并发文件池；
-                    // 大文件或未知大小的文件按“用户线程数 / 当前并发文件数”
-                    // 分配分片，只有一个任务时可以吃满全部线程。
+                    // 大文件按“此刻全启动器正在下载的文件数”动态分配分片。
+                    // 只剩一个客户端 Jar 时它能吃掉全部线程，依赖库先下完也
+                    // 不会让那部分连接空着。实测这条线路单连接被限到 ~20 KB/s，
+                    // 吞吐几乎与连接数成正比——闲置一个连接就是线性损失速度。
+                    tracker.active_files.fetch_add(1, Ordering::Relaxed);
                     let configured_threads = net::per_file_threads(job.size);
                     let file_threads = if configured_threads <= 1 {
                         1
                     } else {
-                        configured_threads
-                            .div_ceil(worker_count.max(1))
-                            .max(2)
-                            .min(configured_threads)
+                        file_thread_share(
+                            configured_threads,
+                            tracker.active_files.load(Ordering::Relaxed),
+                        )
                     };
                     let segments = net::recommended_segments(job.size, file_threads);
                     tracker.set_worker_task(
@@ -1658,6 +1857,7 @@ async fn download_jobs_with_tracker(
                     )
                     .await;
 
+                    tracker.active_files.fetch_sub(1, Ordering::Relaxed);
                     tracker.set_worker_task(worker_id, None);
                     match downloaded_res {
                         Ok(bytes) => {
@@ -1932,12 +2132,14 @@ async fn prepare_assets_plan(
         } else {
             (index_ref.sha1.as_deref(), index_ref.size)
         };
-        net::download_file(
+        // 资源索引是安装必经的一步：通常几百 KB，单连接在这条线路上要
+        // 十几秒。交给元数据下载器切块并行，失败仍然自动换镜像。
+        net::download_metadata(
             &index_ref.url,
             &index_path,
             expected_sha1,
             expected_size,
-            None,
+            net::download_threads(),
         )
         .await?;
     }
@@ -2028,6 +2230,10 @@ async fn download_client_with_tracker(
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
     worker_offset: usize,
+    // 可抬高的连接上限：其它阶段收尾后把连接让给核心 Jar。
+    client_limit: &Arc<AtomicUsize>,
+    // 核心 Jar 最终可能吃到的连接数（块数按它切分）。
+    max_workers: usize,
 ) -> Result<(), String> {
     let dest = version_dir(root, &version.id).join(format!("{}.jar", version.id));
     let clean_mc = resolve_clean_mc_version(version);
@@ -2172,12 +2378,16 @@ async fn download_client_with_tracker(
         );
     };
 
-    let res = net::download_file_with_mirrors(
+    // 连接上限会在下载途中随其它阶段收尾而抬高：依赖库/资源下完后它们让出
+    // 的连接立刻接到核心 Jar 上，而不是让它一直死守 initial 那一小份连接，
+    // 把整个安装拖成“前面都快、最后一步慢得离谱”。
+    let res = net::download_file_with_mirrors_growing(
         client.url.as_deref().unwrap_or_default(),
         &dest,
         client.sha1.as_deref(),
         client.size,
-        client_threads,
+        client_limit,
+        max_workers,
         Some(&tracker.retried_files),
         Some(&mut on_progress),
     )
@@ -2275,6 +2485,7 @@ pub async fn install_version_with_options(
     let threads = concurrency.unwrap_or(DEFAULT_DOWNLOAD_THREADS).clamp(1, 64);
 
     let tracker = DownloadTracker::new(&instance_id, threads, has_addons, progress);
+    spawn_progress_heartbeat(&tracker);
     tracker.emit_now("prepare", 0, prepare_steps, "读取版本清单");
 
     let is_betacraft_prefixed = version_id.starts_with("betacraft:");
@@ -2485,13 +2696,25 @@ pub async fn install_version_with_options(
         tracker.set_stage_status("addons", "active");
     }
 
+    // 所有阶段共享用户设定的连接总预算：开始时按切分结果分配，某个阶段一
+    // 下完，它的份额就加到核心 Jar 的上限里。
+    let client_limit = Arc::new(AtomicUsize::new(client_threads.max(1)));
     let client_task = {
         let tracker = tracker.clone();
         let root = root.to_path_buf();
         let version = version.clone();
+        let client_limit = client_limit.clone();
         async move {
-            download_client_with_tracker(&root, &version, &tracker, client_threads, client_offset)
-                .await?;
+            download_client_with_tracker(
+                &root,
+                &version,
+                &tracker,
+                client_threads,
+                client_offset,
+                &client_limit,
+                threads,
+            )
+            .await?;
             let _ = download_log_config(&root, &version).await?;
             Ok::<(), String>(())
         }
@@ -2501,6 +2724,7 @@ pub async fn install_version_with_options(
         let tracker = tracker.clone();
         let plan = plan.clone();
         let instance_dir = instance_dir.clone();
+        let client_limit = client_limit.clone();
         async move {
             tracker.emit_now("libraries", 0, plan.jobs.len() as u64, "准备依赖库");
             let (library_count, _) = download_jobs_with_tracker(
@@ -2511,6 +2735,8 @@ pub async fn install_version_with_options(
                 libs_offset,
             )
             .await?;
+            // 依赖库已下完：这份连接预算转给还在跑的核心 Jar。
+            client_limit.fetch_add(libs_threads, Ordering::Relaxed);
 
             let natives_dir = instance_dir.join("natives");
             let native_jars = plan.native_jars;
@@ -2526,8 +2752,9 @@ pub async fn install_version_with_options(
         let tracker = tracker.clone();
         let root = root.to_path_buf();
         let instance_dir = instance_dir.clone();
+        let client_limit = client_limit.clone();
         async move {
-            ensure_assets_with_tracker(
+            let count = ensure_assets_with_tracker(
                 &root,
                 prepared_assets,
                 &instance_dir,
@@ -2535,13 +2762,17 @@ pub async fn install_version_with_options(
                 assets_threads,
                 assets_offset,
             )
-            .await
+            .await?;
+            // 资源下完同样让出连接。
+            client_limit.fetch_add(assets_threads, Ordering::Relaxed);
+            Ok::<usize, String>(count)
         }
     };
 
     let addons_task = {
         let tracker = tracker.clone();
         let instance_dir = instance_dir.clone();
+        let client_limit = client_limit.clone();
         async move {
             if has_addons {
                 if extra_mod_jobs.is_empty() {
@@ -2559,14 +2790,35 @@ pub async fn install_version_with_options(
                         addons_offset,
                     )
                     .await?;
+                    // 附加模组也下完了：份额同样让给核心 Jar。
+                    client_limit.fetch_add(addons_threads, Ordering::Relaxed);
                 }
             }
             Ok::<(), String>(())
         }
     };
 
-    let (_client_res, libs_res, assets_res, _addons_res) =
-        tokio::try_join!(client_task, libraries_task, assets_task, addons_task)?;
+    let (_client_res, libs_res, assets_res, _addons_res) = {
+        // 下载阶段挂上停滞看门狗：一个假死的连接不能把整个任务卡到永远结束
+        // 不了（以前的表现就是停在最后一个百分比，既不报错也不完成）。
+        let watchdog = watch_install_stall(
+            tracker.clone(),
+            INSTALL_STALL_LIMIT,
+            INSTALL_RATE_WINDOW,
+            INSTALL_SLOW_WINDOWS,
+        );
+        tokio::pin!(watchdog);
+        let downloads = async move {
+            tokio::try_join!(client_task, libraries_task, assets_task, addons_task)
+        };
+        tokio::select! {
+            joined = downloads => joined?,
+            stalled = &mut watchdog => {
+                tracker.emit_now("error", 0, 0, format!("下载停滞：{stalled}"));
+                return Err(stalled);
+            }
+        }
+    };
 
     let (detected_loader, detected_loader_ver) = detect_loader(&version);
     let effective_loader = version
@@ -2593,7 +2845,28 @@ pub async fn install_version_with_options(
         };
         if is_modern_forge {
             tracker.emit_now("addons", 1, 1, "正在通过安装器构建模组核心");
-            let _ = crate::loaders::ensure_forge_or_neoforge_client_jar(
+            // 安装器可能要跑几分钟（它自己还会补依赖），期间没有任何下载进度
+            // 事件，界面就会停在最后一条文案上，看起来像卡死。定时刷一条带
+            // 耗时的状态，让用户能看到任务仍在推进。
+            let heartbeat = {
+                let tracker = tracker.clone();
+                tokio::spawn(async move {
+                    let started = Instant::now();
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        tracker.emit_throttled(
+                            "addons",
+                            1,
+                            1,
+                            format!(
+                                "正在通过安装器构建模组核心（已等待 {} 秒）",
+                                started.elapsed().as_secs()
+                            ),
+                        );
+                    }
+                })
+            };
+            let build = crate::loaders::ensure_forge_or_neoforge_client_jar(
                 root,
                 &clean_mc,
                 loader_type,
@@ -2602,6 +2875,13 @@ pub async fn install_version_with_options(
                 Some(&instance_id),
             )
             .await;
+            heartbeat.abort();
+            // 以前这里吞掉错误直接宣告完成，用户看到的是「100% 却进不去游戏」。
+            // 现在把原因报上去，失败就是失败。
+            if let Err(error) = build {
+                tracker.emit_now("addons", 1, 1, format!("模组核心构建失败：{error}"));
+                return Err(error);
+            }
         }
     }
 
@@ -6438,15 +6718,106 @@ mod tests {
         serde_json::from_value(json).expect("version detail")
     }
 
+    /// 一个假死/挂着不放的连接不能让整个安装永远结束不了（旧表现就是停在
+    /// 最后一个百分比，既不报错也不完成）：看门狗要报错退出。
+    #[tokio::test]
+    async fn stalled_install_is_reported_instead_of_hanging() {
+        let tracker = DownloadTracker::new("1.21.1", 8, false, Arc::new(|_| {}));
+        let reported = tokio::time::timeout(
+            Duration::from_secs(5),
+            watch_install_stall(
+                tracker,
+                Duration::from_millis(40),
+                INSTALL_RATE_WINDOW,
+                INSTALL_SLOW_WINDOWS,
+            ),
+        )
+        .await
+        .expect("看门狗自己不能挂住");
+        assert!(reported.contains("下载停滞"), "错误欠：{reported}");
+        assert!(
+            reported.contains("核心 Jar") || reported.contains("依赖库"),
+            "应该点名卡住的阶段：{reported}"
+        );
+    }
+
+    /// 阶段都收尾以后不该再报停滞（只是短暂没有字节进账）。
+    #[tokio::test]
+    async fn finished_stages_do_not_trigger_the_stall_watchdog() {
+        let tracker = DownloadTracker::new("1.21.1", 8, false, Arc::new(|_| {}));
+        for stage in ["prepare", "client", "libraries", "assets"] {
+            tracker.set_stage_status(stage, "done");
+        }
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(300),
+            watch_install_stall(
+                tracker,
+                Duration::from_millis(40),
+                INSTALL_RATE_WINDOW,
+                INSTALL_SLOW_WINDOWS,
+            ),
+        )
+        .await;
+        assert!(outcome.is_err(), "阶段全都完成了不应该报停滞");
+    }
+
+    /// 代理把连接吊成“每几十秒挤一点字节”时，字节计数会微动，光看有没有
+    /// 字节发现不了；低速窗口累到上限就要报限速，不能让任务永远结束不了。
+    #[tokio::test]
+    async fn trickling_connection_is_reported_as_rate_limited() {
+        let tracker = DownloadTracker::new("1.21.1", 8, false, Arc::new(|_| {}));
+        let reported = tokio::time::timeout(
+            Duration::from_secs(5),
+            watch_install_stall(
+                tracker,
+                Duration::from_secs(3_600),
+                Duration::from_millis(60),
+                2,
+            ),
+        )
+        .await
+        .expect("看门狗自己不能挂住");
+        assert!(reported.contains("限速"), "错误欠：{reported}");
+    }
+
     /// 资源占绝大多数体积时，资源阶段必须拿到尽可能多的并发连接——Java 版
     /// 装着几千个小文件，这一项直接决定安装速度；旧的固定 45/55 分法只给了
     /// 7 个连接（默认 16 线程）。
     #[test]
     fn assets_stage_gets_most_connections_for_a_java_install() {
         let split = split_stage_threads(16, false, 30_000_000, 500_000_000);
-        assert_eq!(split.assets, 14);
+        assert_eq!(split.assets, 10);
         assert_eq!(split.libraries, 2);
         assert_eq!(split.client, 4);
+    }
+
+    /// 分片数要跟着“正在下载的文件数”走：只剩一个文件时它拿到全部线程，
+    /// 很多文件同时下时每文件至少还有 1 个连接。
+    #[test]
+    fn file_share_hands_idle_threads_to_the_files_still_running() {
+        assert_eq!(file_thread_share(32, 1), 32);
+        assert_eq!(file_thread_share(32, 8), 4);
+        assert_eq!(file_thread_share(32, 40), 1);
+        assert_eq!(file_thread_share(16, 0), 16);
+        // 永远不能给出 0 个连接，否则文件就下不动了。
+        assert_eq!(file_thread_share(1, 64), 1);
+    }
+
+    /// 客户端、依赖库与资源三个阶段是在同一时刻并行跑的，所以三份配额加起来
+    /// 必须正好等于用户设定的线程数。此前客户端那份是额外加上的，安装时实际
+    /// 并发连接数能到设定值的三倍多。
+    #[test]
+    fn java_install_uses_exactly_the_configured_thread_budget() {
+        for threads in 8..=64usize {
+            for has_addons in [false, true] {
+                let split = split_stage_threads(threads, has_addons, 30_000_000, 500_000_000);
+                assert_eq!(
+                    split.client + split.libraries + split.assets + split.addons,
+                    threads,
+                    "threads={threads} addons={has_addons}: {split:?}"
+                );
+            }
+        }
     }
 
     /// 任何线程数（含 1）都不能 panic，两个阶段之和不能超过预算。

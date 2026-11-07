@@ -528,7 +528,7 @@ async fn fetch_adoptium_release(major: u32) -> Result<AdoptiumRelease, String> {
         adoptium_arch(),
         adoptium_os()
     );
-    let releases = net::client()
+    let releases = net::api_client()
         .get(&url)
         .send()
         .await

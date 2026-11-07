@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  cancelContentDownload,
   downloadContentFile,
   getContentVersions,
   getInstalledVersions,
@@ -27,6 +28,7 @@ import {
   resolveMcmodEntry,
 } from "../lib/backend";
 import { formatBytes, formatRelativeDate, pathUnderRoot } from "../lib/format";
+import { isCancelledError } from "../lib/desktop";
 import type {
   ContentHit,
   ContentProjectType,
@@ -134,6 +136,16 @@ function projectSiteLink(
   isBedrock: boolean,
 ): { label: string; url: string } {
   const slug = (project.slug || project.projectId).trim();
+  // Java mods can come from either catalogue; a `cfj:` id means this project
+  // page lives on CurseForge rather than Modrinth.
+  if (project.projectId.startsWith("cfj:")) {
+    return {
+      label: "CurseForge",
+      url: `https://www.curseforge.com/minecraft/mc-mods/${encodeURIComponent(
+        slug.replace(/^cfj:/, ""),
+      )}`,
+    };
+  }
   if (project.projectId.startsWith("cbw:")) {
     return {
       label: "CurseForge",
@@ -404,6 +416,8 @@ export function ContentVersionSelectView({
   // the installer unpacks into the game data folder, not a Java instance.
   const isCurseForgeBedrock =
     project.projectId.startsWith("cfb:") || isBedrockWorld;
+  // A Java mod listed by CurseForge instead of Modrinth.
+  const isCurseForgeMod = project.projectId.startsWith("cfj:");
   const isCurseForgeWorld =
     projectType === "world" && !isBedrockWorld;
 
@@ -530,6 +544,14 @@ export function ContentVersionSelectView({
       ) {
         return false;
       }
+      // Modrinth applies the loader filter server-side; CurseForge rows come
+      // back for every loader, so the same condition is applied here as well.
+      if (
+        loader !== "all" &&
+        !v.loaders.some((l) => l.trim().toLowerCase() === loader)
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         v.versionNumber.toLowerCase().includes(q) ||
@@ -537,7 +559,7 @@ export function ContentVersionSelectView({
         v.files.some((f) => f.filename.toLowerCase().includes(q))
       );
     });
-  }, [versions, query, versionFilter]);
+  }, [versions, query, versionFilter, loader]);
 
   // One collapsible section per loader + Minecraft version, like the reference
   // picker: "NeoForge 1.21.4" first, older versions below.
@@ -593,6 +615,12 @@ export function ContentVersionSelectView({
     });
     return list;
   }, [filteredVersions, installedVersions, isJavaMod, isCurseForgeBedrock]);
+
+  // 光影包落在所选版本游戏目录的 `shaderpacks` 里。
+  const isShaderPack = projectType === "shader" && !isBedrockSource;
+  const shaderTargetPath = selectedVersion
+    ? `versions/${selectedVersion}/shaderpacks`
+    : "shaderpacks";
 
   const siteLink = projectSiteLink(project, projectType, isBedrockSource);
   const wikiLink = `https://search.mcmod.cn/s?key=${encodeURIComponent(project.title)}`;
@@ -672,7 +700,10 @@ export function ContentVersionSelectView({
     try {
       const res = await downloadContentFile({
         root: gameRoot,
-        instanceId: isCurseForgeWorld ? selectedVersion : matched?.id,
+        // 光影读的是所选版本的游戏目录（版本隔离会把它挪到 versions/<id>），
+        // 不带这个版本就会被放到根目录，游戏里永远看不到。
+        instanceId:
+          isCurseForgeWorld || isShaderPack ? selectedVersion : matched?.id,
         projectType,
         url: file.url,
         filename: file.filename,
@@ -681,7 +712,7 @@ export function ContentVersionSelectView({
         title: project.title,
         gameVersions: versionItem.gameVersions,
         loader: isBedrockWorld ? "bedrock" : versionItem.loaders[0],
-        isolation: isCurseForgeWorld ? isolation : undefined,
+        isolation: isCurseForgeWorld || isShaderPack ? isolation : undefined,
         sourceProjectId: isCurseForgeWorld ? project.projectId : undefined,
         sourceFileId: isCurseForgeWorld ? versionItem.id : undefined,
         sourceVersion: isCurseForgeWorld ? versionItem.name : undefined,
@@ -697,13 +728,36 @@ export function ContentVersionSelectView({
         `${matchedNote}已保存至 ${res.filePath} (${formatBytes(res.bytes)})`,
       );
     } catch (err) {
-      onNotify("error", `下载 ${project.title} 失败`, String(err));
+      const message = String(err);
+      // 取消是用户自己的操作，不当成下载失败弹错。优先认主进程给的取消标记，
+      // 老核心只回文案时仍然按文案兼容。
+      if (isCancelledError(err) || message.includes("下载已取消")) {
+        onNotify("info", "已取消下载", `${project.title} 的下载已中止。`);
+      } else {
+        onNotify("error", `下载 ${project.title} 失败`, message);
+      }
     } finally {
       setDownloadingIds((prev) => {
         const next = new Set(prev);
         next.delete(versionItem.id);
         return next;
       });
+    }
+  };
+
+  // 后端按 `content:<类型>:<文件名>` 登记正在下载的任务，取消时用同一个 id。
+  const handleCancelDownload = async (versionItem: ContentVersionItem) => {
+    const file = versionItem.files.find((f) => f.primary) ?? versionItem.files[0];
+    if (!file) return;
+    try {
+      const cancelled = await cancelContentDownload(
+        `content:${projectType}:${file.filename}`,
+      );
+      if (!cancelled) {
+        onNotify("info", "没有可取消的下载", "这次下载可能已经结束。");
+      }
+    } catch (err) {
+      onNotify("error", "取消下载失败", String(err));
     }
   };
 
@@ -746,7 +800,9 @@ export function ContentVersionSelectView({
         ? `${worldSavesRelative}/<地图名>`
         : isJavaMod
           ? (modTargetPath ?? "versions/<对应版本>/mods")
-          : typeDestinationPath(projectType);
+          : isShaderPack
+            ? shaderTargetPath
+            : typeDestinationPath(projectType);
   const folderToOpen = isBedrockWorld
     ? bedrockWorldFolder
     : isCurseForgeBedrock
@@ -755,7 +811,9 @@ export function ContentVersionSelectView({
         ? worldSavesRelative
         : isJavaMod
           ? modTargetPath
-          : typeDestinationPath(projectType);
+          : isShaderPack
+            ? shaderTargetPath
+            : typeDestinationPath(projectType);
 
   const showLoaderFilter =
     !isCurseForgeBedrock &&
@@ -803,6 +861,10 @@ export function ContentVersionSelectView({
                 {isCurseForgeBedrock ? (
                   <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
                     CurseForge · 基岩版
+                  </Badge>
+                ) : isCurseForgeMod ? (
+                  <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
+                    CurseForge · 模组
                   </Badge>
                 ) : isCurseForgeWorld ? (
                   <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9.5px] font-medium text-primary">
@@ -872,8 +934,9 @@ export function ContentVersionSelectView({
                     title={
                       wikiLoading
                         ? "正在 MC 百科查找对应条目…"
-                        : (wikiEntry?.title ??
-                          `${wikiLink}\n未找到完全对应的条目，将打开搜索页`)
+                        : wikiEntry
+                          ? `${wikiEntry.title}\n${wikiEntry.url}`
+                          : `${wikiLink}\n未找到完全对应的条目，将打开搜索页`
                     }
                     className="h-8 gap-1.5 rounded-lg border-primary/40 bg-primary/5 px-3 text-[11.5px] font-medium text-primary shadow-xs hover:border-primary/60 hover:bg-primary/15 hover:text-primary"
                   >
@@ -882,11 +945,34 @@ export function ContentVersionSelectView({
                     ) : (
                       <BookOpen className="size-3.5" />
                     )}
-                    {wikiLoading
-                      ? "查找 MC 百科…"
-                      : wikiEntry
-                        ? "转到 MC 百科"
-                        : "在 MC 百科搜索"}
+                    {/* MC 百科的标题本身就是双语的（`钠 (Sodium)`）：拆开后把
+                        中文名与英文名并排显示，而不是塞在一个标题里。 */}
+                    {wikiLoading ? (
+                      "查找 MC 百科…"
+                    ) : wikiEntry ? (
+                      <>
+                        <span className="text-[10.5px] font-normal text-primary/70">
+                          MC 百科
+                        </span>
+                        {wikiEntry.nameZh ? (
+                          <span className="text-[11.5px] font-semibold">
+                            {wikiEntry.nameZh}
+                          </span>
+                        ) : null}
+                        {wikiEntry.nameZh && wikiEntry.nameEn ? (
+                          <span className="text-[10px] font-normal text-primary/40">
+                            ·
+                          </span>
+                        ) : null}
+                        {wikiEntry.nameEn ? (
+                          <span className="font-mono text-[10.5px] font-normal text-primary/80">
+                            {wikiEntry.nameEn}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      "在 MC 百科搜索"
+                    )}
                   </Button>
                 ) : null}
                 <Button
@@ -1240,6 +1326,32 @@ export function ContentVersionSelectView({
                                 </>
                               ) : null}
                             </p>
+                            {v.dependencies && v.dependencies.length > 0 ? (
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                <span className="text-[10px] text-muted-foreground/70">
+                                  前置
+                                </span>
+                                {v.dependencies.map((dep) => (
+                                  <span
+                                    key={dep.projectId}
+                                    title={
+                                      dep.required
+                                        ? "必需的前置模组，缺失时游戏无法启动"
+                                        : "可选依赖"
+                                    }
+                                    className={cn(
+                                      "rounded border px-1 py-px text-[10px] leading-4",
+                                      dep.required
+                                        ? "border-amber-500/30 bg-amber-500/10 text-amber-400/90"
+                                        : "border-border/60 bg-muted/25 text-muted-foreground",
+                                    )}
+                                  >
+                                    {dep.name}
+                                    {dep.required ? "" : "（可选）"}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
 
                           {isJavaMod ? (
@@ -1262,26 +1374,37 @@ export function ContentVersionSelectView({
                             )
                           ) : null}
 
-                          <Button
-                            size="sm"
-                            disabled={isBusy || !canDownload}
-                            onClick={() => void handleDownload(v)}
-                            title={
-                              canDownload
-                                ? `下载 ${v.versionNumber}`
-                                : `本地没有 ${describedVersion} 的实例，装好该版本后才能安装这个模组`
-                            }
-                            className="h-7 shrink-0 gap-1.5 px-3 text-[11px]"
-                          >
-                            {isBusy ? (
-                              <LoaderCircle className="size-3.5 animate-spin" />
-                            ) : isDownloaded ? (
-                              <Check className="size-3.5" />
-                            ) : (
-                              <Download className="size-3.5" />
-                            )}
-                            {isBusy ? "下载中" : isDownloaded ? "再次下载" : "下载"}
-                          </Button>
+                          {isBusy ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleCancelDownload(v)}
+                              title="中止这次下载"
+                              className="h-7 shrink-0 gap-1.5 border-destructive/40 px-3 text-[11px] text-destructive hover:bg-destructive/10"
+                            >
+                              <X className="size-3.5" />
+                              取消下载
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              disabled={!canDownload}
+                              onClick={() => void handleDownload(v)}
+                              title={
+                                canDownload
+                                  ? `下载 ${v.versionNumber}`
+                                  : `本地没有 ${describedVersion} 的实例，装好该版本后才能安装这个模组`
+                              }
+                              className="h-7 shrink-0 gap-1.5 px-3 text-[11px]"
+                            >
+                              {isDownloaded ? (
+                                <Check className="size-3.5" />
+                              ) : (
+                                <Download className="size-3.5" />
+                              )}
+                              {isDownloaded ? "再次下载" : "下载"}
+                            </Button>
+                          )}
                         </div>
                       );
                     })}

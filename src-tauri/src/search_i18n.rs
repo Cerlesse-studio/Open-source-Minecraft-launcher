@@ -8,8 +8,11 @@
 //!
 //! The table is deliberately a *glossary*, not a translator: it covers
 //! Minecraft content terms plus the most-used project aliases, works offline,
-//! and never changes a query it does not understand. Callers keep the original
-//! query as a fallback, so a project whose real title is Chinese still matches.
+//! and never changes a query it does not understand.
+//!
+//! `query_variants` exposes both the translated keywords and the original text:
+//! callers search both and merge the rows, so a project whose real title is
+//! Chinese is still found next to the English catalogue matches.
 
 /// `(term, english keywords)`. Terms are matched case-insensitively and the
 /// longest match wins, so multi-character names must simply be present here —
@@ -41,6 +44,51 @@ const GLOSSARY: &[(&str, &str)] = &[
     ("銣", "rubidium"),
     ("龙之研究", "draconic evolution"),
     ("龍之研究", "draconic evolution"),
+    ("通用机械", "mekanism"),
+    ("通用機械", "mekanism"),
+    ("热力膨胀", "thermal expansion"),
+    ("熱力膨脹", "thermal expansion"),
+    ("工业先锋", "industrial foregoing"),
+    ("工業先鋒", "industrial foregoing"),
+    ("更多实用设备", "extra utilities"),
+    ("更多實用設備", "extra utilities"),
+    ("星辉魔法", "astral sorcery"),
+    ("星輝魔法", "astral sorcery"),
+    ("冰与火之歌", "ice and fire"),
+    ("冰與火之歌", "ice and fire"),
+    ("虚无世界", "advent of ascension"),
+    ("虛無世界", "advent of ascension"),
+    ("交错次元", "the betweenlands"),
+    ("交錯次元", "the betweenlands"),
+    ("潘马斯", "pams harvestcraft"),
+    ("精妙背包", "sophisticated backpacks"),
+    ("精妙核心", "sophisticated core"),
+    ("简易存储", "simple storage network"),
+    ("簡易存儲", "simple storage network"),
+    ("瓦尔基里", "valkyrien skies"),
+    ("瓦爾基里", "valkyrien skies"),
+    ("地形生成", "worldgen"),
+    ("结构生成", "structure generation"),
+    ("結構生成", "structure generation"),
+    ("遗迹", "ruins"),
+    ("遺跡", "ruins"),
+    ("考古", "archaeology"),
+    ("恐龙", "dinosaurs"),
+    ("恐龍", "dinosaurs"),
+    ("军事", "military"),
+    ("軍事", "military"),
+    ("皮肤", "skin"),
+    ("皮膚", "skin"),
+    ("字体", "font"),
+    ("字體", "font"),
+    ("快捷键", "keybinds"),
+    ("快捷鍵", "keybinds"),
+    ("启动器", "launcher"),
+    ("啟動器", "launcher"),
+    ("配置", "config"),
+    ("屏幕", "screen"),
+    ("冒险地图", "adventure map"),
+    ("冒險地圖", "adventure map"),
     ("附属", "addon"),
     ("附屬", "addon"),
     ("附加", "addon"),
@@ -272,6 +320,11 @@ const GLOSSARY: &[(&str, &str)] = &[
     ("建築", "building"),
     ("兵器", "weapon"),
     ("銃", "gun"),
+    ("アドオン", "addon"),
+    ("マルチプレイ", "multiplayer"),
+    ("データパック", "datapack"),
+    ("テクスチャパック", "resource pack"),
+    ("マップ", "map"),
     // ---------------------------------------------------------------------
     // 한국어
     // ---------------------------------------------------------------------
@@ -290,6 +343,11 @@ const GLOSSARY: &[(&str, &str)] = &[
     ("가구", "furniture"),
     ("건축", "building"),
     ("무기", "weapon"),
+    ("애드온", "addon"),
+    ("멀티플레이", "multiplayer"),
+    ("데이터팩", "datapack"),
+    ("모드팩", "modpack"),
+    ("맵", "map"),
     // ---------------------------------------------------------------------
     // Русский
     // ---------------------------------------------------------------------
@@ -306,6 +364,14 @@ const GLOSSARY: &[(&str, &str)] = &[
     ("ферма", "farm"),
     ("мебель", "furniture"),
     ("строительство", "building"),
+    ("шейдеры", "shader"),
+    ("текстуры", "resource pack"),
+    ("аддон", "addon"),
+    ("модпак", "modpack"),
+    ("сборка", "modpack"),
+    ("сервер", "server"),
+    ("карты", "map"),
+    ("приключения", "adventure"),
 ];
 
 fn push_terms(terms: &mut Vec<String>, text: &str) {
@@ -381,6 +447,33 @@ pub fn translate_query(query: &str) -> Option<String> {
     Some(terms.join(" "))
 }
 
+/// Every query worth sending to an English-only catalogue, best first.
+///
+/// The translated keywords lead because that is how Modrinth and CurseForge
+/// index projects; the original text follows so a project that is genuinely
+/// titled in Chinese, Japanese or Russian is not hidden by the glossary.
+/// Callers search the variants and merge the rows (see `content::search_content`),
+/// which is what makes a mixed query such as `钠 优化 光影` useful instead of
+/// narrow. An empty query yields no variants.
+pub fn query_variants(query: &str) -> Vec<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut variants: Vec<String> = Vec::new();
+    if let Some(translated) = translate_query(trimmed) {
+        variants.push(translated);
+    }
+    if !variants
+        .iter()
+        .any(|variant| variant.eq_ignore_ascii_case(trimmed))
+    {
+        variants.push(trimmed.to_string());
+    }
+    variants
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +519,16 @@ mod tests {
         assert_eq!(translate_query("紫色小马"), None);
         // Only punctuation: nothing to translate.
         assert_eq!(translate_query("，。"), None);
+    }
+
+    #[test]
+    fn query_variants_lead_with_english_and_keep_the_original() {
+        assert_eq!(query_variants("钠"), vec!["sodium", "钠"]);
+        // An English query is searched as typed, once.
+        assert_eq!(query_variants(" Sodium "), vec!["Sodium"]);
+        assert!(query_variants("   ").is_empty());
+        // A query the glossary does not know is not rewritten.
+        assert_eq!(query_variants("紫色小马"), vec!["紫色小马"]);
     }
 
     #[test]

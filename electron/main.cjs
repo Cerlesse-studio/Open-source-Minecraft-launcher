@@ -361,6 +361,22 @@ function startCore() {
   });
 }
 
+// 用户主动取消/暂停是正常的任务状态，不是故障。ipcMain.handle 里只要 reject，
+// Electron 就会自己打印“Error occurred in handler for 'core:invoke'”，把一次
+// 正常取消变成满屏异常。这里按核心进程给出的已知文案分类，换成结构化结果
+// 返回给渲染进程（由 src/lib/coreResult.ts 还原成带 code 的异常）。
+// 注意：只认这几句明确的取消文案，其余错误照旧抛出——不能把所有异常都当成取消。
+const CANCELLED_CORE_MESSAGES = new Set([
+  '下载任务已被用户取消或暂停',
+  '下载已取消',
+  '已取消启动',
+]);
+
+function isExpectedCancellation(error) {
+  const message = error && typeof error.message === 'string' ? error.message : String(error ?? '');
+  return CANCELLED_CORE_MESSAGES.has(message.trim());
+}
+
 function failPending(error) {
   for (const { reject } of pending.values()) reject(error);
   pending.clear();
@@ -889,7 +905,14 @@ app.whenReady().then(async () => {
       );
     }
     if (command === 'install_app_update') return updater.installUpdate(args?.path);
-    return invokeCore(command, args);
+    try {
+      return await invokeCore(command, args);
+    } catch (error) {
+      if (isExpectedCancellation(error)) {
+        return { __cancelled: true, message: error.message };
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle('dialog:open', async (event, options = {}) => {

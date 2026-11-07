@@ -35,53 +35,6 @@ pub fn skip_requested() -> bool {
     )
 }
 
-/// 启动前检查：返回 `false` 表示已经提示过用户，不要再创建窗口。
-pub fn run_checks() -> bool {
-    if skip_requested() {
-        return true;
-    }
-
-    #[cfg(not(windows))]
-    {
-        true
-    }
-
-    #[cfg(windows)]
-    {
-        match windows_version() {
-            Some((major, _, _)) if major >= 10 => {}
-            Some((major, minor, build)) => {
-                let text = format!(
-                    "当前系统：{}\n\n\
-                     启动器基于 Tauri 2 与 Microsoft Edge WebView2 构建，官方只支持 \
-                     Windows 10 / 11（64 位）。\n\n\
-                     Windows XP、Vista、7、8、8.1 已经没有可用的 WebView2 运行时：\
-                     微软从 Edge 109 起停止为这些系统更新 WebView2，Tauri 2.12 也正式\
-                     移除了 Windows 7 支持，窗口在这些系统上无法创建。\n\n\
-                     请升级到 Windows 10 或 Windows 11 后再使用。",
-                    version_label(major, minor, build)
-                );
-                message_box("无法在这个 Windows 版本上运行", &text, MB_OK | MB_ICONERROR);
-                return false;
-            }
-            // 读不到版本号时不拦，交给 Tauri 自己尝试，避免误伤。
-            None => {}
-        }
-
-        if webview2_version().is_none() {
-            let text = "启动器需要 Microsoft Edge WebView2 运行时，但当前系统里没有检测到它。\n\n\
-                        它是 Windows 10 / 11 上的系统组件，缺失时启动器无法创建窗口。\n\n\
-                        点击「是」打开微软官方下载页面，安装完成后重新打开启动器即可。";
-            if message_box("缺少 WebView2 运行时", text, MB_YESNO | MB_ICONWARNING) == IDYES {
-                open_url(WEBVIEW2_DOWNLOAD);
-            }
-            return false;
-        }
-
-        true
-    }
-}
-
 /// 给界面和日志用的系统名称，例如 `Windows 11（10.0.26100）`。
 pub fn os_label() -> String {
     #[cfg(windows)]

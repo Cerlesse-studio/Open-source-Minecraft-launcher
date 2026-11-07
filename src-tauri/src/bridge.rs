@@ -35,9 +35,6 @@ impl AppHandle {
 }
 pub struct Paths;
 impl Paths {
-    pub fn home_dir(&self) -> Result<PathBuf, String> {
-        env_path("OSML_HOME")
-    }
     pub fn app_config_dir(&self) -> Result<PathBuf, String> {
         env_path("OSML_CONFIG")
     }
@@ -121,9 +118,22 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             )
             .await?,
         ),
-        "download_content_file" => {
-            to_value(crate::download_content_file(app.clone(), argument(&args, "request")?).await?)
-        }
+        "download_content_file" => to_value(
+            crate::download_content_file(
+                app.clone(),
+                app.state::<InstallState>(),
+                argument(&args, "request")?,
+            )
+            .await?,
+        ),
+        "cancel_content_download" => to_value(
+            crate::cancel_content_download(
+                app.clone(),
+                app.state::<InstallState>(),
+                argument(&args, "id").ok(),
+            )
+            .await?,
+        ),
         "check_java_world_update" => to_value(
             crate::check_java_world_update(
                 argument(&args, "projectId")?,
@@ -159,6 +169,14 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
                 app.clone(),
                 app.state::<GameState>(),
                 argument(&args, "request")?,
+            )
+            .await?,
+        ),
+        "cancel_launch" => to_value(
+            crate::cancel_launch(
+                app.clone(),
+                app.state::<GameState>(),
+                app.state::<InstallState>(),
             )
             .await?,
         ),

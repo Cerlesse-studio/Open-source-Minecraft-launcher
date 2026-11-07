@@ -38,6 +38,14 @@ regex = "1"
 tar = "0.4"
 base64 = "0.22"
 
+# `pcl-rust`（同级目录里的重构版工作区）按路径依赖并入本次构建：
+# `pcl-resource` 负责资源目录的归一化模型与搜索会话，`pcl-download` 负责内容
+# 文件的分段传输引擎，`pcl-core` 提供两者共用的 `FileSpec` / `DownloadConfig`
+# 等类型。它们与主工程一样按平台选 native-tls / rustls，不引入新的 TLS 后端。
+pcl-core = { path = "../pcl-rust/crates/pcl-core" }
+pcl-download = { path = "../pcl-rust/crates/pcl-download" }
+pcl-resource = { path = "../pcl-rust/crates/pcl-resource" }
+
 # Windows uses Schannel (the OS certificate store) instead of rustls. That keeps
 # the Windows build free of any C toolchain: rustls pulls `ring`, whose build
 # script compiles C with `cl.exe` and fails when the host has no Visual Studio

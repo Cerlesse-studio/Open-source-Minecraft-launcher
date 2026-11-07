@@ -5,6 +5,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Forge / NeoForge 安装器（`java -jar …-installer.jar --installClient`）的
+/// 最长运行时间。它会自己再去 maven 补齐缺失依赖，网络卡住时没有任何超时，
+/// 进程会一直挂着，界面就永远停在「正在通过安装器构建模组核心」。
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+
+/// 离线试跑的上限：不联网时它要么很快成功，要么很快报缺文件。
+const OFFLINE_INSTALLER_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoaderVersionItem {
@@ -79,7 +87,7 @@ async fn get_json_with_timeout_duration<T: for<'de> Deserialize<'de>>(
     url: &str,
     timeout: Duration,
 ) -> Result<T, String> {
-    let response = net::client()
+    let response = net::api_client()
         .get(url)
         .timeout(timeout)
         .send()
@@ -294,7 +302,7 @@ async fn fetch_forge_official(mc_version: &str) -> Option<Vec<LoaderVersionItem>
     let maven_meta_url =
         "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
     let mut versions = Vec::new();
-    if let Ok(client_resp) = net::client().get(maven_meta_url).send().await {
+    if let Ok(client_resp) = net::api_client().get(maven_meta_url).send().await {
         if client_resp.status().is_success() {
             if let Ok(xml) = client_resp.text().await {
                 let prefix = format!("<version>{mc_version}-");
@@ -934,6 +942,77 @@ pub fn is_valid_patched_client_jar(path: &Path) -> bool {
     valid
 }
 
+/// 安装器帮助文本里是否声明了 `--offline`（NeoForge 与较新的 Forge 有）。
+fn help_mentions_offline(text: &str) -> bool {
+    text.contains("--offline")
+}
+
+/// 问一下安装器支不支持 `--offline`。不支持的旧安装器会直接退非零，这也算
+/// “不支持”，不会影响后面联网跑。
+async fn installer_supports_offline(java: &Path, installer: &Path) -> bool {
+    let mut cmd = tokio::process::Command::new(java);
+    cmd.arg("-jar")
+        .arg(installer)
+        .arg("--help")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    match tokio::time::timeout(Duration::from_secs(30), cmd.output()).await {
+        Ok(Ok(output)) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            help_mentions_offline(&text)
+        }
+        _ => false,
+    }
+}
+
+/// 跑一次 Forge / NeoForge 安装器。
+///
+/// `kill_on_drop` + 外层 `timeout`：安装器在受限网络上会卡在下载依赖上且自己
+/// 没有任何超时，不 kill 就会让整个安装任务永远结束不了。
+async fn run_loader_installer(
+    java: &Path,
+    installer: &Path,
+    root: &Path,
+    extra_args: &[&str],
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut cmd = tokio::process::Command::new(java);
+    cmd.arg("-jar")
+        .arg(installer)
+        .arg("--installClient")
+        .arg(root);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(format!("启动加载器处理器失败: {error}")),
+        Err(_) => Err(format!(
+            "安装器运行超过 {} 分钟没有结束",
+            (timeout.as_secs() / 60).max(1)
+        )),
+    }
+}
+
 pub async fn ensure_forge_or_neoforge_client_jar(
     root: &Path,
     mc_version: &str,
@@ -1164,26 +1243,57 @@ pub async fn ensure_forge_or_neoforge_client_jar(
         crate::java::ensure_java(root, major, None, None).await?
     };
 
-    // Run java -jar <installer> --installClient <root>
-    let mut cmd = tokio::process::Command::new(&java_bin);
-    cmd.arg("-jar")
-        .arg(&installer_path)
-        .arg("--installClient")
-        .arg(root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    // 第一遍先离线跑：库文件我们已经自己下好了，安装器在 `--offline` 下只查本地
+    // 文件、不碰网络，通常几秒就结束；受限网络上正是它在自行补依赖时卡死，
+    // 界面就永远停在「正在通过安装器构建模组核心」。
+    // 只有安装器自己支持 --offline 才跑这一遍（老版 Forge 不认，传下去只会
+    // 浪费时间），能不能支持看它的帮助文本。
+    let mut offline = None;
+    if installer_supports_offline(&java_bin, &installer_path).await {
+        offline = run_loader_installer(
+            &java_bin,
+            &installer_path,
+            root,
+            &["--offline"],
+            OFFLINE_INSTALLER_TIMEOUT,
+        )
+        .await
+        .ok();
     }
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("启动加载器处理器失败: {e}"))?;
+    let mut offline_ok = false;
+    if let Some(output) = &offline {
+        let check_path = client_jar_path.clone();
+        offline_ok = output.status.success()
+            && tokio::task::spawn_blocking(move || is_valid_patched_client_jar(&check_path))
+                .await
+                .unwrap_or(false);
+    }
 
+    // 离线跑不通（缺依赖、或老版本安装器不认 --offline）才联网补一遍，并且
+    // 这次带上超时：卡住就杀掉子进程报错，而不是让整个安装任务永远挂在那里。
+    let output = if offline_ok {
+        offline.expect("checked above")
+    } else {
+        run_loader_installer(
+            &java_bin,
+            &installer_path,
+            root,
+            &[],
+            INSTALLER_TIMEOUT,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "构建 {loader_type} 客户端核心失败：{error}\n\
+                 安装器会自行从 maven 补齐依赖，网络受限时容易卡住；请检查网络（或在设置里换一个下载源）后重试，\
+                 已下载的文件不会重新下载。"
+            )
+        })?
+    };
+
+    // 不论成功、失败还是超时，都要把备份的完整版本 JSON 还回去：安装器可能
+    // 已经把默认版本写成了半成品。
     if let Some(prev_bytes) = backup_target_json {
         if prev_bytes.len() > 20_000 {
             let _ = tokio::fs::write(&default_target_json, prev_bytes).await;
@@ -1466,6 +1576,18 @@ mod tests {
         assert!(items.iter().any(|i| i.stable));
     }
 
+    /// 安装器没有 `--offline` 时不能盲目传这个参数（旧版 Forge 会直接报错），
+    /// 所以只认帮助文本里列出来的。
+    #[test]
+    fn offline_flag_is_detected_from_installer_help() {
+        assert!(help_mentions_offline(
+            "  --offline              Don't attempt any network calls"
+        ));
+        assert!(!help_mentions_offline(
+            "  --installClient        Install a client to the specified directory"
+        ));
+    }
+
     #[tokio::test]
     async fn test_ensure_forge_client_jar_skips_when_valid() {
         let temp_dir = std::env::temp_dir().join(format!("test_forge_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -1485,10 +1607,15 @@ mod tests {
         {
             let file = std::fs::File::create(&client_jar_path).unwrap();
             let mut zip = zip::ZipWriter::new(file);
-            let options = zip::write::SimpleFileOptions::default();
+            // 必须用 Stored（不压缩）：is_valid_patched_client_jar 会把小于
+            // 100 KB 的文件当成占位空壳。全零填充会被 deflate 压到几 KB，
+            // 于是这个测试以前根本走不到「已存在且有效」的快速路径，而是真的
+            // 去跑安装器、联网下载，在受限网络上卡到超时。
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("net/minecraft/client/Minecraft.class", options).unwrap();
             use std::io::Write;
-            let padding = vec![0u8; 120 * 1024];
+            let padding = vec![7u8; 120 * 1024];
             zip.write_all(&padding).unwrap();
             zip.finish().unwrap();
         }

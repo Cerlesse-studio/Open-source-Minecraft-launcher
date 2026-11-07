@@ -99,6 +99,8 @@ interface HomeViewProps {
   launchProgress: InstallProgress | null;
   onLaunch: () => void;
   onStop: () => void;
+  /** 「正在启动…」阶段取消本次启动（中断补文件、下 Java、跑安装器）。 */
+  onCancelLaunch?: () => void;
   onOpenVersionSelect: () => void;
   onOpenVersionSettings: () => void;
   /** Jumps to the launcher settings; used by the custom home page hints. */
@@ -460,6 +462,7 @@ export function HomeView({
   launchProgress,
   onLaunch,
   onStop,
+  onCancelLaunch,
   onOpenVersionSelect,
   onOpenVersionSettings,
   onOpenSettings,
@@ -896,18 +899,23 @@ export function HomeView({
     ? isBedrock
       ? t("终止基岩版")
       : t("停止运行")
-    : isLaunching || bedrockLaunching
-      ? t("正在启动…")
-      : isBedrock
-        ? isBedrockInstalled
-          ? settings?.launchButtonText?.trim() || t("启动基岩版")
-          : t("获取并下载基岩版")
-        : launchLabel;
+    : isLaunching
+      ? t("取消启动")
+      : bedrockLaunching
+        ? t("正在启动…")
+        : isBedrock
+          ? isBedrockInstalled
+            ? settings?.launchButtonText?.trim() || t("启动基岩版")
+            : t("获取并下载基岩版")
+          : launchLabel;
 
   /** The big button and the launch menu run the same action. */
   const handlePrimaryAction = () => {
     if (isRunning) {
       onStop();
+    } else if (isLaunching) {
+      // 启动准备中：同一个按钮用作取消，不然只能干等下载/安装跑完。
+      onCancelLaunch?.();
     } else if (isBedrock) {
       if (isBedrockInstalled) {
         void handleLaunchBedrock();
@@ -1615,17 +1623,18 @@ export function HomeView({
                 variant={isRunning ? "outline" : "default"}
                 onClick={handlePrimaryAction}
                 disabled={
-                  (isLaunching ||
-                    bedrockLaunching ||
-                    (!isBedrock && !account?.signedIn && nameInvalid)) &&
-                  !isRunning
+                  isRunning || isLaunching
+                    ? false
+                    : bedrockLaunching || (!isBedrock && !account?.signedIn && nameInvalid)
                 }
                 className={cn(
-                  "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
+                  // relative + overflow-hidden：进度条放按钮内部，圆角处会裁掉；
+                  // 自带的 box-shadow 在元素外部，不会被裁。
+                  "relative h-16 w-full overflow-hidden rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
                   isRunning
                     ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
                     : "shadow-[0_18px_44px_-24px_var(--primary)]",
-                  (isLaunching || bedrockLaunching) && "disabled:opacity-100",
+                  bedrockLaunching && "disabled:opacity-100",
                 )}
               >
                 {isLaunching || bedrockLaunching ? (
@@ -1636,18 +1645,20 @@ export function HomeView({
                   <Play className="size-5 fill-current" />
                 )}
                 {primaryLabel}
+                {isLaunching ? (
+                  <Progress
+                    value={percent ?? 30}
+                    aria-label="启动进度"
+                    className={cn(
+                      // w-auto 必须写：Progress 基础样式带 w-full，会盖掉
+                      // inset-x-4 算出的宽度，右边溢出 16px。
+                      "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 w-auto bg-primary-foreground/20",
+                      "[&_[data-slot=progress-indicator]]:bg-primary-foreground",
+                      percent === null && "animate-pulse",
+                    )}
+                  />
+                ) : null}
               </Button>
-              {isLaunching ? (
-                <Progress
-                  value={percent ?? 30}
-                  aria-label="启动进度"
-                  className={cn(
-                    "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 bg-primary-foreground/20",
-                    "[&_[data-slot=progress-indicator]]:bg-primary-foreground",
-                    percent === null && "animate-pulse",
-                  )}
-                />
-              ) : null}
             </div>
 
             {/* Quick action buttons. Version settings only make sense for a

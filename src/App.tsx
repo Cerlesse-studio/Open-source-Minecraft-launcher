@@ -138,6 +138,7 @@ function ViewLoading() {
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import {
+  cancelContentDownload,
   cancelInstall,
   checkVersionFiles,
   configureDeveloperOptions,
@@ -153,6 +154,7 @@ import {
   installBedrockVersion,
   installEasytier,
   installVersion,
+  cancelLaunch,
   isDesktop,
   launchBedrock,
   launchGame,
@@ -315,6 +317,8 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [versionSettings, setVersionSettings] = useState(loadVersionSettings);
   const activeVisibilityRef = useRef<LauncherVisibility>("keep");
+  // 「取消启动」是用户主动行为：用它压掉随后必然出现的启动失败提示。
+  const launchCancelledRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem("cobble.sidebar.collapsed") === "1";
@@ -623,6 +627,11 @@ export default function App() {
 
   /** 内核/组件类下载统一记录在这里，下载页只读这一份状态。 */
   const applyContentProgress = useCallback((payload: ContentDownloadProgress) => {
+    // 用户主动取消：任务直接从下载页消失，和版本安装取消一样不留失败记录。
+    if (payload.stage === "cancelled") {
+      setBackgroundTasks((current) => current.filter((task) => task.id !== payload.id));
+      return;
+    }
     const isDone = payload.stage === "done";
     const isError = payload.stage === "error";
     const status: BackgroundDownloadTask["status"] = isDone
@@ -738,6 +747,28 @@ export default function App() {
     const entry: LogEntry = { id: ++logId.current, stream, line, at: timeNow() };
     setLogs((current) => [...current, entry].slice(-MAX_LOGS));
   }, []);
+
+  /** 取消后台资源下载（模组/光影/资源包/地图）；不传 id 就是全部。 */
+  const handleCancelContentTask = useCallback(
+    async (id?: string) => {
+      try {
+        const cancelled = await cancelContentDownload(id);
+        if (!cancelled) {
+          pushToast("info", "没有可取消的下载", "这个任务已经结束或不在下载中。");
+          return;
+        }
+        const name = id ? id.split(":").slice(2).join(":") : "全部资源";
+        setBackgroundTasks((current) =>
+          id ? current.filter((task) => task.id !== id) : [],
+        );
+        pushToast("info", "已取消下载", `已中止 ${name} 的下载任务。`);
+        pushLog("cobble", `已取消资源下载 ${id ?? "（全部）"}。`);
+      } catch (error) {
+        pushToast("error", "取消失败", String(error));
+      }
+    },
+    [pushLog, pushToast],
+  );
 
   const refreshManifest = useCallback(
     async (root?: string, force = false) => {
@@ -1543,6 +1574,7 @@ export default function App() {
         return;
       }
 
+      launchCancelledRef.current = false;
       setLaunchProgress({
         versionId,
         stage: "java",
@@ -1676,6 +1708,12 @@ export default function App() {
         } catch (repairError) {
           setRuntime({ status: "idle" });
           setLaunchProgress(null);
+          if (launchCancelledRef.current) {
+            launchCancelledRef.current = false;
+            pushToast("info", "已取消启动", "补全游戏文件已中断。");
+            pushLog("cobble", "已取消启动。");
+            return;
+          }
           pushToast("error", "自动补全游戏文件失败", String(repairError));
           pushLog("cobble", `${versionId} 自动补全失败: ${String(repairError)}`);
           return;
@@ -1688,6 +1726,14 @@ export default function App() {
         void detectJavaForRoot(launchRoot);
       } catch (error) {
         const message = String(error);
+        if (launchCancelledRef.current || message.includes("已取消启动")) {
+          launchCancelledRef.current = false;
+          setRuntime({ status: "idle" });
+          setLaunchProgress(null);
+          pushToast("info", "已取消启动", "游戏没有启动。");
+          pushLog("cobble", "已取消启动。");
+          return;
+        }
         const needsFileRepair =
           /游戏依赖不完整|原生库缺失|客户端 jar 为空或下载不完整/i.test(message);
         if (needsFileRepair) {
@@ -1699,6 +1745,12 @@ export default function App() {
           } catch (repairError) {
             setRuntime({ status: "idle" });
             setLaunchProgress(null);
+            if (launchCancelledRef.current) {
+              launchCancelledRef.current = false;
+              pushToast("info", "已取消启动", "补全游戏文件已中断。");
+              pushLog("cobble", "已取消启动。");
+              return;
+            }
             pushToast("error", "自动补全后启动失败", String(repairError));
             pushLog(
               "cobble",
@@ -1737,6 +1789,31 @@ export default function App() {
       pushToast("error", "无法结束游戏", String(error));
     }
   }, [pushToast]);
+
+  /** 在「正在启动…」阶段取消：中断补文件/下 Java/跑安装器。 */
+  const handleCancelLaunch = useCallback(async () => {
+    launchCancelledRef.current = true;
+    // 进程已经起来、但游戏窗口还没出现时状态已经是 running，这时取消会直接
+    // 结束进程：启动流程早已返回，没人再弹「已取消启动」，所以在这里补上。
+    const cancellingRunningProcess = runtime.status === "running";
+    setRuntime((previous) =>
+      previous.status === "preparing"
+        ? { ...previous, detail: "正在取消启动…" }
+        : previous,
+    );
+    try {
+      await cancelLaunch();
+      pushLog("cobble", "已请求取消启动。");
+      if (cancellingRunningProcess) {
+        launchCancelledRef.current = false;
+        setRuntime({ status: "idle" });
+        pushToast("info", "已取消启动", "游戏窗口没有出现，进程已结束。");
+      }
+    } catch (error) {
+      launchCancelledRef.current = false;
+      pushToast("error", "取消失败", String(error));
+    }
+  }, [pushLog, pushToast, runtime.status]);
 
   const openFolder = useCallback(
     async (path: string) => {
@@ -1853,6 +1930,7 @@ export default function App() {
                 launchProgress={launchProgress}
                 onLaunch={() => void handleLaunch(undefined, { stay: true })}
                 onStop={() => void handleStop()}
+                onCancelLaunch={() => void handleCancelLaunch()}
                 onOpenVersionSelect={() => setView("version-select")}
                 onOpenVersionSettings={() => setView("version-settings")}
                 onOpenSettings={() => setView("settings")}
@@ -2021,6 +2099,7 @@ export default function App() {
                     );
                   }}
                   onRetryBackgroundTask={(id) => void handleRetryBackgroundTask(id)}
+                  onCancelBackgroundTask={(id) => void handleCancelContentTask(id)}
                   onDeleteHistoryItem={(id) =>
                     setDownloadHistory((prev) => prev.filter((r) => r.id !== id))
                   }
