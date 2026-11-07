@@ -6,7 +6,6 @@ import {
   Download,
   FolderOpen,
   Layers3,
-  LoaderCircle,
   MemoryStick,
   Play,
   RefreshCw,
@@ -79,8 +78,6 @@ interface PlayViewProps {
   logs: LogEntry[];
   onLaunch: () => void;
   onStop: () => void;
-  /** 取消「正在启动…」（中断补文件、下 Java、跑加载器安装器）。 */
-  onCancelLaunch?: () => void;
   onInstall: (versionId: string) => void;
   onOpenVersions: () => void;
   onOpenSettings: () => void;
@@ -205,7 +202,6 @@ export function PlayView({
   logs,
   onLaunch,
   onStop,
-  onCancelLaunch,
   onInstall,
   onOpenVersions,
   onOpenSettings,
@@ -262,7 +258,7 @@ export function PlayView({
   const primaryLabel = isRunning
     ? "结束游戏"
     : isLaunching
-      ? "取消启动"
+      ? "正在启动…"
       : isInstalled
         ? "开始游戏"
         : isInstalling
@@ -360,15 +356,10 @@ export function PlayView({
                     <Button
                       size="lg"
                       className="accent-glow h-10 gap-2 rounded-lg px-5 text-[13px] font-semibold"
-                      onClick={isRunning ? onStop : isLaunching ? onCancelLaunch : onLaunch}
+                      onClick={isRunning ? onStop : onLaunch}
+                      disabled={isLaunching}
                     >
-                      {isRunning ? (
-                        <Square className="size-3.5 fill-current" />
-                      ) : isLaunching ? (
-                        <LoaderCircle className="size-4 animate-spin" />
-                      ) : (
-                        <Play className="size-4 fill-current" />
-                      )}
+                      {isRunning ? <Square className="size-3.5 fill-current" /> : <Play className="size-4 fill-current" />}
                       {primaryLabel}
                     </Button>
                   ) : (

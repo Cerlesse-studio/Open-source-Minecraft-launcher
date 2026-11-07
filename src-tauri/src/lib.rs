@@ -8,11 +8,9 @@ pub mod java;
 pub mod littleskin;
 pub mod loaders;
 pub mod mcmod;
-pub mod metadata_cache;
 pub mod minecraft;
 pub mod multiplayer;
 mod net;
-pub mod pcl;
 pub mod platform;
 pub mod search_i18n;
 
@@ -27,7 +25,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -38,59 +36,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub struct InstallState {
     running: Mutex<Option<String>>,
     abort_handle: Mutex<Option<tokio::task::AbortHandle>>,
-    /// 模组/光影/资源包/地图这类内容下载的任务句柄。它们故意和版本安装分开：
-    /// 取消一次资源下载不能顺带把正在安装的版本也停掉，反之也一样。
-    content: Mutex<std::collections::HashMap<String, ContentTask>>,
-}
-
-/// 一个正在进行的资源下载：取消时要中止它、回传事件名，并清掉半成品。
-struct ContentTask {
-    id: String,
-    title: String,
-    filename: String,
-    project_type: String,
-    root: PathBuf,
-    abort: tokio::task::AbortHandle,
-}
-
-impl InstallState {
-    fn register_content(&self, task: ContentTask) {
-        if let Ok(mut guard) = self.content.lock() {
-            guard.insert(task.id.clone(), task);
-        }
-    }
-
-    /// 只摘掉自己那一条：同一时间可能有多个内容下载在跑。
-    fn release_content(&self, id: &str) {
-        if let Ok(mut guard) = self.content.lock() {
-            guard.remove(id);
-        }
-    }
-
-    /// 取消一个指定任务，或者（id 为空时）全部内容下载。
-    fn take_content(&self, id: Option<&str>) -> Vec<ContentTask> {
-        let Ok(mut guard) = self.content.lock() else {
-            return Vec::new();
-        };
-        match id {
-            Some(id) => guard.remove(id).into_iter().collect(),
-            None => guard.drain().map(|(_, task)| task).collect(),
-        }
-    }
 }
 
 pub struct GameState {
     child: Arc<Mutex<Option<Child>>>,
     stopping: Arc<AtomicBool>,
     bedrock_running: Arc<AtomicBool>,
-    /// 用户在「正在启动…」阶段点取消时唤醒等待中的启动流程。
-    launch_cancel: Arc<tokio::sync::Notify>,
-    /// 粘性标记：取消请求可能比启动流程进入等待更早到达，光靠 `Notify`
-    /// 会漏掉那一次唤醒。
-    launch_cancelled: Arc<AtomicBool>,
-    /// 游戏的 OpenGL 窗口是否已经创建。进程起来不等于能玩：Java 在窗口出现
-    /// 前还要初始化 LWJGL，这段时间按钮必须是「取消启动」而不是「停止运行」。
-    window_ready: Arc<AtomicBool>,
 }
 
 impl Default for GameState {
@@ -99,71 +50,8 @@ impl Default for GameState {
             child: Arc::new(Mutex::new(None)),
             stopping: Arc::new(AtomicBool::new(false)),
             bedrock_running: Arc::new(AtomicBool::new(false)),
-            launch_cancel: Arc::new(tokio::sync::Notify::new()),
-            launch_cancelled: Arc::new(AtomicBool::new(false)),
-            window_ready: Arc::new(AtomicBool::new(false)),
         }
     }
-}
-
-/// Minecraft 创建 OpenGL 窗口时打印的日志行。它们按顺序出现在标准输出里：
-/// 1.13+ 是 `Backend library: LWJGL version …`，1.12 及更早是
-/// `LWJGL Version: …`，之后才是资源管理器与声音系统。看到任意一条就说明
-/// 窗口已经在桌面上了。
-const GAME_WINDOW_MARKERS: [&str; 5] = [
-    "backend library: lwjgl",
-    "lwjgl version",
-    "reloading resourcemanager",
-    "openal initialized",
-    "sound engine started",
-];
-
-/// 窗口迟迟检测不到时的兜底：90 秒后按运行中处理，免得按钮永远停在
-/// 「取消启动」上（例如自定义日志配置把这几行吞掉了）。
-const GAME_WINDOW_TIMEOUT: Duration = Duration::from_secs(90);
-
-fn line_shows_game_window(line: &str) -> bool {
-    let lower = line.to_lowercase();
-    GAME_WINDOW_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
-}
-
-/// 窗口出现的信号，由日志读取线程与超时兜底共享。
-#[derive(Clone)]
-struct WindowSignal {
-    ready: Arc<AtomicBool>,
-    pid: u32,
-    version_id: String,
-    java_major: u32,
-}
-
-/// 把状态从「正在启动」切成「运行中」，前端据此才会显示「停止运行」。
-/// 只会生效一次：`ready` 用 swap 而非 store。
-fn announce_game_running(app: &AppHandle, signal: &WindowSignal, detail: String) {
-    if signal.ready.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    let _ = app.emit(
-        "game:status",
-        GameStatus {
-            state: "running".to_string(),
-            detail: Some(detail),
-            pid: Some(signal.pid),
-            version_id: Some(signal.version_id.clone()),
-        },
-    );
-}
-
-/// 用户主动取消启动时的返回文案；前端据此静默处理，不当成启动失败弹错。
-pub const LAUNCH_CANCELLED: &str = "已取消启动";
-
-/// 等到用户取消启动为止；已经取消过就立即返回。
-async fn wait_launch_cancel(notify: &tokio::sync::Notify, cancelled: &AtomicBool) {
-    if cancelled.load(Ordering::Relaxed) {
-        return;
-    }
-    notify.notified().await;
 }
 
 #[derive(Deserialize)]
@@ -378,7 +266,7 @@ async fn fetch_home_page(url: String) -> Result<String, String> {
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
         return Err("主页地址需要以 http:// 或 https:// 开头".to_string());
     }
-    let response = net::api_client()
+    let response = net::client()
         .get(trimmed)
         .timeout(Duration::from_secs(25))
         .send()
@@ -400,378 +288,7 @@ async fn fetch_home_page(url: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        image_mime_from_bytes, line_shows_game_window, wait_launch_cancel, ContentTask,
-        InstallState, CONTENT_DOWNLOAD_CANCELLED,
-    };
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    /// 已经点过取消再进入等待时必须立即返回，不能把启动流程挂住。
-    #[tokio::test]
-    async fn launch_cancel_returns_at_once_when_already_requested() {
-        let notify = tokio::sync::Notify::new();
-        let cancelled = AtomicBool::new(true);
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            wait_launch_cancel(&notify, &cancelled),
-        )
-        .await
-        .expect("取消标记已置位时不应该继续等待");
-    }
-
-    /// 取消请求可能比启动流程更早到达：`notify_one` 留的许可要能唤醒后来的等待。
-    #[tokio::test]
-    async fn launch_cancel_notification_wakes_a_late_waiter() {
-        let notify = tokio::sync::Notify::new();
-        let cancelled = AtomicBool::new(false);
-        notify.notify_one();
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            wait_launch_cancel(&notify, &cancelled),
-        )
-        .await
-        .expect("已经有取消许可时应当立即返回");
-        assert!(!cancelled.load(Ordering::Relaxed));
-    }
-
-    /// 窗口判定要覆盖各代 Minecraft 的日志：1.13+ 的 `Backend library`、
-    /// 1.12 及更早的 `LWJGL Version`，以及紧随其后的资源管理与声音初始化。
-    #[test]
-    fn window_markers_cover_every_minecraft_generation() {
-        assert!(line_shows_game_window(
-            "[Render thread/INFO]: Backend library: LWJGL version 3.3.3+5"
-        ));
-        assert!(line_shows_game_window(
-            "[Client thread/INFO]: LWJGL Version: 2.9.4"
-        ));
-        assert!(line_shows_game_window(
-            "[Render thread/INFO]: Reloading ResourceManager: vanilla"
-        ));
-        assert!(line_shows_game_window(
-            "[Render thread/INFO]: OpenAL initialized on device OpenAL Soft"
-        ));
-        // 启动早期与普通日志都不能让按钮提前变成「停止运行」。
-        assert!(!line_shows_game_window("[main/INFO]: Setting user: Steve"));
-        assert!(!line_shows_game_window(
-            "[main/INFO]: Loading Minecraft 1.21.1 with Fabric Loader 0.16.0"
-        ));
-        assert!(!line_shows_game_window(
-            "[Render thread/INFO]: Loaded 1421 recipes"
-        ));
-    }
-
-    /// 真取消：本地服务器慢慢滴数据，中途点取消，下载 Future 必须结束、
-    /// 返回取消错误，并且 `.part` 被清掉（不能留下占空间的半成品）。
-    #[tokio::test]
-    async fn cancelling_a_content_download_stops_it_and_cleans_the_partial() {
-        use std::sync::Arc;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let total: u64 = 8 * 1024 * 1024;
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 2048];
-                    let mut head = Vec::new();
-                    loop {
-                        let Ok(read) = socket.read(&mut buf).await else {
-                            return;
-                        };
-                        if read == 0 {
-                            return;
-                        }
-                        head.extend_from_slice(&buf[..read]);
-                        if head.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    // 不返回 206、不理会 Range：下载器会退回单连接，然后被
-                    // 这条慢速连接卡在半路。
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nContent-Type: application/zip\r\nConnection: close\r\n\r\n"
-                    );
-                    if socket.write_all(header.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    let chunk = vec![0u8; 1024];
-                    loop {
-                        if socket.write_all(&chunk).await.is_err() {
-                            return;
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                });
-            }
-        });
-
-        let root = std::env::temp_dir().join(format!("cobble-cancel-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let state = Arc::new(InstallState::default());
-        let app = crate::bridge::AppHandle::default();
-
-        let request = crate::content::DownloadContentRequest {
-            root: root.to_string_lossy().to_string(),
-            instance_id: None,
-            project_type: "shader".to_string(),
-            url: format!("http://{addr}/big.zip"),
-            filename: "big.zip".to_string(),
-            sha1: None,
-            size: Some(total),
-            title: "Big Shader".to_string(),
-            game_versions: Vec::new(),
-            loader: None,
-            isolation: None,
-            source_project_id: None,
-            source_file_id: None,
-            source_version: None,
-        };
-
-        let canceller = {
-            let app = app.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                crate::cancel_content_download(
-                    app,
-                    state.as_ref(),
-                    Some("content:shader:big.zip".to_string()),
-                )
-                .await
-            })
-        };
-
-        let result = crate::download_content_file(app.clone(), state.as_ref(), request).await;
-        let cancelled = canceller.await.unwrap().unwrap();
-        assert!(cancelled, "正在下载的任务应当可以被取消");
-        assert_eq!(
-            result.expect_err("取消后下载必须返回错误"),
-            CONTENT_DOWNLOAD_CANCELLED
-        );
-        let part = root.join("shaderpacks").join("big.zip.part");
-        assert!(!part.exists(), "{part:?} 应当已被清理");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// 分片（多线程）下载中途取消时，`set_len` 预分配到全尺寸的 `.part` 也必须
-    /// 被删掉：这是用户最容易看到的那种“取消后还留着一份大缓存”。
-    #[tokio::test]
-    async fn cancelling_a_segmented_download_removes_the_preallocated_partial() {
-        use std::sync::Arc;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        const TOTAL: u64 = 8 * 1024 * 1024;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let mut head = Vec::new();
-                    loop {
-                        let Ok(read) = socket.read(&mut buf).await else {
-                            return;
-                        };
-                        if read == 0 {
-                            return;
-                        }
-                        head.extend_from_slice(&buf[..read]);
-                        if head.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    let text = String::from_utf8_lossy(&head).to_string();
-                    let range = text.lines().find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.eq_ignore_ascii_case("range")
-                            .then(|| value.trim().to_string())
-                    });
-                    let (start, end) = match range
-                        .as_deref()
-                        .and_then(|value| value.strip_prefix("bytes="))
-                    {
-                        Some(spec) => {
-                            let (from, to) = spec.split_once('-').unwrap_or((spec, ""));
-                            (
-                                from.trim().parse::<u64>().unwrap_or(0),
-                                to.trim()
-                                    .parse::<u64>()
-                                    .unwrap_or(TOTAL - 1)
-                                    .min(TOTAL - 1),
-                            )
-                        }
-                        None => (0, TOTAL - 1),
-                    };
-                    let len = end.saturating_sub(start) + 1;
-                    let header = if range.is_some() {
-                        format!(
-                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{TOTAL}\r\nContent-Length: {len}\r\nContent-Type: application/zip\r\nConnection: close\r\n\r\n"
-                        )
-                    } else {
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {TOTAL}\r\nContent-Type: application/zip\r\nConnection: close\r\n\r\n"
-                        )
-                    };
-                    if socket.write_all(header.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    let chunk = vec![0u8; 1024];
-                    let mut sent = 0u64;
-                    while sent < len {
-                        let step = std::cmp::min(chunk.len() as u64, len - sent) as usize;
-                        if socket.write_all(&chunk[..step]).await.is_err() {
-                            return;
-                        }
-                        sent += step as u64;
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                    }
-                });
-            }
-        });
-
-        let root =
-            std::env::temp_dir().join(format!("cobble-cancel-seg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let state = Arc::new(InstallState::default());
-        let app = crate::bridge::AppHandle::default();
-
-        let request = crate::content::DownloadContentRequest {
-            root: root.to_string_lossy().to_string(),
-            instance_id: None,
-            project_type: "shader".to_string(),
-            url: format!("http://{addr}/big.zip"),
-            filename: "big.zip".to_string(),
-            sha1: None,
-            size: Some(TOTAL),
-            title: "Big Shader".to_string(),
-            game_versions: Vec::new(),
-            loader: None,
-            isolation: None,
-            source_project_id: None,
-            source_file_id: None,
-            source_version: None,
-        };
-
-        let shaderpacks = root.join("shaderpacks");
-        let canceller = {
-            let app = app.clone();
-            let state = state.clone();
-            let shaderpacks = shaderpacks.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(600)).await;
-                // 取消前看一眼：分段引擎已经把 `.pcl-part` / `.pcl-seg-*`
-                // 落盘，这正是取消后必须删掉的那份“缓存”。
-                let seen = temp_bytes(&shaderpacks, "big.zip");
-                let cancelled = crate::cancel_content_download(
-                    app,
-                    state.as_ref(),
-                    Some("content:shader:big.zip".to_string()),
-                )
-                .await
-                .unwrap();
-                (cancelled, seen)
-            })
-        };
-
-        let result = crate::download_content_file(app.clone(), state.as_ref(), request).await;
-        let (cancelled, seen) = canceller.await.unwrap();
-        assert!(cancelled, "分片下载也应当可以被取消");
-        assert!(seen > 0, "取消时应当已经有正在写入的临时分片");
-        assert_eq!(
-            result.expect_err("取消后下载必须返回错误"),
-            CONTENT_DOWNLOAD_CANCELLED
-        );
-        // `.part`、`.pcl-part`、`.pcl-seg-*`、`.pcl-resume.json` 都是半成品，
-        // 取消后一个都不能留。
-        let leftovers: Vec<String> = std::fs::read_dir(&shaderpacks)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .filter(|name| {
-                        name.starts_with("big.zip.part") || name.starts_with("big.zip.pcl-")
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(
-            leftovers.is_empty(),
-            "取消后不应留下半成品，实际还剩 {leftovers:?}"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// 目录里属于 `filename` 的临时文件总大小（分段引擎的 `.pcl-*` 与旧后级的
-    /// `.part`）。
-    fn temp_bytes(dir: &std::path::Path, filename: &str) -> u64 {
-        std::fs::read_dir(dir)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        name.starts_with(&format!("{filename}.pcl-"))
-                            || name.starts_with(&format!("{filename}.part"))
-                    })
-                    .map(|entry| entry.metadata().map(|meta| meta.len()).unwrap_or(0))
-                    .sum()
-            })
-            .unwrap_or(0)
-    }
-
-    /// 取消内容下载只能摘掉内容任务：版本安装的句柄与运行标记必须原样保留，
-    /// 否则下一个模组下载会与安装流程抢同一个中止句柄。
-    #[tokio::test]
-    async fn cancelling_content_keeps_the_version_install_untouched() {
-        let state = InstallState::default();
-        *state.running.lock().unwrap() = Some("1.21.1".to_string());
-
-        let running = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(30)).await });
-        state.register_content(ContentTask {
-            id: "content:mod:sodium.jar".to_string(),
-            title: "Sodium".to_string(),
-            filename: "sodium.jar".to_string(),
-            project_type: "mod".to_string(),
-            root: PathBuf::from("C:/game"),
-            abort: running.abort_handle(),
-        });
-
-        let taken = state.take_content(Some("content:mod:sodium.jar"));
-        assert_eq!(taken.len(), 1);
-        assert!(state.take_content(None).is_empty());
-        assert_eq!(state.running.lock().unwrap().as_deref(), Some("1.21.1"));
-        running.abort();
-    }
-
-    /// 没有 `id` 时取消全部内容任务，且同一个 id 不会被摘两次。
-    #[tokio::test]
-    async fn cancelling_all_content_tasks_drains_the_registry() {
-        let state = InstallState::default();
-        let mut spawned = Vec::new();
-        for (id, filename) in [
-            ("content:mod:a.jar", "a.jar"),
-            ("content:shader:b.zip", "b.zip"),
-        ] {
-            let task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(30)).await });
-            state.register_content(ContentTask {
-                id: id.to_string(),
-                title: filename.to_string(),
-                filename: filename.to_string(),
-                project_type: "mod".to_string(),
-                root: PathBuf::from("C:/game"),
-                abort: task.abort_handle(),
-            });
-            spawned.push(task);
-        }
-        assert_eq!(state.take_content(None).len(), 2);
-        assert!(state.take_content(Some("content:mod:a.jar")).is_empty());
-        for task in spawned {
-            task.abort();
-        }
-    }
+    use super::image_mime_from_bytes;
 
     #[test]
     fn wallpaper_data_urls_declare_the_real_image_type() {
@@ -820,96 +337,11 @@ async fn get_content_versions(
     content::get_content_versions(project_id_or_slug, game_version, loader).await
 }
 
-/// 用户取消资源下载时的返回文案；前端据此静默处理，不当成下载失败弹错。
-pub const CONTENT_DOWNLOAD_CANCELLED: &str = "下载已取消";
-
 async fn download_content_file(
     app: AppHandle,
-    state: State<'_, InstallState>,
     request: content::DownloadContentRequest,
 ) -> Result<content::DownloadContentResult, String> {
-    // 与 content 内部生成的 id 保持一致，下载页与详情页都能拿它来取消。
-    let filename = PathBuf::from(&request.filename)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| request.filename.clone());
-    let task_id = format!("content:{}:{}", request.project_type, filename);
-    let project_type = request.project_type.clone();
-    let title = if request.title.trim().is_empty() {
-        filename.clone()
-    } else {
-        request.title.clone()
-    };
-
-    let root = PathBuf::from(&request.root);
-    let app_handle = app.clone();
-    let task = tokio::spawn(async move {
-        content::download_content_file(Some(&app_handle), request).await
-    });
-
-    state.register_content(ContentTask {
-        id: task_id.clone(),
-        title,
-        filename,
-        project_type,
-        root,
-        abort: task.abort_handle(),
-    });
-
-    let join_res = task.await;
-    state.release_content(&task_id);
-
-    match join_res {
-        Ok(res) => res,
-        Err(e) if e.is_cancelled() => Err(CONTENT_DOWNLOAD_CANCELLED.to_string()),
-        Err(e) => Err(format!("资源下载任务执行异常: {e}")),
-    }
-}
-
-/// 取消模组/光影/资源包/地图下载（`id` 为空时取消全部）。
-///
-/// 中止任务后把 `.part` 半成品删掉，并回传 `cancelled` 事件让下载页立刻移除
-/// 这个任务（与版本安装的取消语义一致：不留失败记录）。
-async fn cancel_content_download(
-    app: AppHandle,
-    state: State<'_, InstallState>,
-    id: Option<String>,
-) -> Result<bool, String> {
-    let wanted = id.as_deref().map(str::trim).filter(|id| !id.is_empty());
-    let tasks = state.take_content(wanted);
-    if tasks.is_empty() {
-        return Ok(false);
-    }
-
-    for task in &tasks {
-        task.abort.abort();
-    }
-    for task in tasks {
-        // 先让界面把这个任务摘掉，再等被中止的 future 真正 drop（文件句柄关闭），
-        // 否则紧接着的删除可能碰上还开着的 `.part`。
-        let _ = app.emit(
-            "content:progress",
-            content::ContentProgressPayload {
-                id: task.id.clone(),
-                title: task.title.clone(),
-                filename: task.filename.clone(),
-                project_type: task.project_type.clone(),
-                stage: "cancelled".to_string(),
-                detail: "下载已取消".to_string(),
-                done_bytes: 0,
-                total_bytes: 0,
-                speed_bps: 0,
-                threads: 0,
-                error: None,
-            },
-        );
-        for _ in 0..3 {
-            tokio::task::yield_now().await;
-        }
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        content::discard_content_partial(&task.root, &task.filename, &task.project_type).await;
-    }
-    Ok(true)
+    content::download_content_file(Some(&app), request).await
 }
 
 async fn check_java_world_update(
@@ -1239,7 +671,6 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     stream: &'static str,
     reader: R,
     log: Arc<LaunchLog>,
-    window: Option<WindowSignal>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
@@ -1279,16 +710,6 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                 } else {
                     stream
                 };
-                // 窗口出现的判定要先于 `line` 被移动进事件负载。
-                if let Some(signal) = window.as_ref() {
-                    if !signal.ready.load(Ordering::Relaxed) && line_shows_game_window(&line) {
-                        announce_game_running(
-                            &app,
-                            signal,
-                            format!("游戏已启动，Java {}", signal.java_major),
-                        );
-                    }
-                }
                 log.write(stream, &line);
                 let _ = app.emit(
                     "game:log",
@@ -1368,9 +789,6 @@ async fn launch_game(
         return Err("游戏已经在运行".to_string());
     }
 
-    // 一次新的启动从干净状态开始，否则上一次取消的标记会影响这一次。
-    state.launch_cancelled.store(false, Ordering::Relaxed);
-
     let _ = app.emit(
         "game:status",
         GameStatus {
@@ -1381,12 +799,9 @@ async fn launch_game(
         },
     );
 
-    // 准备阶段可能很慢（补文件、下 Java、跑加载器安装器），这里让它与
-    // 「取消启动」赛跑：用户一取消就丢掉准备中的 Future，在途下载随之中断。
-    let prepare = minecraft::prepare_launch(&request, emit_progress(&app));
-    tokio::pin!(prepare);
-    let spec: LaunchSpec = tokio::select! {
-        result = &mut prepare => result.map_err(|error| {
+    let spec: LaunchSpec = minecraft::prepare_launch(&request, emit_progress(&app))
+        .await
+        .map_err(|error| {
             let _ = app.emit(
                 "game:status",
                 GameStatus {
@@ -1397,20 +812,7 @@ async fn launch_game(
                 },
             );
             error
-        })?,
-        _ = wait_launch_cancel(&state.launch_cancel, &state.launch_cancelled) => {
-            let _ = app.emit(
-                "game:status",
-                GameStatus {
-                    state: "idle".to_string(),
-                    detail: Some(LAUNCH_CANCELLED.to_string()),
-                    pid: None,
-                    version_id: Some(request.version_id.clone()),
-                },
-            );
-            return Err(LAUNCH_CANCELLED.to_string());
-        }
-    };
+        })?;
 
     // The language picked in the version settings is read from options.txt at
     // start-up, so it has to be on disk before the process is spawned.
@@ -1473,20 +875,6 @@ async fn launch_game(
         );
     }
 
-    // 准备完成后、进程真正起来前再确认一次：用户可能刚好在这时点了取消。
-    if state.launch_cancelled.load(Ordering::Relaxed) {
-        let _ = app.emit(
-            "game:status",
-            GameStatus {
-                state: "idle".to_string(),
-                detail: Some(LAUNCH_CANCELLED.to_string()),
-                pid: None,
-                version_id: Some(request.version_id.clone()),
-            },
-        );
-        return Err(LAUNCH_CANCELLED.to_string());
-    }
-
     let mut command = Command::new(&spec.java);
     crate::java::clean_java_env(&mut command);
     command
@@ -1519,22 +907,6 @@ async fn launch_game(
     })?;
 
     let pid = child.id();
-    // 进程刚起来就发现被取消：立刻结束它，别让用户看到“取消了却还是进了游戏”。
-    if state.launch_cancelled.load(Ordering::Relaxed) {
-        let _ = child.kill();
-        let _ = child.wait();
-        launch_log.write("cobble", "启动已被取消，游戏进程已结束");
-        let _ = app.emit(
-            "game:status",
-            GameStatus {
-                state: "idle".to_string(),
-                detail: Some(LAUNCH_CANCELLED.to_string()),
-                pid: None,
-                version_id: Some(request.version_id.clone()),
-            },
-        );
-        return Err(LAUNCH_CANCELLED.to_string());
-    }
     launch_log.write("cobble", &format!("已创建游戏进程，PID {pid}"));
     state.stopping.store(false, Ordering::Relaxed);
     let stdout = child.stdout.take();
@@ -1544,16 +916,6 @@ async fn launch_game(
         .lock()
         .map_err(|_| "游戏进程状态不可用".to_string())? = Some(child);
 
-    // 新一次启动：窗口还没出现。状态暂时留在「正在启动」，等日志里的窗口标记
-    // （或超时兜底）才切到「运行中」，那时才会出现「停止运行」按钮。
-    state.window_ready.store(false, Ordering::Relaxed);
-    let window_signal = WindowSignal {
-        ready: state.window_ready.clone(),
-        pid,
-        version_id: request.version_id.clone(),
-        java_major: spec.java_major,
-    };
-
     let mut readers = Vec::new();
     if let Some(stdout) = stdout {
         readers.push(spawn_log_reader(
@@ -1561,7 +923,6 @@ async fn launch_game(
             "stdout",
             stdout,
             launch_log.clone(),
-            Some(window_signal.clone()),
         ));
     }
     if let Some(stderr) = stderr {
@@ -1570,17 +931,14 @@ async fn launch_game(
             "stderr",
             stderr,
             launch_log.clone(),
-            Some(window_signal.clone()),
         ));
     }
 
-    // 进程已起来但窗口还没出现：状态还在 preparing，先把详情文案换成看得懂的
-    // 一句话，界面就会一直显示「取消启动」直到窗口真的弹出来。
     let _ = app.emit(
         "game:status",
         GameStatus {
-            state: "preparing".to_string(),
-            detail: Some("游戏进程已启动，等待游戏窗口出现…".to_string()),
+            state: "running".to_string(),
+            detail: Some(format!("游戏已启动，Java {}", spec.java_major)),
             pid: Some(pid),
             version_id: Some(request.version_id.clone()),
         },
@@ -1590,7 +948,7 @@ async fn launch_game(
         GameLogPayload {
             stream: "cobble".to_string(),
             line: format!(
-                "使用 Java {} 启动 Minecraft {}（PID {pid}），等待游戏窗口出现…",
+                "使用 Java {} 启动 Minecraft {}（PID {pid}）",
                 spec.java_major, request.version_id
             ),
         },
@@ -1602,8 +960,6 @@ async fn launch_game(
     let version_id = request.version_id.clone();
     let mut readers = Some(readers);
     let watcher_log = launch_log.clone();
-    let watcher_window = window_signal.clone();
-    let window_started = Instant::now();
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_millis(400));
@@ -1617,7 +973,6 @@ async fn launch_game(
             match child.try_wait() {
                 Ok(Some(status)) => {
                     *slot = None;
-                    watcher_window.ready.store(false, Ordering::Relaxed);
                     drop(slot);
                     // Drain both pipes before reporting the exit; otherwise the
                     // toast can race ahead of the JVM's actual error message.
@@ -1684,20 +1039,7 @@ async fn launch_game(
                     );
                     break;
                 }
-                Ok(None) => {
-                    // 兜底：日志里始终没出现窗口标记（自定义日志配置、精简版
-                    // JVM 等），也不能让按钮永远停在「取消启动」。
-                    if window_started.elapsed() >= GAME_WINDOW_TIMEOUT {
-                        announce_game_running(
-                            &app_handle,
-                            &watcher_window,
-                            format!(
-                                "未能检测到游戏窗口，按运行中处理（PID {}）",
-                                watcher_window.pid
-                            ),
-                        );
-                    }
-                }
+                Ok(None) => {}
                 Err(_) => break,
             }
         }
@@ -1752,7 +1094,6 @@ fn is_bedrock_process_running() -> bool {
 fn stop_game(app: AppHandle, state: State<'_, GameState>) -> Result<(), String> {
     state.stopping.store(true, Ordering::Relaxed);
     state.bedrock_running.store(false, Ordering::Relaxed);
-    state.window_ready.store(false, Ordering::Relaxed);
 
     let mut slot = state
         .child
@@ -1941,71 +1282,6 @@ async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Resul
     }
 
     Ok(aborted)
-}
-
-/// 取消「正在启动…」：唤醒启动流程，并中止启动前那次自动补文件的下载任务。
-async fn cancel_launch(
-    app: AppHandle,
-    state: State<'_, GameState>,
-    install: State<'_, InstallState>,
-) -> Result<bool, String> {
-    // 窗口已经出现（界面已经切成「停止运行」）就不算取消启动了，否则会把
-    // 正在运行的游戏状态错误地标成 idle。进程起来了但窗口还没出现仍算启动中：
-    // 那时按钮就是「取消启动」，用户应当能直接结束它。
-    let process_running = state
-        .child
-        .lock()
-        .map(|mut child| {
-            child.as_mut().is_some_and(|process| {
-                matches!(process.try_wait(), Ok(None))
-            })
-        })
-        .unwrap_or(false);
-    if process_running && state.window_ready.load(Ordering::Relaxed) {
-        return Err("游戏已经开始运行，请用「停止运行」结束它".to_string());
-    }
-
-    state.launch_cancelled.store(true, Ordering::Relaxed);
-    state.launch_cancel.notify_one();
-
-    // 启动前的「自动补全缺失文件」就是一次安装任务，一起中止。
-    let aborted_install = cancel_install(app.clone(), install).await.unwrap_or(false);
-
-    if process_running {
-        // 进程已在跑但游戏窗口还没出现：直接结束它，不然用户只能干等它开花。
-        state.stopping.store(true, Ordering::Relaxed);
-        if let Ok(mut slot) = state.child.lock() {
-            if let Some(child) = slot.as_mut() {
-                let _ = child.kill();
-            }
-        }
-        let _ = app.emit(
-            "game:log",
-            GameLogPayload {
-                stream: "cobble".to_string(),
-                line: "取消启动：已结束尚未显示窗口的游戏进程".to_string(),
-            },
-        );
-    }
-
-    let _ = app.emit(
-        "game:status",
-        GameStatus {
-            state: "idle".to_string(),
-            detail: Some(LAUNCH_CANCELLED.to_string()),
-            pid: None,
-            version_id: None,
-        },
-    );
-    let _ = app.emit(
-        "game:log",
-        GameLogPayload {
-            stream: "cobble".to_string(),
-            line: "用户取消了本次启动".to_string(),
-        },
-    );
-
-    Ok(aborted_install)
 }
 
 async fn install_bedrock_pack(

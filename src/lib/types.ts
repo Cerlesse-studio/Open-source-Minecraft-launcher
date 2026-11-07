@@ -194,8 +194,6 @@ export interface ContentHit {
   dateModified?: string;
   latestVersion?: string;
   projectType: ContentProjectType;
-  /** Catalogue the row came from; Java mods are listed by both sites. */
-  source?: "modrinth" | "curseforge" | null;
 }
 
 export interface SearchContentResult {
@@ -215,20 +213,6 @@ export interface ContentFile {
   sha1?: string;
 }
 
-/** Another project a build needs before it runs. */
-export interface ContentDependency {
-  /** Launcher project id: `cfj:<id>` for CurseForge, the Modrinth id otherwise. */
-  projectId: string;
-  /** Resolved project title, or the raw id when the lookup failed. */
-  name: string;
-  /** Exact build the author pinned (Modrinth only). */
-  versionId?: string | null;
-  /** File name the author suggests (Modrinth only). */
-  fileName?: string | null;
-  /** True when the game will not load without it. */
-  required: boolean;
-}
-
 export interface ContentVersionItem {
   id: string;
   name: string;
@@ -238,19 +222,12 @@ export interface ContentVersionItem {
   datePublished?: string;
   downloads: number;
   files: ContentFile[];
-  /** Prerequisites of this build, shown under the row. */
-  dependencies?: ContentDependency[];
 }
 
 /** A resolved MC 百科 page (`/class/<id>.html` or `/modpack/<id>.html`). */
 export interface WikiEntry {
   id: number;
-  /** Full title as MC 百科 lists it, e.g. `钠 (Sodium)`. */
   title: string;
-  /** Chinese name, shown next to the English one. */
-  nameZh?: string | null;
-  /** English name from the wiki title, or the catalogue's project name. */
-  nameEn?: string | null;
   url: string;
 }
 
@@ -280,8 +257,7 @@ export interface ContentDownloadProgress {
   title: string;
   filename: string;
   projectType: string;
-  /** `cancelled` 是用户主动取消：任务直接从下载页移除，不留失败记录。 */
-  stage: "downloading" | "done" | "error" | "cancelled";
+  stage: "downloading" | "done" | "error";
   detail: string;
   doneBytes: number;
   totalBytes: number;
@@ -597,7 +573,7 @@ export interface LsLoginPoll {
   pendingId?: string | null;
 }
 
-export type DownloadSourceId = "official_ap" | "microsoft" | "bmclapi" | "custom";
+export type DownloadSourceId = "official_ap" | "bmclapi" | "custom";
 
 /** Reachability of one download source, measured on its version manifest. */
 export interface DownloadSourceProbe {
@@ -942,11 +918,6 @@ export interface EasyTierPublicServer {
   group?: string;
   author?: string;
   isCustom?: boolean;
-  /**
-   * 该节点所在的共享节点集群标识。同集群的节点可以互为备用；
-   * 留空表示社区/自建节点这种独立部署（按主机名视作各自的集群）。
-   */
-  cluster?: string;
 }
 
 /** The saved shape of the local EasyTier node. */
@@ -969,11 +940,6 @@ export interface MultiplayerConfig {
   role: "host" | "guest";
   /** Selected public server URI (e.g. `tcp://public.easytier.cn:11010`). */
   publicServer?: string;
-  /**
-   * 这个房间两端约定的共享节点集群。房主写进分享码，访客照抄，
-   * 避免两端各自优选到互不相通的节点、看起来都连上了却谁也发现不了谁。
-   */
-  relayCluster?: string;
   /** Both sides join a shared EasyTier node instead of using the host's address. */
   relay: boolean;
   p2pOnly: boolean;

@@ -117,9 +117,7 @@ export function loadSettings(): LauncherSettings {
           ? Math.min(64, Math.max(1, Math.round(parsed.downloadThreads)))
           : defaultSettings.downloadThreads,
       downloadSource:
-        parsed.downloadSource === "bmclapi" ||
-        parsed.downloadSource === "custom" ||
-        parsed.downloadSource === "microsoft"
+        parsed.downloadSource === "bmclapi" || parsed.downloadSource === "custom"
           ? parsed.downloadSource
           : "official_ap",
       customSourceUrl:

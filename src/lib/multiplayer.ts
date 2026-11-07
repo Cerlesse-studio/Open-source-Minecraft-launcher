@@ -10,16 +10,6 @@ export const DEFAULT_HOST_PORT = 25565;
 
 export const DEFAULT_PUBLIC_SERVER = "tcp://public.easytier.cn:11010";
 
-/**
- * EasyTier 官方公益节点所属的共享集群。
- *
- * 同集群的节点可以互为备用；社区/自建节点都是独立部署，除非部署者自己
- * 做了集群互联，否则和官方集群、以及彼此之间都不互通。启动器不会替它们
- * 假装互通——混着连的后果是两端各自停在不同集群里，节点都“连得上”却互相
- * 发现不了。
- */
-export const OFFICIAL_RELAY_CLUSTER = "easytier-official";
-
 /** 规范化清理节点输入中的不可见字符、全角冒号与数字 */
 export function cleanRelayNodeText(raw: string): string {
   return raw
@@ -159,7 +149,6 @@ export const OFFICIAL_PUBLIC_SERVERS: EasyTierPublicServer[] = [
     id: "official-tcp",
     name: "官方公益节点 (TCP)",
     uri: "tcp://public.easytier.cn:11010",
-    cluster: OFFICIAL_RELAY_CLUSTER,
     region: "全国 BGP 线路",
     description: "EasyTier 官方免费公益节点，自动协助 P2P 打洞与中继转发（推荐）",
     group: "官方推荐",
@@ -169,7 +158,6 @@ export const OFFICIAL_PUBLIC_SERVERS: EasyTierPublicServer[] = [
     id: "official-udp",
     name: "官方公益节点 (UDP)",
     uri: "udp://public.easytier.cn:11010",
-    cluster: OFFICIAL_RELAY_CLUSTER,
     region: "全国 BGP 线路",
     description: "UDP 协议通道，延迟低，适合抗丢包网络环境",
     group: "官方推荐",
@@ -179,7 +167,6 @@ export const OFFICIAL_PUBLIC_SERVERS: EasyTierPublicServer[] = [
     id: "backup-tcp",
     name: "官方备用节点 (TCP)",
     uri: "tcp://easytier.cn:11010",
-    cluster: OFFICIAL_RELAY_CLUSTER,
     region: "官方备用线路",
     description: "EasyTier 备用公共服务器，主节点负载高时可选用",
     group: "官方推荐",
@@ -189,7 +176,6 @@ export const OFFICIAL_PUBLIC_SERVERS: EasyTierPublicServer[] = [
     id: "backup-udp",
     name: "官方备用节点 (UDP)",
     uri: "udp://easytier.cn:11010",
-    cluster: OFFICIAL_RELAY_CLUSTER,
     region: "官方备用线路",
     description: "EasyTier 备用 UDP 公共服务器，低延迟备选",
     group: "官方推荐",
@@ -429,69 +415,19 @@ export const FALLBACK_REDUNDANT_RELAYS = [
   "tcp://easytier.cn:11010",
 ];
 
-function hostOfUri(uri: string): string {
-  return (parseServerUri(uri)?.host ?? uri).toLowerCase();
-}
-
 /**
- * 节点属于哪个共享集群。
- *
- * 目录里写了 `cluster` 的按目录算（官方公益节点同属一个集群）；
- * 社区/自建节点没有目录信息，按主机名视作各自独立的集群——
- * 无法确认兼容时宁可当作不兼容，也不默认它们已经互通。
+ * 构造高可用多线路中继与对等节点列表。
+ * 将优选的主节点置于首位（首要连接与分享标识），
+ * 同时按需追加官方高可用公益中继作为冗余备用，
+ * 避免单一节点瞬间不可达或丢包时导致 EasyTier 无法连接或异常退出。
  */
-export function clusterOfServer(
-  uri: string,
-  servers: EasyTierPublicServer[] = OFFICIAL_PUBLIC_SERVERS,
-): string {
-  const normalized = normalizeServerUri(uri);
-  const known = servers.find((server) => normalizeServerUri(server.uri) === normalized);
-  if (known?.cluster) return known.cluster;
-  return `standalone:${hostOfUri(normalized)}`;
-}
-
-/** 同一个集群里的全部入口（用于给主节点配同集群备用线路）。 */
-export function serversInCluster(
-  cluster: string,
-  servers: EasyTierPublicServer[] = OFFICIAL_PUBLIC_SERVERS,
-): string[] {
-  return servers
-    .filter((server) => clusterOfServer(server.uri, servers) === cluster)
-    .map((server) => normalizeServerUri(server.uri));
-}
-
-/**
- * 用“房间名 + 密码”加入时，两端各自选节点，启动器无法核对房主用的是哪个。
- * 只有官方公益节点同属一个共享集群，才能保证双方在同一网络里相遇。
- */
-export function relayClusterGuaranteed(
-  uri: string,
-  servers: EasyTierPublicServer[] = OFFICIAL_PUBLIC_SERVERS,
-): boolean {
-  return clusterOfServer(uri, servers) === OFFICIAL_RELAY_CLUSTER;
-}
-
-/**
- * 构造对等节点列表：主节点在前，后面只追加**同一个共享集群**的备用入口。
- *
- * 以前这里无条件追加官方公益节点，即使主节点是某个独立社区节点也一样。
- * 两端都这么混着连时，谁先连上哪个集群就停在哪里：两个人都“连接成功”，
- * 却在两个互不相通的集群里，永远发现不了对方。现在宁可只给一个入口，
- * 也不把不同集群混在一起。
- */
-export function buildMultiplayerPeers(
-  primaryServer: string,
-  servers: EasyTierPublicServer[] = OFFICIAL_PUBLIC_SERVERS,
-): string[] {
+export function buildMultiplayerPeers(primaryServer: string): string[] {
   const primary = (primaryServer || DEFAULT_PUBLIC_SERVER).trim();
-  const cluster = clusterOfServer(primary, servers);
   const peers: string[] = [primary];
   for (const fallback of FALLBACK_REDUNDANT_RELAYS) {
-    if (clusterOfServer(fallback, servers) !== cluster) continue;
-    if (!peers.includes(fallback)) peers.push(fallback);
-  }
-  for (const sibling of serversInCluster(cluster, servers)) {
-    if (!peers.includes(sibling)) peers.push(sibling);
+    if (fallback !== primary && !peers.includes(fallback)) {
+      peers.push(fallback);
+    }
   }
   return peers;
 }
@@ -767,21 +703,6 @@ export function normalizeMultiplayerConfig(raw: unknown): MultiplayerConfig {
   const publicServer = p2pOnly
     ? ""
     : value.publicServer || finalPeers[0] || DEFAULT_PUBLIC_SERVER;
-  // 旧配置没有集群字段：按接入节点推导，绝不默认它和官方集群兼容。
-  const relayCluster = p2pOnly
-    ? undefined
-    : typeof value.relayCluster === "string" && value.relayCluster.trim()
-      ? value.relayCluster.trim().slice(0, 96)
-      : clusterOfServer(publicServer);
-  // 旧版本会把社区节点和官方节点一起写进 --peers。这种混合列表就是
-  // “两个人都连上了、却互相发现不了”的来源，加载时立即收敛到同一个集群。
-  const relayPeers = p2pOnly
-    ? finalPeers
-    : finalPeers.filter((peer) => clusterOfServer(peer) === relayCluster);
-  const clusterPeers = p2pOnly || relayPeers.length > 0 ? relayPeers : [publicServer];
-  const clusterRelayNodes = p2pOnly
-    ? relayNodes
-    : relayNodes.filter((node) => clusterOfServer(node) === relayCluster);
   return {
     networkName:
       typeof value.networkName === "string" && value.networkName.trim()
@@ -793,21 +714,19 @@ export function normalizeMultiplayerConfig(raw: unknown): MultiplayerConfig {
       typeof value.overlayIpv4 === "string" && isOverlayIpv4(value.overlayIpv4)
         ? value.overlayIpv4.trim()
         : base.overlayIpv4,
-    peers: clusterPeers,
+    peers: finalPeers,
     listenPort: clampPort(value.listenPort, DEFAULT_LISTEN_PORT),
     hostPort: clampPort(value.hostPort, DEFAULT_HOST_PORT),
     hostVersion:
       typeof value.hostVersion === "string" ? value.hostVersion.trim().slice(0, 64) : "",
     hostIpv4: typeof value.hostIpv4 === "string" ? value.hostIpv4.trim() : "",
-    role: normalizeRole(value, clusterPeers),
+    role: normalizeRole(value, finalPeers),
     publicServer,
-    relayCluster,
     relay: p2pOnly ? false : value.relay === true,
     p2pOnly,
     allowPublicStun: p2pOnly ? false : value.allowPublicStun !== false,
-    relayNodes:
-      p2pOnly || clusterRelayNodes.length > 0 ? clusterRelayNodes : [publicServer],
-    hostEntry: normalizeHostEntry(value, clusterPeers),
+    relayNodes,
+    hostEntry: normalizeHostEntry(value, finalPeers),
     recvBpsLimit: clampBps(value.recvBpsLimit),
     resourcePort: clampResourcePort(value.resourcePort),
     resourceToken: resourceToken(value.resourceToken),
@@ -1008,8 +927,6 @@ export interface ShareInfo {
   allowPublicStun: boolean;
   /** 双方 EasyTier 监听端口；纯 P2P 分享码里由房主决定。 */
   listenPort: number;
-  /** 房主接入的共享节点集群；旧分享码没有这一项。 */
-  cluster?: string;
   relayNodes: string[];
   /** 房主的只读房间资源列表入口；旧分享码没有这两项。 */
   resourcePort: number;
@@ -1033,18 +950,6 @@ export function buildShareCode(config: MultiplayerConfig, _legacyAddress = ""): 
   } else {
     const server = config.publicServer || config.peers[0] || DEFAULT_PUBLIC_SERVER;
     params.set("server", server);
-    const cluster = config.relayCluster || clusterOfServer(server);
-    params.set("cluster", cluster);
-    // 把房主实际使用的一整组同集群入口一起带上。访客照抄这组地址，
-    // 就不会“各自优选最快节点”结果住进两个互不相通的集群。
-    const entries = (
-      config.relayNodes && config.relayNodes.length > 0
-        ? config.relayNodes
-        : buildMultiplayerPeers(server)
-    ).filter((uri) => clusterOfServer(uri) === cluster);
-    for (const entry of entries.slice(0, 4)) {
-      params.append("r", entry);
-    }
   }
   if (config.hostVersion) {
     params.set("v", config.hostVersion);
@@ -1082,7 +987,6 @@ export function parseShareCode(text: string): ShareInfo | null {
     .getAll("r")
     .map((node) => normalizeRelayNode(node))
     .filter((node): node is string => Boolean(node));
-  const cluster = (params.get("cluster") ?? "").trim();
   const parsedPeer = peerParam ? parseServerUri(peerParam) : null;
   if (p2p && (!parsedPeer || !ipv6FromPeer(parsedPeer.full))) return null;
   const server = peerParam ? normalizeRelayNode(peerParam) : null;
@@ -1094,7 +998,6 @@ export function parseShareCode(text: string): ShareInfo | null {
   return {
     networkName,
     networkSecret,
-    cluster: cluster || undefined,
     publicServer: p2p ? undefined : finalServer,
     hostVersion: hostVersion || undefined,
     peer: parsedPeer?.full ?? finalServer,
@@ -1105,11 +1008,7 @@ export function parseShareCode(text: string): ShareInfo | null {
     p2pOnly: p2p,
     allowPublicStun: !p2p,
     listenPort,
-    // 房主发来的同集群入口全部保留：访客只要有一个入口可达，就和房主在
-    // 同一个集群里。旧分享码没有 `r` 时退化成只有主节点。
-    relayNodes: p2p
-      ? []
-      : [finalServer, ...relayNodes.filter((node) => node !== finalServer)],
+    relayNodes: p2p ? [] : [finalServer],
     resourcePort: clampResourcePort(params.get("res")),
     resourceToken: resourceToken(params.get("rt")),
   };

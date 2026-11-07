@@ -2,7 +2,6 @@ import { invoke, isDesktop, listen } from "./desktop";
 export { isDesktop } from "./desktop";
 import {
   demoDetectJava,
-  demoCancelContentDownload,
   demoDownloadContentFile,
   demoGetBedrockContent,
   demoGetBedrockStatus,
@@ -35,7 +34,6 @@ import {
   demoImportBedrockPackFile,
   demoEmit,
   demoCheckAppUpdate,
-  demoMcmodEntry,
 } from "./demo";
 import type {
   AppUpdateAsset,
@@ -293,17 +291,6 @@ export async function downloadContentFile(
   return invoke<DownloadContentResult>("download_content_file", { request });
 }
 
-/**
- * 取消模组/光影/资源包/地图下载；不传 `id` 时取消全部内容下载。
- *
- * 后端把内容下载与版本安装分开登记，所以取消一个模组不会影响正在进行的
- * 版本安装，反之亦然。返回是否真的中止了任务。
- */
-export async function cancelContentDownload(id?: string): Promise<boolean> {
-  if (!isDesktop) return demoCancelContentDownload(id);
-  return invoke<boolean>("cancel_content_download", { id: id ?? null });
-}
-
 export async function installVersion(
   root: string,
   versionId: string,
@@ -342,18 +329,6 @@ export async function detectJava(root: string): Promise<JavaInstall[]> {
 export async function launchGame(request: LaunchRequest): Promise<number> {
   if (!isDesktop) return demoLaunch(request);
   return invoke<number>("launch_game", { request });
-}
-
-/**
- * 取消「正在启动…」：中断启动前的补文件/下 Java/跑安装器，并唤醒等待中的
- * 启动流程。返回是否顺带中止了一个安装任务。
- */
-export async function cancelLaunch(): Promise<boolean> {
-  if (!isDesktop) {
-    demoStopGame();
-    return false;
-  }
-  return invoke<boolean>("cancel_launch");
 }
 
 export async function stopGame(): Promise<void> {
@@ -416,7 +391,7 @@ export async function resolveMcmodEntry(
   slug: string,
   projectType: ContentProjectType,
 ): Promise<WikiEntry | null> {
-  if (!isDesktop) return demoMcmodEntry(slug);
+  if (!isDesktop) return null;
   return invoke<WikiEntry | null>("resolve_mcmod_entry", {
     title,
     slug,

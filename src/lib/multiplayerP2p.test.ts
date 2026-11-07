@@ -154,20 +154,16 @@ test("pickFastestRelayServer picks lowest latency reachable server and falls bac
   assert.equal(pickFastestRelayServer(dummyServers, {}), DEFAULT_PUBLIC_SERVER);
 });
 
-test("buildMultiplayerPeers keeps redundant entries inside one shared cluster", () => {
-  // 官方公益节点同属一个集群：主节点在前，其余官方入口可以互为备用。
-  const peers = buildMultiplayerPeers(DEFAULT_PUBLIC_SERVER);
-  assert.equal(peers[0], DEFAULT_PUBLIC_SERVER);
+test("buildMultiplayerPeers builds redundant peer list with primary node first", () => {
+  const primary = "tcp://custom.myserver.org:11010";
+  const peers = buildMultiplayerPeers(primary);
+  assert.equal(peers[0], primary);
   assert.ok(peers.length > 1);
   for (const fallback of FALLBACK_REDUNDANT_RELAYS) {
     assert.ok(peers.includes(fallback));
   }
+  // No duplicates
   assert.equal(new Set(peers).size, peers.length);
-
-  // 独立节点不能和官方集群混在一起：混着连时两端会各自停在不同集群，
-  // 节点都“连得上”却互相发现不了。
-  const standalone = "tcp://custom.myserver.org:11010";
-  assert.deepEqual(buildMultiplayerPeers(standalone), [standalone]);
 });
 
 test("inferServerLatencies infers UDP node latency from same host TCP latency", () => {

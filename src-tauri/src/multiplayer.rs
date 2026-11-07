@@ -37,23 +37,6 @@ pub const EASYTIER_VERSION: &str = "v2.6.4";
 const LAN_ANNOUNCE_TARGET: &str = "224.0.2.60:4445";
 const LAN_ANNOUNCE_INTERVAL: Duration = Duration::from_millis(1500);
 
-/// 局域网公告只允许从回环地址发出。
-///
-/// Minecraft 把「收到公告包的源地址」直接当成房间地址显示。以前这个 socket
-/// 绑的是 `0.0.0.0`，往 `224.0.2.60` 发的组播会从物理网卡出去，源地址变成
-/// 本机的 `192.168.x.x`，局域网列表里就多出一个 C 类地址的房间；而这里的代理
-/// 只监听 `127.0.0.1`，点进去必然报连接失败。绑到回环后两个房间就合并成一个。
-const LAN_ANNOUNCE_BIND: &str = "127.0.0.1:0";
-
-/// 公告的发送目标：组播（部分版本靠它发现）+ 两个回环单播。
-/// 全部从回环 socket 发出，源地址永远是 127.0.0.1。
-const LAN_ANNOUNCE_TARGETS: [&str; 2] = ["127.0.0.1:4445", "[::1]:4445"];
-
-/// 拼出 Minecraft 的局域网发现包。
-fn lan_announce_payload(label: &str, port: u16) -> String {
-    format!("[MOTD]{label}[/MOTD][AD]{port}[/AD]")
-}
-
 /// 默认的 EasyTier 监听端口（TCP/UDP）。
 const DEFAULT_LISTEN_PORT: u16 = 11010;
 
@@ -4153,27 +4136,18 @@ pub async fn start_lan_bridge(
         .map(sanitize_lan_text)
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| format!("{target_host} 的世界"));
-    let payload = lan_announce_payload(&label, local_port);
+    let payload = format!("[MOTD]{label}[/MOTD][AD]{local_port}[/AD]");
     let announce_task = tokio::spawn(async move {
-        // 只从回环发包：源地址就是 Minecraft 里显示的房间地址，走物理网卡
-        // 会多出一个连不上的「192.168.x.x」房间（详见 LAN_ANNOUNCE_BIND）。
-        let Ok(socket4) = UdpSocket::bind(LAN_ANNOUNCE_BIND).await else {
+        let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await else {
             return;
         };
-        let socket6 = UdpSocket::bind(("::1", 0)).await.ok();
+        let _ = socket.set_broadcast(true);
         loop {
-            // 组播：部分版本只在 224.0.2.60 上认房间；从回环发出失败也无妨。
-            let _ = socket4
+            let _ = socket
                 .send_to(payload.as_bytes(), LAN_ANNOUNCE_TARGET)
                 .await;
-            let _ = socket4
-                .send_to(payload.as_bytes(), LAN_ANNOUNCE_TARGETS[0])
-                .await;
-            if let Some(socket6) = socket6.as_ref() {
-                let _ = socket6
-                    .send_to(payload.as_bytes(), LAN_ANNOUNCE_TARGETS[1])
-                    .await;
-            }
+            // 有些系统不回送组播到本机回环，再直接发一份给 127.0.0.1。
+            let _ = socket.send_to(payload.as_bytes(), "127.0.0.1:4445").await;
             tokio::time::sleep(LAN_ANNOUNCE_INTERVAL).await;
         }
     });
@@ -4459,45 +4433,6 @@ mod tests {
         assert!(missing_kernel_files(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 公告包必须带 [AD]端口[/AD]，否则游戏认不出版本/端口，房间点不进去。
-    #[test]
-    fn lan_announce_payload_carries_motd_and_port() {
-        assert_eq!(
-            lan_announce_payload("好友的世界", 52341),
-            "[MOTD]好友的世界[/MOTD][AD]52341[/AD]"
-        );
-    }
-
-    /// 回环单播必须真的能送到 4445 的接收方，并且源地址是回环——否则改完
-    /// 就从「两个房间」变成「一个房间都没有」。
-    #[tokio::test]
-    async fn lan_announce_loopback_unicast_is_delivered() {
-        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let target = listener.local_addr().unwrap();
-        let sender = UdpSocket::bind(LAN_ANNOUNCE_BIND).await.unwrap();
-        sender
-            .send_to(lan_announce_payload("测试房间", 25570).as_bytes(), target)
-            .await
-            .unwrap();
-
-        let mut buffer = [0u8; 128];
-        let (length, from) = tokio::time::timeout(Duration::from_secs(2), listener.recv_from(&mut buffer))
-            .await
-            .expect("公告包没有送到")
-            .unwrap();
-        assert!(from.ip().is_loopback(), "源地址必须留在回环，实际是 {from}");
-        let text = String::from_utf8_lossy(&buffer[..length]);
-        assert_eq!(text, lan_announce_payload("测试房间", 25570));
-    }
-
-    /// 房间地址来自公告包的源地址：socket 必须绑在回环上，否则会多出一个
-    /// 物理网卡地址（192.168.x.x）的重复房间，而且点进去连接失败。
-    #[test]
-    fn lan_announce_only_leaves_the_loopback_interface() {
-        assert_eq!(LAN_ANNOUNCE_BIND, "127.0.0.1:0");
-        assert_eq!(LAN_ANNOUNCE_TARGETS, ["127.0.0.1:4445", "[::1]:4445"]);
     }
 
     #[test]

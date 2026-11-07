@@ -30,7 +30,6 @@ import type {
   SystemInfo,
   VersionLoadersCatalog,
   VersionManifest,
-  WikiEntry,
 } from "./types";
 
 export interface DemoEventMap {
@@ -640,31 +639,6 @@ export async function demoInstall(
   }
 }
 
-/**
- * 预览模式里的 MC 百科条目：和后端一样同时给出中文名与英文名，
- * 这样不连桌面核心也能看到双语按钮。
- */
-export function demoMcmodEntry(slug: string): WikiEntry | null {
-  const known: Record<string, { id: number; zh: string; en: string }> = {
-    sodium: { id: 2785, zh: "钠", en: "Sodium" },
-    jei: { id: 459, zh: "JEI物品管理器", en: "Just Enough Items" },
-    create: { id: 2021, zh: "机械动力", en: "Create" },
-    appleskin: { id: 1850, zh: "苹果皮", en: "AppleSkin" },
-    waystones: { id: 1615, zh: "传送石碑", en: "Waystones" },
-    "iris-shaders": { id: 3171, zh: "光圈", en: "Iris Shaders" },
-  };
-  const key = slug.trim().toLowerCase();
-  const entry = known[key];
-  if (!entry) return null;
-  return {
-    id: entry.id,
-    title: `${entry.zh} (${entry.en})`,
-    nameZh: entry.zh,
-    nameEn: entry.en,
-    url: `https://www.mcmod.cn/class/${entry.id}.html`,
-  };
-}
-
 export async function demoDeleteVersion(versionId: string): Promise<void> {
   await sleep(300);
   installed = installed.filter((v) => v.id !== versionId);
@@ -691,7 +665,6 @@ export async function demoLaunch(request: LaunchRequest): Promise<number> {
   push("launch", 0, 1, "正在启动游戏");
   await sleep(500);
 
-  // 运行态跟真实后端一样，在「窗口已经出现」那行日志之后才切过去。
   gameTimers.push(
     window.setTimeout(() => {
       emit("game:status", {
@@ -700,7 +673,7 @@ export async function demoLaunch(request: LaunchRequest): Promise<number> {
         pid: 4812,
         versionId: request.versionId,
       });
-    }, 830),
+    }, 250),
   );
 
   const lines = [
@@ -1196,37 +1169,8 @@ export async function demoGetContentVersions(
           size: 1_720_000,
         },
       ],
-      dependencies: [
-        { projectId: "P7dR8mSH", name: "Fabric API", required: true },
-        { projectId: "mOgUt4GM", name: "Mod Menu", required: false },
-      ],
     },
   ];
-}
-
-/** 预览模式下被取消的内容任务 id；下载循环每推进一步都检查一次。 */
-const demoCancelledContent = new Set<string>();
-
-export async function demoCancelContentDownload(id?: string): Promise<boolean> {
-  if (!id) {
-    const had = demoCancelledContent.size > 0;
-    demoCancelledContent.clear();
-    return had;
-  }
-  demoCancelledContent.add(id);
-  emit("content:progress", {
-    id,
-    title: id.split(":").slice(2).join(":") || "资源",
-    filename: id.split(":").slice(2).join(":") || "resource",
-    projectType: id.split(":")[1] || "mod",
-    stage: "cancelled",
-    detail: "下载已取消",
-    doneBytes: 0,
-    totalBytes: 0,
-    speedBps: 0,
-    threads: 0,
-  });
-  return true;
 }
 
 export async function demoDownloadContentFile(
@@ -1235,12 +1179,6 @@ export async function demoDownloadContentFile(
   const total = request.size ?? 12_500_000;
   const id = `content:${request.projectType}:${request.filename}`;
   const title = request.title || request.filename;
-  const assertNotCancelled = () => {
-    if (demoCancelledContent.has(id)) {
-      demoCancelledContent.delete(id);
-      throw new Error("下载已取消");
-    }
-  };
 
   emit("content:progress", {
     id,
@@ -1256,7 +1194,6 @@ export async function demoDownloadContentFile(
   });
 
   await sleep(250);
-  assertNotCancelled();
   emit("content:progress", {
     id,
     title,
@@ -1271,7 +1208,6 @@ export async function demoDownloadContentFile(
   });
 
   await sleep(350);
-  assertNotCancelled();
   emit("content:progress", {
     id,
     title,
@@ -1286,7 +1222,6 @@ export async function demoDownloadContentFile(
   });
 
   await sleep(200);
-  assertNotCancelled();
   emit("content:progress", {
     id,
     title,

@@ -42,23 +42,6 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: "127.0.0.1",
-    watch: {
-      ignored: [
-        "**/src-tauri/**",
-        // 游戏目录与 MCEF/Chromium 运行缓存不该被监听：里面全是频繁创建、
-        // 占用、重命名、删除的 .tmp 与 Code Cache/Network 文件，监听它们
-        // 对开发毫无用处，Windows 上还会不断抛出
-        // "EBUSY: resource busy or locked, watch ..."。
-        "**/.minecraft/**",
-        "**/mcef-cache/**",
-        "**/Code Cache/**",
-        "**/GPUCache/**",
-        "**/ShaderCache/**",
-        "**/DawnCache/**",
-        "**/CachedData/**",
-        "**/Network/**",
-        "**/*.tmp",
-      ],
-    },
+    watch: { ignored: ["**/src-tauri/**"] },
   },
 }));

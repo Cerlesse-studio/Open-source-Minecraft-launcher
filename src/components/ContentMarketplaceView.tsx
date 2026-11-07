@@ -246,12 +246,6 @@ export function ContentMarketplaceView({
   const modDestinationOpen = selectedVersion
     ? `${gameRoot}/${modDestinationPath}`
     : `${gameRoot}/versions`;
-  // Shaders land in the selected version's own game directory too: with version
-  // isolation the game reads `versions/<id>/shaderpacks`, not `<root>/shaderpacks`.
-  const isShaderType = projectType === "shader" && !isBedrockSource;
-  const shaderDestinationPath = selectedVersion
-    ? `versions/${selectedVersion}/shaderpacks`
-    : "versions/<对应版本>/shaderpacks";
 
   // The game reads `saves/` from the *resolved* game directory, not always the
   // root. With version isolation on that folder lives under versions/<id>.
@@ -350,12 +344,8 @@ export function ContentMarketplaceView({
     }
   };
 
-  // 每次搜索取一个序号：慢的旧请求回来时不能再覆盖新结果（例如快速切换关键词）。
-  const searchSeqRef = useRef(0);
-
   // Load content whenever query, filters, or page change
   const doSearch = async (targetPage = page, targetPageSize = pageSize) => {
-    const seq = ++searchSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -369,15 +359,13 @@ export function ContentMarketplaceView({
         offset,
         limit: targetPageSize,
       });
-      if (seq !== searchSeqRef.current) return;
       setHits(res.hits);
       setTotalHits(res.totalHits);
       setTranslatedQuery(res.translatedQuery ?? null);
     } catch (err) {
-      if (seq !== searchSeqRef.current) return;
       setError(String(err));
     } finally {
-      if (seq === searchSeqRef.current) setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -495,7 +483,7 @@ export function ContentMarketplaceView({
                     : "在 CurseForge 搜索 Java 地图 (支持中文，如 空岛/跑酷/生存)…"
                   : isBedrockSource
                     ? "在 CurseForge 搜索基岩版附加包 (支持中文，如 家具/枪械/空岛)…"
-                    : `${projectType === "mod" ? "在 Modrinth 与 CurseForge 搜索" : "在 Modrinth 搜索"}${
+                    : `在 Modrinth 搜索${
                         projectType === "mod"
                           ? "模组 (JEI、Sodium，支持中文，如 钠/机械动力)…"
                           : projectType === "shader"
@@ -712,9 +700,7 @@ export function ContentMarketplaceView({
                     ? worldSavesPath
                     : projectType === "mod"
                       ? modDestinationOpen
-                      : isShaderType
-                        ? `${gameRoot}/${shaderDestinationPath}`
-                        : `${gameRoot}/${typeDestinationLabel(projectType, false)}`,
+                      : `${gameRoot}/${typeDestinationLabel(projectType, false)}`,
               )
             }
             title="点击打开对应存储文件夹"
@@ -731,9 +717,7 @@ export function ContentMarketplaceView({
                   ? `${worldSavesRelative}/`
                   : projectType === "mod"
                     ? modDestinationPath
-                    : isShaderType
-                      ? shaderDestinationPath
-                      : typeDestinationLabel(projectType, false)}
+                    : typeDestinationLabel(projectType, false)}
             </code>
           </button>
         </div>
@@ -743,11 +727,11 @@ export function ContentMarketplaceView({
         {translatedQuery ? (
           <div className="flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-2 text-[10.5px] text-muted-foreground">
             <Languages className="size-3.5 shrink-0 text-primary/80" />
-            <span>已识别为多语言关键词，同时按英文</span>
+            <span>已识别为多语言关键词，按英文</span>
             <code className="rounded border border-border/60 bg-background/60 px-1.5 py-px font-mono text-[10px] text-foreground/85">
               {translatedQuery}
             </code>
-            <span>与原文搜索，并合并两边的结果。</span>
+            <span>搜索；若没有结果会自动改用原文。</span>
           </div>
         ) : null}
       </Card>
@@ -826,16 +810,6 @@ export function ContentMarketplaceView({
                     {isBedrock ? (
                       <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9px] font-medium text-primary">
                         基岩版
-                      </Badge>
-                    ) : null}
-                    {/* Mods are indexed by two catalogues: label which one the
-                        row came from so both sites are recognisable. */}
-                    {hit.source ? (
-                      <Badge
-                        variant="outline"
-                        className="h-4 border-border/70 bg-background/60 px-1.5 text-[9px] font-normal text-muted-foreground"
-                      >
-                        {hit.source === "curseforge" ? "CurseForge" : "Modrinth"}
                       </Badge>
                     ) : null}
                     <span className="flex items-center gap-1 text-[11px] text-muted-foreground">

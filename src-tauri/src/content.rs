@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// How many builds the version picker shows.
+///
+/// The picker groups files by loader and Minecraft version and lists every
+/// version the project supports as a pill, so the window has to reach back far
+/// enough to cover older Minecraft releases: at 50 files a fast-moving mod only
+/// exposed its newest two Minecraft versions. 200 files is ~400 KB of JSON for
+/// the busiest projects, still well inside the body timeout below.
+const VERSION_LIST_LIMIT: usize = 200;
 /// A fetched version list is reused for this long before the API is queried again.
 const VERSION_LIST_TTL: Duration = Duration::from_secs(10 * 60);
 /// Upper bound on cached lists so a long session cannot grow without limit.
@@ -34,10 +42,6 @@ pub struct ContentHit {
     pub date_modified: Option<String>,
     pub latest_version: Option<String>,
     pub project_type: String,
-    /// Catalogue the row came from ("modrinth" / "curseforge"). Java mods are
-    /// indexed by both, so the list shows which site a result belongs to.
-    #[serde(default)]
-    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,31 +78,6 @@ pub struct ContentVersionItem {
     pub date_published: Option<String>,
     pub downloads: u64,
     pub files: Vec<ContentFile>,
-    /// Other projects this build needs before it runs.
-    #[serde(default)]
-    pub dependencies: Vec<ContentDependency>,
-}
-
-/// One project a build depends on.
-///
-/// Displayed under the version row so the user knows what else to install;
-/// names are resolved from the catalogue, and `project_id` is the launcher's
-/// id form (`cfj:<id>` for CurseForge, the raw Modrinth id otherwise) so a
-/// future "install dependency" action can reuse it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContentDependency {
-    pub project_id: String,
-    /// Resolved title; falls back to the raw project id when the lookup fails.
-    pub name: String,
-    /// The exact build the author pinned (Modrinth only).
-    #[serde(default)]
-    pub version_id: Option<String>,
-    /// File name the author suggests (Modrinth only).
-    #[serde(default)]
-    pub file_name: Option<String>,
-    /// `true` when the game will not load without it.
-    pub required: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,6 +145,36 @@ pub struct DownloadContentResult {
 // Modrinth API Queries
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize)]
+struct ModrinthSearchResponse {
+    hits: Vec<ModrinthRawHit>,
+    offset: u32,
+    limit: u32,
+    total_hits: u32,
+}
+
+#[derive(Deserialize)]
+struct ModrinthRawHit {
+    project_id: String,
+    slug: String,
+    author: String,
+    title: String,
+    description: String,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    versions: Vec<String>,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    follows: u64,
+    icon_url: Option<String>,
+    date_created: Option<String>,
+    date_modified: Option<String>,
+    latest_version: Option<String>,
+    project_type: String,
+}
+
 pub async fn search_content(
     query: String,
     project_type: String,
@@ -183,16 +192,11 @@ pub async fn search_content(
         || game_version.as_deref() == Some("基岩版");
 
     // The catalogues index English metadata, so `钠` or `機械動力` found nothing.
-    // Both the translated keywords and the raw text are searched in parallel and
-    // their rows merged: the translation matches how the catalogues are indexed,
-    // while the raw query still finds a project that is titled in Chinese.
-    // Searching only one of them either missed Chinese titles or returned
-    // nothing at all.
-    let variants = crate::search_i18n::query_variants(&query);
-    let effective = variants.first().map(String::as_str).unwrap_or("");
-    let original = variants.get(1).cloned();
-    // Only a query the glossary actually rewrote is reported as translated.
-    let translated = original.as_ref().and_then(|_| variants.first().cloned());
+    // Search the English keywords first; when even those return nothing the
+    // raw query is retried, because a project can genuinely be titled in
+    // Chinese and the glossary must not hide it.
+    let translated = crate::search_i18n::translate_query(&query);
+    let effective = translated.as_deref().unwrap_or(&query);
 
     if project_type == "world" {
         // Maps live on CurseForge, never Modrinth: Java in gameId 432 and
@@ -202,41 +206,52 @@ pub async fn search_content(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty() && *value != "all");
-        let (primary, fallback) = tokio::join!(
-            search_worlds_any(
+        let mut result = if is_bedrock {
+            crate::bedrock_store::search_bedrock_worlds(
                 effective,
-                is_bedrock,
+                offset,
+                limit,
+                sort.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("搜索基岩版地图失败: {e}"))?
+        } else {
+            crate::bedrock_store::search_worlds(
+                effective,
                 world_version,
                 offset,
                 limit,
                 sort.as_deref(),
-            ),
-            async {
-                match original.as_deref() {
-                    Some(text) => search_worlds_any(
-                        text,
-                        is_bedrock,
-                        world_version,
-                        offset,
-                        limit,
-                        sort.as_deref(),
-                    )
-                    .await
-                    .ok(),
-                    None => None,
+            )
+            .await
+            .map_err(|e| format!("搜索 Java 地图失败: {e}"))?
+        };
+
+        if result.total_hits == 0 && translated.is_some() {
+            if let Ok(fallback) = if is_bedrock {
+                crate::bedrock_store::search_bedrock_worlds(
+                    &query,
+                    offset,
+                    limit,
+                    sort.as_deref(),
+                )
+                .await
+            } else {
+                crate::bedrock_store::search_worlds(
+                    &query,
+                    world_version,
+                    offset,
+                    limit,
+                    sort.as_deref(),
+                )
+                .await
+            } {
+                if fallback.total_hits > 0 {
+                    return Ok(fallback);
                 }
             }
-        );
-        let mut result = merge_searches(
-            primary,
-            fallback,
-            if is_bedrock {
-                "搜索基岩版地图失败"
-            } else {
-                "搜索 Java 地图失败"
-            },
-            limit,
-        )?;
+        }
+
         result.translated_query = translated;
         return Ok(result);
     }
@@ -245,123 +260,180 @@ pub async fn search_content(
         // Bedrock content is browsed through CurseForge, the catalogue
         // BedrockBoot-DM uses: add-ons and texture packs with real download
         // counts, icons and per-file CDN links.
-        let (primary, fallback) = tokio::join!(
-            crate::bedrock_store::search_bedrock(
-                effective,
+        let mut result = crate::bedrock_store::search_bedrock(
+            effective,
+            &project_type,
+            offset,
+            limit,
+            sort.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("搜索基岩版资源失败: {e}"))?;
+
+        if result.total_hits == 0 && translated.is_some() {
+            if let Ok(fallback) = crate::bedrock_store::search_bedrock(
+                &query,
                 &project_type,
                 offset,
                 limit,
                 sort.as_deref(),
-            ),
-            async {
-                match original.as_deref() {
-                    Some(text) => crate::bedrock_store::search_bedrock(
-                        text,
-                        &project_type,
-                        offset,
-                        limit,
-                        sort.as_deref(),
-                    )
-                    .await
-                    .ok(),
-                    None => None,
+            )
+            .await
+            {
+                if fallback.total_hits > 0 {
+                    return Ok(fallback);
                 }
             }
-        );
-        let mut result = merge_searches(primary, fallback, "搜索基岩版资源失败", limit)?;
+        }
+
         result.translated_query = translated;
         return Ok(result);
     }
 
-    // Java content is searched through the pcl-rust catalogue engine: one
-    // session covers Modrinth and, for mods, CurseForge. The rows that are
-    // published on both sites are deduplicated and ranked inside the session,
-    // so the list no longer has to interleave two separate responses.
-    let (primary, fallback) = tokio::join!(
-        crate::pcl::search(
-            effective,
+    let mut result = search_modrinth(
+        effective,
+        &project_type,
+        game_version.as_deref(),
+        loader.as_deref(),
+        sort.as_deref(),
+        offset,
+        limit,
+    )
+    .await?;
+
+    if result.total_hits == 0 && translated.is_some() {
+        if let Ok(fallback) = search_modrinth(
+            &query,
             &project_type,
             game_version.as_deref(),
             loader.as_deref(),
             sort.as_deref(),
             offset,
             limit,
-        ),
-        async {
-            match original.as_deref() {
-                Some(text) => crate::pcl::search(
-                    text,
-                    &project_type,
-                    game_version.as_deref(),
-                    loader.as_deref(),
-                    sort.as_deref(),
-                    offset,
-                    limit,
-                )
-                .await
-                .ok(),
-                None => None,
+        )
+        .await
+        {
+            if fallback.total_hits > 0 {
+                return Ok(fallback);
             }
         }
-    );
-    let mut result = merge_searches(primary, fallback, "搜索内容目录失败", limit)?;
+    }
+
     result.translated_query = translated;
     Ok(result)
 }
 
-/// Search either CurseForge world catalogue with one query.
-async fn search_worlds_any(
+/// One Modrinth search request for a query that is already in English.
+async fn search_modrinth(
     query: &str,
-    is_bedrock: bool,
+    project_type: &str,
     game_version: Option<&str>,
+    loader: Option<&str>,
+    sort: Option<&str>,
     offset: u32,
     limit: u32,
-    sort: Option<&str>,
 ) -> Result<SearchContentResult, String> {
-    if is_bedrock {
-        crate::bedrock_store::search_bedrock_worlds(query, offset, limit, sort).await
-    } else {
-        crate::bedrock_store::search_worlds(query, game_version, offset, limit, sort).await
+    let index = match sort {
+        Some("relevance") => "relevance",
+        Some("newest") => "newest",
+        Some("updated") => "updated",
+        _ => "downloads",
+    };
+
+    let mut facets: Vec<Vec<String>> = Vec::new();
+    // Project type facet: "project_type:mod" / "project_type:shader" / etc.
+    facets.push(vec![format!("project_type:{project_type}")]);
+
+    if let Some(v) = game_version
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock")
+    {
+        facets.push(vec![format!("versions:{v}")]);
     }
+
+    if let Some(l) = loader
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock")
+    {
+        facets.push(vec![format!("categories:{}", l.to_lowercase())]);
+    }
+
+    let facets_json = serde_json::to_string(&facets).unwrap_or_else(|_| "[]".to_string());
+
+    let url = format!(
+        "https://api.modrinth.com/v2/search?query={}&facets={}&index={}&offset={}&limit={}",
+        urlencoding(query),
+        urlencoding(&facets_json),
+        index,
+        offset,
+        limit
+    );
+
+    // Modrinth can answer slowly on congested links, so the timeout covers the
+    // whole body and stalled transfers are retried instead of failing outright.
+    let raw: ModrinthSearchResponse = net::fetch_json(&url, Duration::from_secs(60), 3)
+        .await
+        .map_err(|e| format!("搜索 Modrinth 失败: {e}"))?;
+
+    let hits: Vec<ContentHit> = raw
+        .hits
+        .into_iter()
+        .map(|h| ContentHit {
+            project_id: h.project_id,
+            slug: h.slug,
+            author: h.author,
+            title: h.title,
+            description: h.description,
+            categories: h.categories,
+            versions: h.versions,
+            downloads: h.downloads,
+            follows: h.follows,
+            icon_url: h.icon_url,
+            date_created: h.date_created,
+            date_modified: h.date_modified,
+            latest_version: h.latest_version,
+            project_type: h.project_type,
+        })
+        .collect();
+
+    Ok(SearchContentResult {
+        hits,
+        offset: raw.offset,
+        limit: raw.limit,
+        total_hits: raw.total_hits,
+        translated_query: None,
+    })
 }
 
-/// Combine the translated and the raw search for one page.
-///
-/// The primary list keeps its catalogue order and rows unique to the second
-/// search fill the rest of the page. A failed primary request still returns the
-/// other list, so one bad query spelling cannot fail the whole search.
-fn merge_searches(
-    primary: Result<SearchContentResult, String>,
-    extra: Option<SearchContentResult>,
-    error_label: &str,
-    limit: u32,
-) -> Result<SearchContentResult, String> {
-    match primary {
-        Ok(mut result) => {
-            if let Some(extra) = extra {
-                merge_extra_hits(&mut result, extra, limit);
-            }
-            Ok(result)
-        }
-        Err(error) => extra.ok_or_else(|| format!("{error_label}: {error}")),
-    }
+#[derive(Deserialize)]
+struct ModrinthRawVersion {
+    id: String,
+    name: String,
+    version_number: String,
+    #[serde(default)]
+    game_versions: Vec<String>,
+    #[serde(default)]
+    loaders: Vec<String>,
+    date_published: Option<String>,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    files: Vec<ModrinthRawFile>,
 }
 
-/// Append the rows the second search found that the first one did not have.
-fn merge_extra_hits(primary: &mut SearchContentResult, extra: SearchContentResult, limit: u32) {
-    let mut seen: std::collections::HashSet<String> =
-        primary.hits.iter().map(|hit| hit.project_id.clone()).collect();
-    // Either query alone may have more matches than the merged page shows, so
-    // the larger total keeps the pager from ending early.
-    primary.total_hits = primary.total_hits.max(extra.total_hits);
-    for hit in extra.hits {
-        if primary.hits.len() >= limit as usize {
-            break;
-        }
-        if seen.insert(hit.project_id.clone()) {
-            primary.hits.push(hit);
-        }
-    }
+#[derive(Deserialize)]
+struct ModrinthRawFile {
+    url: String,
+    filename: String,
+    #[serde(default)]
+    primary: bool,
+    size: u64,
+    hashes: Option<ModrinthRawHashes>,
+}
+
+#[derive(Deserialize)]
+struct ModrinthRawHashes {
+    sha1: Option<String>,
 }
 
 pub async fn get_content_versions(
@@ -425,33 +497,6 @@ pub async fn get_content_versions(
         return Ok(items);
     }
 
-    // Java mods can also come from CurseForge: their id carries the `cfj:`
-    // prefix and their file list is the jar builds the author published there.
-    if let Some(raw_id) = project_id_or_slug.strip_prefix(crate::bedrock_store::JAVA_MOD_PREFIX) {
-        let mod_id: u32 = raw_id
-            .trim()
-            .parse()
-            .map_err(|_| format!("无效的模组项目 ID: {project_id_or_slug}"))?;
-        let cache_key = format!("cfj:{mod_id}");
-        if let Ok(cache) = version_list_cache().lock() {
-            if let Some((fetched_at, cached)) = cache.get(&cache_key) {
-                if fetched_at.elapsed() < VERSION_LIST_TTL {
-                    return Ok(cached.clone());
-                }
-            }
-        }
-        let items = crate::bedrock_store::java_mod_project_files(mod_id)
-            .await
-            .map_err(|e| format!("获取模组文件失败: {e}"))?;
-        if let Ok(mut cache) = version_list_cache().lock() {
-            if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
-                cache.clear();
-            }
-            cache.insert(cache_key, (Instant::now(), items.clone()));
-        }
-        return Ok(items);
-    }
-
     // Bedrock projects live on CurseForge: their id carries the `cfb:` prefix
     // and their file list is the set of downloadable pack archives.
     if let Some(raw_id) = project_id_or_slug.strip_prefix(crate::bedrock_store::PROJECT_PREFIX) {
@@ -495,16 +540,43 @@ pub async fn get_content_versions(
         }
     }
 
-    // Modrinth builds come from the pcl-rust resource model: one bounded
-    // request, normalized versions, and dependency titles resolved in a single
-    // batch. The result is also cached to disk, so a project opened before still
-    // opens offline.
-    let items = crate::pcl::modrinth_versions(
+    let url = build_version_list_url(
         &project_id_or_slug,
         game_version.as_deref(),
         loader.as_deref(),
-    )
-    .await?;
+    );
+    // A version list can exceed a megabyte, and the old 12s request-wide cap
+    // cut the body mid-transfer on slow links: reqwest then reported the
+    // useless "error decoding response body". Use a body-inclusive timeout and
+    // retry stalled transfers.
+    let raw_versions: Vec<ModrinthRawVersion> = net::fetch_json(&url, Duration::from_secs(60), 3)
+        .await
+        .map_err(|e| format!("Modrinth 版本列表: {e}"))?;
+
+    let items: Vec<ContentVersionItem> = raw_versions
+        .into_iter()
+        .take(VERSION_LIST_LIMIT)
+        .map(|v| ContentVersionItem {
+            id: v.id,
+            name: v.name,
+            version_number: v.version_number,
+            game_versions: v.game_versions,
+            loaders: v.loaders,
+            date_published: v.date_published,
+            downloads: v.downloads,
+            files: v
+                .files
+                .into_iter()
+                .map(|f| ContentFile {
+                    url: f.url,
+                    filename: f.filename,
+                    primary: f.primary,
+                    size: f.size,
+                    sha1: f.hashes.and_then(|h| h.sha1),
+                })
+                .collect(),
+        })
+        .collect();
 
     if let Ok(mut cache) = version_list_cache().lock() {
         if cache.len() >= VERSION_CACHE_MAX_ENTRIES {
@@ -514,6 +586,42 @@ pub async fn get_content_versions(
     }
 
     Ok(items)
+}
+
+/// Compose the Modrinth version list URL for one project and filter set.
+///
+/// `limit` keeps the response to a bounded recent window. Without it a popular
+/// project returns its entire history (Fabric API: 1216 versions, 1.2 MB of
+/// JSON, ~35s on a slow link) for a picker that only groups a few hundred rows.
+fn build_version_list_url(
+    project_id_or_slug: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> String {
+    let mut query_params = Vec::new();
+
+    // Do NOT pass "基岩版" or "bedrock" to Modrinth version filter
+    if let Some(v) = game_version
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "基岩版" && *s != "bedrock")
+    {
+        let gv_json = serde_json::to_string(&vec![v]).unwrap_or_default();
+        query_params.push(format!("game_versions={}", urlencoding(&gv_json)));
+    }
+    if let Some(l) = loader
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all" && *s != "bedrock")
+    {
+        let l_json = serde_json::to_string(&vec![l.to_lowercase()]).unwrap_or_default();
+        query_params.push(format!("loaders={}", urlencoding(&l_json)));
+    }
+
+    query_params.push(format!("limit={VERSION_LIST_LIMIT}"));
+
+    format!(
+        "https://api.modrinth.com/v2/project/{project_id_or_slug}/version?{}",
+        query_params.join("&")
+    )
 }
 
 pub(crate) fn urlencoding(input: &str) -> String {
@@ -539,32 +647,19 @@ pub(crate) fn urlencoding(input: &str) -> String {
 /// `<root>/mods`, so `None` means the caller has to resolve an instance (or
 /// explain why it cannot). The other types keep a root folder for the case
 /// where no instance matches.
-///
-/// Shaders follow the *game directory* of the selected version instead of a
-/// literal `versions/<id>/shaderpacks`: with version isolation the game reads
-/// `versions/<id>/shaderpacks`, but with isolation turned off it reads
-/// `<root>/shaderpacks`, and a shader dropped into the other one silently never
-/// shows up in the shader menu.
 fn content_target_dir(
     root: &Path,
     project_type: &str,
     instance_id: Option<&str>,
-    isolation: Option<&str>,
 ) -> Option<PathBuf> {
     let instance = instance_id.filter(|s| !s.trim().is_empty());
     let per_instance = |folder: &str| match instance {
         Some(id) => Some(root.join("versions").join(id).join(folder)),
         None => Some(root.join(folder)),
     };
-    let in_game_dir = |folder: &str| match instance {
-        Some(id) => Some(
-            crate::minecraft::resolve_java_game_dir(root, id, isolation).join(folder),
-        ),
-        None => Some(root.join(folder)),
-    };
     match project_type {
         "mod" => instance.map(|id| root.join("versions").join(id).join("mods")),
-        "shader" => in_game_dir("shaderpacks"),
+        "shader" => per_instance("shaderpacks"),
         "datapack" => per_instance("datapacks"),
         "resourcepack" => per_instance("resourcepacks"),
         "modpack" => Some(root.join("modpacks")),
@@ -836,116 +931,6 @@ fn extract_world_archive(archive: &Path, saves: &Path, title: &str) -> Result<Pa
     result
 }
 
-/// 取消内容下载后清掉这次的半成品：`.part`（以及续传旁车文件）。
-///
-/// 资源会被放进好几个目录（`downloads/`、基岩缓存、各实例的 `mods/`、
-/// `shaderpacks/`……），取消时任务可能停在任意一步，所以按文件名把这些候选
-/// 目录扫一遍，只删 `<filename>.part`，已经完成的文件一个都不动。
-pub async fn discard_content_partial(root: &Path, filename: &str, project_type: &str) {
-    let Some(file) = Path::new(filename).file_name().map(|name| name.to_owned()) else {
-        return;
-    };
-    let bedrock_cache = root.join("bedrock").join("cache");
-    let mut dirs = vec![
-        root.join("downloads"),
-        bedrock_cache.clone(),
-        root.join("shaderpacks"),
-        root.join("resourcepacks"),
-        root.join("datapacks"),
-        root.join("modpacks"),
-    ];
-    if project_type == "mod" {
-        dirs.push(root.join("mods"));
-    }
-    // 基岩版的附加包和地图各自落在 `bedrock/cache/packs`、`.../worlds` 这类
-    // 子目录里；把子目录一起扫上，否则取消附加包下载会永远留下 `.part`。
-    if let Ok(mut entries) = tokio::fs::read_dir(&bedrock_cache).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
-                dirs.push(entry.path());
-            }
-        }
-    }
-    // 版本隔离把资源放进 `versions/<id>/<folder>`，那里同样要清。
-    if let Ok(mut entries) = tokio::fs::read_dir(root.join("versions")).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let version_dir = entry.path();
-            for folder in [
-                "mods",
-                "shaderpacks",
-                "resourcepacks",
-                "datapacks",
-                "modpacks",
-            ] {
-                dirs.push(version_dir.join(folder));
-            }
-        }
-    }
-    for dir in dirs {
-        net::discard_partial_files(&dir.join(&file)).await;
-    }
-    sweep_partial_files(root, &file).await;
-}
-
-/// 目录清单之外的最后一道兜底：在游戏目录里有界地走一遍，只删名字匹配
-/// `<filename>.part` / `<filename>.part.meta` 的文件。
-///
-/// 清单每次都会漏点东西（基岩附加包的 `bedrock/cache/packs` 就是这么漏的），
-/// 而仓库里目录结构还会变；按文件名扫一遍就不依赖“作者记得加目录”了。
-async fn sweep_partial_files(root: &Path, file: &std::ffi::OsStr) {
-    const MAX_DEPTH: usize = 4;
-    // 这些目录只装游戏资源与日志，不会有内容下载的半成品。
-    const SKIP: [&str; 7] = [
-        "assets",
-        "libraries",
-        "runtime",
-        "logs",
-        "crash-reports",
-        "natives",
-        ".git",
-    ];
-    let stem = file.to_string_lossy();
-    let part_name = format!("{stem}.part");
-    let meta_name = format!("{part_name}.meta");
-    // pcl-download 的临时文件用另一套后缀（`.pcl-part` / `.pcl-seg-N` /
-    // `.pcl-resume.json`）：取消时若引擎自己的清理没跑完，这里兜底删掉。
-    let engine_part = format!("{stem}.pcl-part");
-    let engine_resume = format!("{stem}.pcl-resume.json");
-    let engine_segment = format!("{stem}.pcl-seg-");
-
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let Ok(kind) = entry.file_type().await else {
-                continue;
-            };
-            if kind.is_dir() {
-                if depth >= MAX_DEPTH {
-                    continue;
-                }
-                let name = entry.file_name();
-                if name.to_str().is_some_and(|name| SKIP.contains(&name)) {
-                    continue;
-                }
-                stack.push((entry.path(), depth + 1));
-            } else if kind.is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name == part_name
-                    || name == meta_name
-                    || name == engine_part
-                    || name == engine_resume
-                    || name.starts_with(&engine_segment)
-                {
-                    let _ = tokio::fs::remove_file(entry.path()).await;
-                }
-            }
-        }
-    }
-}
-
 pub async fn download_content_file(
     app: Option<&AppHandle>,
     request: DownloadContentRequest,
@@ -1018,20 +1003,16 @@ pub async fn download_content_file(
         let mut last_bytes = 0u64;
         let mut current_speed = 0u64;
         let mut speed_smoother = net::SpeedSmoother::new();
-        // 分片被回收时上报的 `done` 会回退，拿它做差分会把显示速度打成 0；
-        // 这里累计“真正收到的字节”，速度始终单调。
-        let mut received = 0u64;
-        let mut progress_cb = |done: u64, total: u64, delta: u64| {
-            received = received.saturating_add(delta);
+        let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
             let elapsed_ms = now.duration_since(last_emit).as_millis();
             if elapsed_ms >= 120 || (total > 0 && done >= total) {
                 if elapsed_ms > 0 {
-                    let instant = (received.saturating_sub(last_bytes) * 1000) / (elapsed_ms as u64);
+                    let instant = (done.saturating_sub(last_bytes) * 1000) / (elapsed_ms as u64);
                     current_speed = speed_smoother.update(instant, elapsed_ms as u64);
                 }
                 last_emit = now;
-                last_bytes = received;
+                last_bytes = done;
                 let display_total = if total > 0 { total } else { total_bytes };
                 emit(
                     "downloading",
@@ -1044,14 +1025,13 @@ pub async fn download_content_file(
             }
         };
 
-        // 传输层换成 pcl-rust 的分段引擎；镜像链仍由 `net::preferred_urls`
-        // 按用户的镜像偏好排序后交给它依次尝试。
-        let bytes = match crate::pcl::download_file(
+        let bytes = match net::download_file_with_mirrors(
             &request.url,
             &archive,
             request.sha1.as_deref(),
             request.size,
             threads,
+            None,
             Some(&mut progress_cb),
         )
         .await
@@ -1206,20 +1186,17 @@ pub async fn download_content_file(
         let mut current_speed = 0u64;
         let mut speed_smoother = net::SpeedSmoother::new();
 
-        // 同上：用累计收到的字节算速度，不受分片回收导致的进度回退影响。
-        let mut received = 0u64;
-        let mut progress_cb = |done: u64, total: u64, delta: u64| {
-            received = received.saturating_add(delta);
+        let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
             let elapsed_ms = now.duration_since(last_emit).as_millis();
             if elapsed_ms >= 120 || (total > 0 && done >= total) {
                 if elapsed_ms > 0 {
-                    let diff = received.saturating_sub(last_bytes);
+                    let diff = done.saturating_sub(last_bytes);
                     let instant = (diff * 1000) / (elapsed_ms as u64);
                     current_speed = speed_smoother.update(instant, elapsed_ms as u64);
                 }
                 last_emit = now;
-                last_bytes = received;
+                last_bytes = done;
                 let display_total = if total > 0 { total } else { total_bytes };
                 emit(
                     "downloading",
@@ -1287,12 +1264,8 @@ pub async fn download_content_file(
         }
     }
 
-    let target_dir = match content_target_dir(
-        &root,
-        &request.project_type,
-        instance_id.as_deref(),
-        request.isolation.as_deref(),
-    ) {
+    let target_dir = match content_target_dir(&root, &request.project_type, instance_id.as_deref())
+    {
         Some(dir) => dir,
         None => {
             let versions = request
@@ -1335,21 +1308,17 @@ pub async fn download_content_file(
     let mut current_speed = 0u64;
     let mut speed_smoother = net::SpeedSmoother::new();
 
-    // 同上：模组/资源包走分片下载，被回收的慢块会让 `done` 回退，
-    // 用累计收到的字节算速度才不会出现“下载中却一直 0 B/s”。
-    let mut received = 0u64;
-    let mut progress_callback = |done: u64, total: u64, delta: u64| {
-        received = received.saturating_add(delta);
+    let mut progress_callback = |done: u64, total: u64, _delta: u64| {
         let now = Instant::now();
         let elapsed_ms = now.duration_since(last_emit).as_millis();
         if elapsed_ms >= 120 || (total > 0 && done >= total) {
             if elapsed_ms > 0 {
-                let bytes_diff = received.saturating_sub(last_bytes);
+                let bytes_diff = done.saturating_sub(last_bytes);
                 let instant = (bytes_diff * 1000) / (elapsed_ms as u64);
                 current_speed = speed_smoother.update(instant, elapsed_ms as u64);
             }
             last_emit = now;
-            last_bytes = received;
+            last_bytes = done;
             let display_total = if total > 0 { total } else { total_bytes };
             let detail = format!("正在下载 {}", filename);
             emit(
@@ -1363,12 +1332,13 @@ pub async fn download_content_file(
         }
     };
 
-    let download_res = crate::pcl::download_file(
+    let download_res = net::download_file_with_mirrors(
         &request.url,
         &dest,
         request.sha1.as_deref(),
         request.size,
         threads,
+        None,
         Some(&mut progress_callback),
     )
     .await;
@@ -1422,149 +1392,11 @@ mod tests {
         }
     }
 
-    /// 手动探针：用真实目录数据检查依赖字段（Modrinth 与 CurseForge 各一次）。
-    /// `cargo test --lib -- --ignored --nocapture manual_dependency_probe`
-    #[tokio::test]
-    #[ignore = "manual probe against the live catalogues"]
-    async fn manual_dependency_probe() {
-        let cache =
-            std::env::temp_dir().join(format!("cobble-dep-probe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache);
-        // SAFETY: 探针测试串行运行，没有其它线程在读这个变量。
-        unsafe { std::env::set_var("OSML_METADATA_CACHE", &cache) };
-
-        for (label, project) in [("Modrinth iris", "iris"), ("CurseForge JEI", "cfj:238222")] {
-            let started = Instant::now();
-            match get_content_versions(project.to_string(), None, None).await {
-                Ok(items) => {
-                    let with_deps: Vec<String> = items
-                        .iter()
-                        .filter(|v| !v.dependencies.is_empty())
-                        .take(3)
-                        .map(|v| {
-                            let deps: Vec<String> = v
-                                .dependencies
-                                .iter()
-                                .map(|d| {
-                                    format!(
-                                        "{}{}",
-                                        d.name,
-                                        if d.required { "" } else { "(可选)" }
-                                    )
-                                })
-                                .collect();
-                            format!("{} → [{}]", v.version_number, deps.join(", "))
-                        })
-                        .collect();
-                    println!(
-                        "{label}: {} 个构建，{} 个带依赖，耗时 {} ms\n  {}",
-                        items.len(),
-                        items.iter().filter(|v| !v.dependencies.is_empty()).count(),
-                        started.elapsed().as_millis(),
-                        with_deps.join("\n  ")
-                    );
-                }
-                Err(error) => println!("{label}: 失败 {error}"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// 手动探针：真实搜索一次（走网络）再一次（走磁盘缓存），打印两次耗时。
-    /// `cargo test --lib -- --ignored --nocapture manual_search_cache_probe`
-    #[tokio::test]
-    #[ignore = "manual probe against the live catalogues"]
-    async fn manual_search_cache_probe() {
-        let cache = std::env::temp_dir().join(format!("cobble-probe-cache-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache);
-        // SAFETY: 探针测试串行运行，没有其它线程在读这个变量。
-        unsafe { std::env::set_var("OSML_METADATA_CACHE", &cache) };
-
-        for attempt in 1..=2 {
-            let started = Instant::now();
-            let result = search_content(
-                "sodium".to_string(),
-                "mod".to_string(),
-                None,
-                None,
-                None,
-                0,
-                20,
-            )
-            .await;
-            match result {
-                Ok(res) => println!(
-                    "search #{attempt}: {:?} 内返回 {} 条（总 {}），耗时 {} ms",
-                    started.elapsed(),
-                    res.hits.len(),
-                    res.total_hits,
-                    started.elapsed().as_millis()
-                ),
-                Err(error) => println!("search #{attempt}: 失败 {}（{} ms）", error, started.elapsed().as_millis()),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// 取消下载后只删半成品：`downloads/`、基岩缓存和版本目录里的 `.part`
-    /// 都要清掉，已经下完的正式文件和其他版本的文件必须留着。
-    #[tokio::test]
-    async fn cancelling_a_download_only_removes_partial_files() {
-        let root = std::env::temp_dir().join(format!(
-            "cobble-discard-{}",
-            std::process::id() as u64 * 1000 + 7
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let staging = root.join("downloads");
-        let shaders = root.join("versions").join("1.21.1").join("shaderpacks");
-        std::fs::create_dir_all(&staging).unwrap();
-        std::fs::create_dir_all(&shaders).unwrap();
-        std::fs::write(staging.join("BSL.zip.part"), b"half").unwrap();
-        std::fs::write(staging.join("BSL.zip.part.meta"), b"{}").unwrap();
-        std::fs::write(shaders.join("BSL.zip.part"), b"half").unwrap();
-        std::fs::write(shaders.join("BSL.zip"), b"done").unwrap();
-        std::fs::write(shaders.join("other.zip.part"), b"half").unwrap();
-
-        discard_content_partial(&root, "BSL.zip", "shader").await;
-
-        assert!(!staging.join("BSL.zip.part").exists());
-        assert!(!staging.join("BSL.zip.part.meta").exists());
-        assert!(!shaders.join("BSL.zip.part").exists());
-        // 已完成的包与别的包都不能被误删。
-        assert!(shaders.join("BSL.zip").exists());
-        assert!(shaders.join("other.zip.part").exists());
-
-        // 基岩版附加包落在 `bedrock/cache/packs`，取消后同样不能留半成品。
-        let packs = root.join("bedrock").join("cache").join("packs");
-        std::fs::create_dir_all(&packs).unwrap();
-        std::fs::write(packs.join("Addon.mcpack.part"), b"half").unwrap();
-        std::fs::write(packs.join("Addon.mcpack.part.meta"), b"{}").unwrap();
-        std::fs::write(packs.join("Keep.mcpack"), b"done").unwrap();
-
-        discard_content_partial(&root, "Addon.mcpack", "resourcepack").await;
-
-        assert!(!packs.join("Addon.mcpack.part").exists());
-        assert!(!packs.join("Addon.mcpack.part.meta").exists());
-        assert!(packs.join("Keep.mcpack").exists());
-
-        // 清单之外的新目录也是由兜底扫描清掉的，同时不能动其他文件。
-        let custom = root.join("custom-cache").join("deep");
-        std::fs::create_dir_all(&custom).unwrap();
-        std::fs::write(custom.join("Addon.mcpack.part"), b"half").unwrap();
-        std::fs::write(custom.join("Addon.mcpack"), b"done").unwrap();
-
-        discard_content_partial(&root, "Addon.mcpack", "resourcepack").await;
-
-        assert!(!custom.join("Addon.mcpack.part").exists());
-        assert!(custom.join("Addon.mcpack").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     #[test]
     fn target_dir_prefers_the_resolved_instance() {
         let root = PathBuf::from("/game");
         assert_eq!(
-            content_target_dir(&root, "mod", Some("1.20.1-forge"), None),
+            content_target_dir(&root, "mod", Some("1.20.1-forge")),
             Some(
                 PathBuf::from("/game")
                     .join("versions")
@@ -1573,105 +1405,14 @@ mod tests {
             )
         );
         // Mods never fall back to the shared `<root>/mods` folder.
-        assert_eq!(content_target_dir(&root, "mod", None, None), None);
+        assert_eq!(content_target_dir(&root, "mod", None), None);
         // An empty instance id must not create a version folder named "".
-        assert_eq!(content_target_dir(&root, "mod", Some("   "), None), None);
-        // Without an instance the other types keep their root folder.
+        assert_eq!(content_target_dir(&root, "mod", Some("   ")), None);
+        // Shaders and the other types keep their root folder.
         assert_eq!(
-            content_target_dir(&root, "shader", None, None),
+            content_target_dir(&root, "shader", None),
             Some(PathBuf::from("/game").join("shaderpacks"))
         );
-    }
-
-    /// 光影必须落到游戏真正读取的那个 `shaderpacks`：开了版本隔离是
-    /// `versions/<id>/shaderpacks`，关了隔离则是 `<root>/shaderpacks`。
-    #[test]
-    fn shaders_follow_the_game_directory_of_the_selected_version() {
-        let root = PathBuf::from("/game");
-        // `resolve_java_game_dir` absolutises the root, so compare the tail
-        // instead of the whole path.
-        let per_version = PathBuf::from("versions")
-            .join("1.21.1-neoforge")
-            .join("shaderpacks");
-        for isolation in [None, Some("all"), Some("  ")] {
-            let target = content_target_dir(&root, "shader", Some("1.21.1-neoforge"), isolation)
-                .expect("shader target dir");
-            assert!(
-                target.ends_with(&per_version),
-                "{target:?} should end with {per_version:?}"
-            );
-        }
-        // Isolation off: the game reads the shared folder, so the shader must
-        // not be buried in a version folder it never opens.
-        let shared = content_target_dir(&root, "shader", Some("1.21.1-neoforge"), Some("none"))
-            .expect("shader target dir");
-        assert_eq!(shared.file_name().and_then(|n| n.to_str()), Some("shaderpacks"));
-        assert!(
-            !shared.to_string_lossy().contains("versions"),
-            "{shared:?} must be the shared shaderpacks folder"
-        );
-    }
-
-    fn hit(project_id: &str, downloads: u64) -> ContentHit {
-        ContentHit {
-            project_id: project_id.to_string(),
-            slug: project_id.to_string(),
-            author: "author".to_string(),
-            title: project_id.to_string(),
-            description: String::new(),
-            categories: Vec::new(),
-            versions: Vec::new(),
-            downloads,
-            follows: 0,
-            icon_url: None,
-            date_created: None,
-            date_modified: None,
-            latest_version: None,
-            project_type: "mod".to_string(),
-            source: None,
-        }
-    }
-
-    fn page(ids: &[&str], total_hits: u32) -> SearchContentResult {
-        SearchContentResult {
-            hits: ids.iter().map(|id| hit(id, 0)).collect(),
-            offset: 0,
-            limit: 20,
-            total_hits,
-            translated_query: None,
-        }
-    }
-
-    #[test]
-    fn merged_search_keeps_primary_order_and_drops_duplicates() {
-        // The translated search leads; the raw Chinese search only contributes
-        // the rows the translation did not already cover.
-        let mut result = page(&["sodium", "lithium"], 2);
-        merge_extra_hits(&mut result, page(&["lithium", "钠", "钠二"], 7), 4);
-        let ids: Vec<&str> = result.hits.iter().map(|h| h.project_id.as_str()).collect();
-        assert_eq!(ids, vec!["sodium", "lithium", "钠", "钠二"]);
-        // The pager must not end before the larger of the two result sets.
-        assert_eq!(result.total_hits, 7);
-    }
-
-    #[test]
-    fn merged_search_fills_only_to_the_page_limit() {
-        let mut result = page(&["a", "b"], 2);
-        merge_extra_hits(&mut result, page(&["c", "d", "e"], 5), 3);
-        let ids: Vec<&str> = result.hits.iter().map(|h| h.project_id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn a_failed_primary_search_falls_back_to_the_other_list() {
-        let merged = merge_searches(Err("boom".to_string()), Some(page(&["钠"], 1)), "失败", 20)
-            .expect("fallback rows survive");
-        assert_eq!(merged.hits.len(), 1);
-        assert_eq!(merged.total_hits, 1);
-
-        let error = merge_searches(Err("boom".to_string()), None, "失败", 20).unwrap_err();
-        assert!(error.contains("失败"), "{error}");
-        assert!(error.contains("boom"), "{error}");
     }
 
     #[test]
@@ -1816,4 +1557,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn version_url_requests_only_the_visible_page() {
+        assert_eq!(
+            build_version_list_url("fabric-api", None, None),
+            "https://api.modrinth.com/v2/project/fabric-api/version?limit=200"
+        );
+    }
+
+    #[test]
+    fn version_url_encodes_game_version_and_loader_filters() {
+        let url = build_version_list_url("fabric-api", Some("1.20.1"), Some("Fabric"));
+        assert!(url.contains("game_versions=%5B%221.20.1%22%5D"), "{url}");
+        assert!(url.contains("loaders=%5B%22fabric%22%5D"), "{url}");
+        assert!(url.ends_with("&limit=200"), "{url}");
+    }
+
+    #[test]
+    fn version_url_omits_filters_that_mean_everything() {
+        for value in ["all", "bedrock", "", "   "] {
+            assert_eq!(
+                build_version_list_url("pack", Some(value), Some(value)),
+                "https://api.modrinth.com/v2/project/pack/version?limit=200",
+                "value {value:?} should not become a filter"
+            );
+        }
+    }
 }

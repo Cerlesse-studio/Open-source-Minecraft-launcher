@@ -10,6 +10,7 @@
 //!   因此 `Sodium` 不会误跳到 `Sodium Extra`，`Create` 也不会跳到 `Create: Neoforge`；
 //! * 匹配不到就返回 `None`，界面退回到搜索页，而不是硬塞一个可能错误的条目。
 
+use crate::net;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -18,8 +19,6 @@ use std::time::Duration;
 const SEARCH_HOST: &str = "https://search.mcmod.cn/s";
 const SITE_HOST: &str = "https://www.mcmod.cn";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// MC 百科条目和搜索结果都很少变化，缓存一天。
-const MCMOD_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Type-restricted tab and the combined one, tried in this order: the narrow tab
 /// gives short, focused results, while "全部" rescues popular entries (Create,
 /// JEI) that the narrow tab's snapshot ordering pushes off the first page.
@@ -42,12 +41,6 @@ pub struct WikiEntry {
     pub id: u32,
     /// 搜索结果里的完整标题，例如「钠 (Sodium)」。
     pub title: String,
-    /// 中文名，界面与英文名并排显示（百科标题本身是中文，取括号外的部分）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name_zh: Option<String>,
-    /// 英文名，取自百科标题括号内的部分；没有时回退到项目自己的英文名。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name_en: Option<String>,
     /// 页面地址，始终指向具体条目。
     pub url: String,
 }
@@ -234,70 +227,6 @@ fn pick_match<'a>(candidates: &'a [Candidate], slug: &str, title: &str) -> Optio
     None
 }
 
-fn has_cjk(value: &str) -> bool {
-    value.chars().any(|c| {
-        matches!(c,
-            '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
-    })
-}
-
-fn has_latin(value: &str) -> bool {
-    value.chars().any(|c| c.is_ascii_alphabetic())
-}
-
-/// 去掉开头的 `[ABC]` 缩写标签（`[JEI]JEI物品管理器 (…)`）。
-fn strip_bracket_tag(title: &str) -> &str {
-    let trimmed = title.trim();
-    if let Some(rest) = trimmed.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return rest[end + 1..].trim();
-        }
-    }
-    trimmed
-}
-
-/// 把 MC 百科的标题拆成（中文名，英文名）。
-///
-/// 百科的标题格式是 `中文名 (English Name)`，例如「钠 (Sodium)」「机械动力
-/// (Create)」；括号里有时是多个英文别名（`镁 (Magnesium / Sodium Reforged)`），
-/// 原样保留。只有一侧命中语言特征才当作该语言的名字，避免把 ``FabricAPI``
-/// 当成中文名。
-fn bilingual_names(title: &str) -> (Option<String>, Option<String>) {
-    let body = strip_bracket_tag(title);
-    let (outside, inside) = match body.find('(') {
-        Some(start) => {
-            let after = &body[start + 1..];
-            let end = after.find(')').unwrap_or(after.len());
-            (body[..start].trim(), after[..end].trim())
-        }
-        None => (body, ""),
-    };
-
-    let chinese = (!outside.is_empty() && has_cjk(outside)).then(|| outside.to_string());
-    let english = (!inside.is_empty() && has_latin(inside) && !has_cjk(inside))
-        .then(|| inside.to_string());
-    (chinese, english)
-}
-
-/// 项目自己的英文名：优先目录里的标题（去掉括号别名），否则用 slug。
-fn project_english_name(title: &str, slug: &str) -> Option<String> {
-    let bare = strip_parens(title);
-    if has_latin(&bare) && !has_cjk(&bare) {
-        return Some(bare);
-    }
-    let slug = slug.trim();
-    if has_latin(slug) {
-        return Some(slug.replace(['-', '_'], " "));
-    }
-    None
-}
-
-/// 项目自己的中文名（目录标题就是中文时才会命中）。
-fn project_chinese_name(title: &str) -> Option<String> {
-    let bare = strip_parens(title);
-    (has_cjk(&bare)).then_some(bare)
-}
-
 /// Title without its parenthesised aliases, e.g. `Just Enough Items (JEI)`
 /// → `Just Enough Items`.
 fn strip_parens(title: &str) -> String {
@@ -339,11 +268,21 @@ fn search_url(key: &str, filter: u8) -> String {
 }
 
 async fn fetch_text(url: &str) -> Result<String, String> {
-    // 百科页面几乎不变，缓存一天：同一个项目反复打开时不再重复抓取，
-    // 断网时也能显示上次找到的条目。
-    crate::metadata_cache::fetch_text("mcmod", url, url, MCMOD_CACHE_TTL, REQUEST_TIMEOUT)
+    let response = net::client()
+        .get(url)
+        .timeout(REQUEST_TIMEOUT)
+        .send()
         .await
-        .map_err(|e| format!("请求 MC 百科搜索失败: {e}"))
+        .map_err(|e| format!("请求 MC 百科搜索失败: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("MC 百科搜索返回 HTTP {}", response.status()));
+    }
+
+    response
+        .text()
+        .await
+        .map_err(|e| format!("读取 MC 百科搜索页面失败: {e}"))
 }
 
 /// Resolve the wiki entry of a project by its slug / English title. `kind` is
@@ -370,14 +309,9 @@ pub async fn find_entry(title: &str, slug: &str, kind: &str) -> Option<WikiEntry
             };
 
             if let Some(hit) = pick_match(&parse_results(&html), slug, title) {
-                // 双语对照：中文名来自百科标题，英文名也优先用百科标题括号里的
-                // 那个（目录里的英文名可能带别名或全大写），缺失时才互相回退。
-                let (name_zh, name_en) = bilingual_names(&hit.title);
                 found = Some(WikiEntry {
                     id: hit.id,
                     title: hit.title.clone(),
-                    name_zh: name_zh.or_else(|| project_chinese_name(title)),
-                    name_en: name_en.or_else(|| project_english_name(title, slug)),
                     url: hit.url.clone(),
                 });
                 break 'queries;
@@ -448,55 +382,6 @@ mod tests {
         assert!(pick_match(&items, "sodium-extra", "Sodium Extra").is_none());
         assert!(pick_match(&items, "iris-shaders", "Iris Shaders").is_none());
         assert!(pick_match(&items, "", "").is_none());
-    }
-
-    #[test]
-    fn splits_wiki_titles_into_chinese_and_english_names() {
-        assert_eq!(
-            bilingual_names("钠 (Sodium)"),
-            (Some("钠".to_string()), Some("Sodium".to_string()))
-        );
-        assert_eq!(
-            bilingual_names("[JEI]JEI物品管理器 (Just Enough Items)"),
-            (
-                Some("JEI物品管理器".to_string()),
-                Some("Just Enough Items".to_string())
-            )
-        );
-        // 多个英文别名原样保留。
-        assert_eq!(
-            bilingual_names("镁 (Magnesium / Sodium Reforged)"),
-            (
-                Some("镁".to_string()),
-                Some("Magnesium / Sodium Reforged".to_string())
-            )
-        );
-        // 纯英文标题没有中文名，不能硬塞一个。
-        assert_eq!(bilingual_names("FabricAPI"), (None, None));
-        assert_eq!(
-            bilingual_names("机械动力 (Create)"),
-            (Some("机械动力".to_string()), Some("Create".to_string()))
-        );
-    }
-
-    #[test]
-    fn falls_back_to_the_project_name_for_the_missing_language() {
-        // 百科标题没有括号（纯中文）：英文名用目录里的项目标题。
-        assert_eq!(
-            project_english_name("Create", "create"),
-            Some("Create".to_string())
-        );
-        // 括号别名不进入英文名。
-        assert_eq!(
-            project_english_name("Just Enough Items (JEI)", "jei"),
-            Some("Just Enough Items".to_string())
-        );
-        // 标题本身就是英文时没有中文名；中文标题则相反。
-        assert_eq!(project_chinese_name("Sodium"), None);
-        assert_eq!(
-            project_chinese_name("机械动力 (Create)"),
-            Some("机械动力".to_string())
-        );
     }
 
     #[test]

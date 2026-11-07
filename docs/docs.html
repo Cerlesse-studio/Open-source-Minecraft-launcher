@@ -292,7 +292,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example smoke -- 1.8.9</code></
           </div>
 
           <h3>镜像容灾</h3>
-          <p>候选地址覆盖微软官方（Mojang / Microsoft 域名）、官方 CDN 容灾、BMCLAPI、Forge / NeoForge / Fabric / Quilt Maven、Betacraft 旧版本资源、GitHub 加速镜像与 10 个 Xbox Live CDN 主机。默认的「官方 CDN + 镜像容灾」遇到 404、超时或连接失败会自动换源；选择「微软官方」时，官方资源只从 Microsoft 域名下载，不会改道第三方镜像。自定义镜像按 BMCLAPI 兼容路径重写，并校验必须为 http(s) 地址。</p>
+          <p>候选地址覆盖官方 / 亚太 Anycast CDN、BMCLAPI、Forge / NeoForge / Fabric / Quilt Maven、Betacraft 旧版本资源、GitHub 加速镜像与 10 个 Xbox Live CDN 主机。遇到 404、超时或连接失败会自动换源；自定义镜像按 BMCLAPI 兼容路径重写，并校验必须为 http(s) 地址。</p>
 
           <h3>断点续传</h3>
           <p>任务通过 <code>.part.meta</code> 记录分片布局与完成情况，<code>.part</code> 不会在失败或换镜像时被删除。已下好的分片不会重复拉取；只有旁车文件与 <code>.part</code> 对不上时才自动重来。</p>

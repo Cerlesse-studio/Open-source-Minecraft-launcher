@@ -67,8 +67,6 @@ import {
   peerFromAddress,
   pickFastestRelayServer,
   buildMultiplayerPeers,
-  clusterOfServer,
-  relayClusterGuaranteed,
   loadCachedServerLatencies,
   batchProbeMultiplayerLatencies,
   roomResourcePort,
@@ -1130,7 +1128,7 @@ export function MultiplayerView({
             if (!hostOnline) {
               return await rollback(
                 "无法加入房间",
-                "房主可能尚未开启房间，或者网络中继异常，请确认房间名和密码一致。如果你和房主选的不是同一个共享节点，即使两边节点都能连上，也可能不在同一个集群、互相发现不了——请让房主发分享码加入。",
+                "房主可能尚未开启房间，或者网络中继异常，请确认房间名和密码一致。",
               );
             }
           } else {
@@ -1140,7 +1138,7 @@ export function MultiplayerView({
             if (!found) {
               return await rollback(
                 "找不到房主",
-                "请确认房主已创建房间并在单人游戏中【对局域网开放】，且双方接入的是同一个共享节点（同一集群）。用分享码加入不会选错节点，也可以让双方都改用官方公益节点。",
+                "请确认房主已创建房间并在单人游戏中【对局域网开放】，且双方连的是同一个公益节点。",
               );
             }
             next = {
@@ -1286,14 +1284,13 @@ export function MultiplayerView({
       return;
     }
     const server = effectiveServer.trim() || DEFAULT_PUBLIC_SERVER;
-    const peersList = buildMultiplayerPeers(server, allServers);
+    const peersList = buildMultiplayerPeers(server);
     setConfig((current) => ({
       ...current,
       relay: true,
       p2pOnly: false,
       allowPublicStun: true,
       publicServer: server,
-      relayCluster: clusterOfServer(server, allServers),
       peers: peersList,
       relayNodes: peersList,
       hostEntry: "",
@@ -1386,14 +1383,13 @@ export function MultiplayerView({
     }
 
     const srv = effectiveServer.trim() || DEFAULT_PUBLIC_SERVER;
-    const peersList = buildMultiplayerPeers(srv, allServers);
+    const peersList = buildMultiplayerPeers(srv);
 
     const next: MultiplayerConfig = {
       ...config,
       networkName: roomName,
       networkSecret: password,
       publicServer: srv,
-      relayCluster: clusterOfServer(srv, allServers),
       peers: peersList,
       relay: true,
       p2pOnly: false,
@@ -1446,16 +1442,7 @@ export function MultiplayerView({
           : current.overlayIpv4;
 
       const serverUri = info.publicServer || (info.relayNodes && info.relayNodes[0]) || DEFAULT_PUBLIC_SERVER;
-      // 房主分享码里已经带着它实际使用的那组同集群入口：直接照抄，
-      // 不要再用本机网络环境自己优选，否则可能住进另一个互不相通的集群。
-      const hostPeers = info.p2pOnly ? [] : info.relayNodes;
-      const peersList =
-        info.p2pOnly && info.peer
-          ? [info.peer]
-          : hostPeers.length > 0
-            ? hostPeers
-            : buildMultiplayerPeers(serverUri);
-      const hostCluster = info.cluster || clusterOfServer(serverUri);
+      const peersList = info.p2pOnly && info.peer ? [info.peer] : buildMultiplayerPeers(serverUri);
 
       const next: MultiplayerConfig = {
         ...current,
@@ -1463,7 +1450,6 @@ export function MultiplayerView({
         networkSecret: info.networkSecret,
         overlayIpv4,
         publicServer: info.p2pOnly ? "" : serverUri,
-        relayCluster: info.p2pOnly ? undefined : hostCluster,
         peers: peersList,
         relay: !info.p2pOnly,
         p2pOnly: info.p2pOnly,
@@ -1533,17 +1519,7 @@ export function MultiplayerView({
       }
     }
 
-    const peersList = buildMultiplayerPeers(serverUri, allServers);
-    const manualCluster = clusterOfServer(serverUri, allServers);
-    if (!relayClusterGuaranteed(serverUri, allServers)) {
-      // 房间名+密码这种方式拿不到房主的节点信息：两边都用自己的选择，
-      // 很可能各停在一个互不相通的集群。不能阻断，但必须说清楚。
-      onNotify(
-        "info",
-        "共享节点可能不一致",
-        `你选择的是独立节点（${serverUri}）。如果房主用的不是同一个节点，即使双方都能连上，也会因为不在同一集群而互相发现不了。建议让房主发分享码，或双方都改用官方公益节点。`,
-      );
-    }
+    const peersList = buildMultiplayerPeers(serverUri);
 
     const next: MultiplayerConfig = {
       ...configRef.current,
@@ -1551,7 +1527,6 @@ export function MultiplayerView({
       networkSecret: password,
       overlayIpv4: createOverlayIpv4(),
       publicServer: serverUri,
-      relayCluster: manualCluster,
       peers: peersList,
       relay: true,
       p2pOnly: false,

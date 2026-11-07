@@ -14,12 +14,9 @@
 //! file lists come from the API, and a download resolves to the CDN URL the API
 //! reports for that exact file (never a hand-written URL).
 
-use crate::content::{
-    ContentDependency, ContentFile, ContentHit, ContentVersionItem, SearchContentResult,
-};
+use crate::content::{ContentFile, ContentHit, ContentVersionItem, SearchContentResult};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// CurseForge game id for Minecraft Bedrock Edition.
@@ -30,8 +27,7 @@ pub const BEDROCK_GAME_ID: u32 = 78022;
 /// `CurseForgeRemoteAddonRepository`: `gameId=432` and `SECTION_WORLD=17`.
 pub const JAVA_GAME_ID: u32 = 432;
 
-/// CurseForge class ids of the catalogues the launcher browses.
-const CLASS_JAVA_MODS: u32 = 6;
+/// CurseForge class ids of the Bedrock sections the launcher browses.
 const CLASS_ADDONS: u32 = 4984;
 const CLASS_TEXTURE_PACKS: u32 = 6929;
 /// CurseForge class id of the Bedrock Edition "Maps" section.
@@ -39,8 +35,6 @@ const CLASS_BEDROCK_WORLDS: u32 = 6913;
 /// CurseForge class id of the Java Edition "Worlds" section.
 const CLASS_WORLDS: u32 = 17;
 
-/// Prefix that marks a launcher project id as a CurseForge Java mod.
-pub const JAVA_MOD_PREFIX: &str = "cfj:";
 /// Prefix that marks a launcher project id as a CurseForge Bedrock project.
 pub const PROJECT_PREFIX: &str = "cfb:";
 /// Prefix that marks a launcher project id as a CurseForge Java world.
@@ -51,6 +45,7 @@ pub const BEDROCK_WORLD_PREFIX: &str = "cbw:";
 /// Which CurseForge catalogue a project came from. The two share the same REST
 /// shapes but need different labels, id prefixes and version fallbacks.
 #[derive(Clone, Copy, PartialEq)]
+enum Catalog {
     Bedrock,
     World,
     BedrockWorld,
@@ -77,20 +72,6 @@ fn api_key_from_env() -> Option<String> {
         }
     }
     None
-}
-
-/// CurseForge endpoint for the `pcl-resource` provider: the same host policy the
-/// store follows (official when a key exists, otherwise the MCIM mirror, which
-/// needs none), with the trailing slash removed for the provider's own
-/// `{base}/v1/...` composition.
-pub(crate) fn curseforge_provider_endpoint() -> (String, Option<String>) {
-    let api_key = api_key_from_env();
-    let base = if api_key.is_some() {
-        OFFICIAL_BASE
-    } else {
-        MCIM_BASE
-    };
-    (base.trim_end_matches('/').to_string(), api_key)
 }
 
 /// Hosts to try, in order. The official host only joins the list when a key is
@@ -129,21 +110,12 @@ fn percent_encode(input: &str) -> String {
     out
 }
 
-/// 搜索结果缓存 5 分钟：翻页、来回切标签页不该每次都等镜像十秒。
-const SEARCH_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
-/// 文件列表变化慢，缓存久一点，断网时还能看到上次的版本。
-const FILE_LIST_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
-/// 依赖项目的名字几乎不变，缓存一天。
-const DEPENDENCY_NAME_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-/// 一次版本列表最多解析多少个依赖项目名字。
-const DEPENDENCY_LOOKUP_LIMIT: usize = 12;
-
 /// GET one API path from the first host that answers successfully.
-async fn get_text(path: &str) -> Result<(String, String), String> {
+async fn get_json<T: DeserializeOwned>(path: &str) -> Result<(T, String), String> {
     let mut failures: Vec<String> = Vec::new();
     for source in sources() {
         let url = format!("{}{}", source.base, path);
-        let mut request = crate::net::api_client()
+        let mut request = crate::net::client()
             .get(&url)
             .timeout(REQUEST_TIMEOUT)
             .header("Accept", "application/json");
@@ -152,9 +124,13 @@ async fn get_text(path: &str) -> Result<(String, String), String> {
         }
         match request.send().await {
             Ok(response) if response.status().is_success() => {
-                match response.text().await {
-                    Ok(body) => return Ok((body, source.label.to_string())),
-                    Err(e) => failures.push(format!("{} 响应读取失败: {e}", source.label)),
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| format!("{} 响应读取失败: {e}", source.label))?;
+                match serde_json::from_str::<T>(&body) {
+                    Ok(value) => return Ok((value, source.label.to_string())),
+                    Err(e) => failures.push(format!("{} 返回了无法解析的数据: {e}", source.label)),
                 }
             }
             Ok(response) => {
@@ -176,30 +152,6 @@ async fn get_text(path: &str) -> Result<(String, String), String> {
         ""
     };
     Err(format!("{}{hint}", failures.join("；")))
-}
-
-/// 缓存优先的版本：先读本地，过期后重新请求；请求失败时用旧数据顶上，
-/// 只有从未成功过才把错误交给界面。
-async fn get_json_cached<T: DeserializeOwned>(
-    path: &str,
-    ttl: Duration,
-) -> Result<(T, String), String> {
-    if let Some(value) = crate::metadata_cache::cached_json::<T>("curseforge", path, ttl) {
-        return Ok((value, "缓存".to_string()));
-    }
-
-    match get_text(path).await {
-        Ok((body, source)) => {
-            let value: T = serde_json::from_str(&body)
-                .map_err(|e| format!("{source} 返回了无法解析的数据: {e}"))?;
-            crate::metadata_cache::store("curseforge", path, body.as_bytes()).await;
-            Ok((value, source))
-        }
-        Err(error) => match crate::metadata_cache::cached_json_any::<T>("curseforge", path) {
-            Some(value) => Ok((value, "缓存".to_string())),
-            None => Err(error),
-        },
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,28 +232,6 @@ struct CfFile {
     download_count: u64,
     #[serde(default)]
     hashes: Vec<CfHash>,
-    #[serde(default)]
-    dependencies: Vec<CfDependency>,
-}
-
-/// One entry of a file's `dependencies` list. `relationType` 3 means the game
-/// will not load without it, 2 means it is optional; the remaining types
-/// (embedded libraries, tools, incompatibilities) are not installable.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct CfDependency {
-    #[serde(default)]
-    mod_id: u32,
-    #[serde(default)]
-    relation_type: u32,
-}
-
-/// The subset of a CurseForge project needed to label a dependency.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct CfModDetail {
-    #[serde(default)]
-    name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -344,8 +274,6 @@ struct CfProject {
 
 fn class_for_project_type(project_type: &str) -> u32 {
     match project_type {
-        // Bedrock add-ons are also called "mod" by the UI; Java mods use the
-        // class id directly in `search_java_mods`.
         "shader" | "resourcepack" => CLASS_TEXTURE_PACKS,
         _ => CLASS_ADDONS,
     }
@@ -353,7 +281,6 @@ fn class_for_project_type(project_type: &str) -> u32 {
 
 fn class_label(class_id: u32) -> &'static str {
     match class_id {
-        CLASS_JAVA_MODS => "模组",
         CLASS_TEXTURE_PACKS => "材质包",
         CLASS_ADDONS => "附加包",
         CLASS_WORLDS | CLASS_BEDROCK_WORLDS => "地图",
@@ -473,7 +400,6 @@ fn hit_from_project(
         date_modified: project.date_modified,
         latest_version,
         project_type: project_type.to_string(),
-        source: Some("curseforge".to_string()),
     }
 }
 
@@ -491,7 +417,9 @@ pub async fn search_bedrock(
         project_type,
         BEDROCK_GAME_ID,
         class_id,
-
+        Catalog::Bedrock,
+        None,
+        offset,
         limit,
         sort,
     )
@@ -553,6 +481,8 @@ async fn search_catalog(
     project_type: &str,
     game_id: u32,
     class_id: u32,
+    catalog: Catalog,
+    game_version: Option<&str>,
     offset: u32,
     limit: u32,
     sort: Option<&str>,
@@ -572,8 +502,8 @@ async fn search_catalog(
     {
         path.push_str(&format!("&gameVersion={}", percent_encode(version)));
     }
-    let (response, _source): (CfList<CfProject>, String) =
-        get_json_cached(&path, SEARCH_CACHE_TTL).await?;
+
+    let (response, _source): (CfList<CfProject>, String) = get_json(&path).await?;
     let total_hits = response
         .pagination
         .as_ref()
@@ -635,176 +565,8 @@ fn file_to_version_with(
         loaders: vec![loader.to_string()],
         date_published: file.file_date,
         downloads: file.download_count,
-        dependencies: Vec::new(),
         files: vec![ContentFile {
             url: download_url,
-            filename: file.file_name,
-            primary: true,
-            size: file.file_length,
-            sha1,
-        }],
-    }
-}
-
-/// Dependencies of one CurseForge file, with the launcher's `cfj:` id form and
-/// the project title still unresolved (filled in by a later pass).
-fn cf_dependencies(file: &CfFile) -> Vec<ContentDependency> {
-    let mut out: Vec<ContentDependency> = Vec::new();
-    for dep in &file.dependencies {
-        let required = match dep.relation_type {
-            3 => true,
-            2 => false,
-            _ => continue,
-        };
-        if dep.mod_id == 0 {
-            continue;
-        }
-        let project_id = format!("{JAVA_MOD_PREFIX}{}", dep.mod_id);
-        if out.iter().any(|seen| seen.project_id == project_id) {
-            continue;
-        }
-        out.push(ContentDependency {
-            name: project_id.clone(),
-            project_id,
-            version_id: None,
-            file_name: None,
-            required,
-        });
-    }
-    out
-}
-
-/// Replace the placeholder ids of every dependency with the project titles.
-///
-/// Lookups run in parallel and are cached for a day, so only the first view of
-/// a mod pays for them; a failed lookup keeps the id visible instead of
-/// dropping the dependency.
-async fn resolve_dependency_names(items: &mut [ContentVersionItem]) {
-    let mut ids: Vec<u32> = Vec::new();
-    for item in items.iter() {
-        for dep in &item.dependencies {
-            let Some(raw) = dep.project_id.strip_prefix(JAVA_MOD_PREFIX) else {
-                continue;
-            };
-            let Ok(id) = raw.parse::<u32>() else { continue };
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
-    }
-    if ids.is_empty() {
-        return;
-    }
-    ids.truncate(DEPENDENCY_LOOKUP_LIMIT);
-
-    let lookups = ids.into_iter().map(|id| async move {
-        let path = format!("v1/mods/{id}");
-        let detail: Option<(CfValue<CfModDetail>, String)> =
-            get_json_cached(&path, DEPENDENCY_NAME_TTL).await.ok();
-        let name = detail
-            .map(|(value, _source)| value.data.name)
-            .filter(|name| !name.trim().is_empty());
-        (id, name)
-    });
-    let names: HashMap<u32, String> = futures_util::future::join_all(lookups)
-        .await
-        .into_iter()
-        .filter_map(|(id, name)| name.map(|name| (id, name)))
-        .collect();
-    if names.is_empty() {
-        return;
-    }
-
-    for item in items.iter_mut() {
-        for dep in item.dependencies.iter_mut() {
-            let Some(raw) = dep.project_id.strip_prefix(JAVA_MOD_PREFIX) else {
-                continue;
-            };
-            let Ok(id) = raw.parse::<u32>() else { continue };
-            if let Some(name) = names.get(&id) {
-                dep.name = name.clone();
-            }
-        }
-    }
-}
-
-/// Loader tag CurseForge mixes into a Java mod file's `gameVersions` list
-/// next to the Minecraft versions (`["1.20.1", "Forge"]`).
-fn loader_tag(value: &str) -> Option<&'static str> {
-    match value.trim().to_lowercase().as_str() {
-        "forge" => Some("forge"),
-        "neoforge" => Some("neoforge"),
-        "fabric" => Some("fabric"),
-        "quilt" => Some("quilt"),
-        "liteloader" => Some("liteloader"),
-        _ => None,
-    }
-}
-
-/// `gameVersions` of a Java mod file also carries side tags such as `Client`
-/// and `Server`, which are neither a loader nor a Minecraft version.
-fn is_side_tag(value: &str) -> bool {
-    matches!(value.trim().to_lowercase().as_str(), "client" | "server")
-}
-
-/// Map a CurseForge Java mod file to the launcher's download row.
-///
-/// Bedrock files tag only game versions, but Java files interleave loader names
-/// into the same array, so they are split apart: the picker groups builds by
-/// loader and needs them in `loaders`, not in `game_versions`.
-fn java_mod_file_to_version(mod_id: u32, file: CfFile) -> ContentVersionItem {
-    let mut game_versions: Vec<String> = Vec::new();
-    let mut loaders: Vec<String> = Vec::new();
-    for tag in &file.game_versions {
-        match loader_tag(tag) {
-            Some(loader) => {
-                let loader = loader.to_string();
-                if !loaders.contains(&loader) {
-                    loaders.push(loader);
-                }
-            }
-            None if is_side_tag(tag) => {}
-            None => {
-                let version = tag.trim();
-                if !version.is_empty() && !game_versions.iter().any(|v| v.as_str() == version) {
-                    game_versions.push(version.to_string());
-                }
-            }
-        }
-    }
-    if loaders.is_empty() {
-        loaders.push("mod".to_string());
-    }
-
-    let version_number = game_versions
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "通用".to_string());
-    let display_name = file
-        .display_name
-        .clone()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| file.file_name.clone());
-    let sha1 = file
-        .hashes
-        .iter()
-        .find(|hash| hash.algo == 1)
-        .map(|hash| hash.value.clone())
-        .filter(|value| !value.trim().is_empty());
-
-    let dependencies = cf_dependencies(&file);
-
-    ContentVersionItem {
-        id: format!("{mod_id}:{}", file.id),
-        name: display_name,
-        version_number,
-        game_versions,
-        loaders,
-        date_published: file.file_date,
-        downloads: file.download_count,
-        dependencies,
-        files: vec![ContentFile {
-            url: file.download_url.unwrap_or_default(),
             filename: file.file_name,
             primary: true,
             size: file.file_length,
@@ -818,41 +580,8 @@ fn java_mod_file_to_version(mod_id: u32, file: CfFile) -> ContentVersionItem {
 /// endpoint still resolves a usable link for them.
 async fn resolve_download_url(mod_id: u32, file_id: u32) -> Option<String> {
     let path = format!("v1/mods/{mod_id}/files/{file_id}/download-url");
-    let (value, _source): (CfValue<Option<String>>, String) =
-        get_json_cached(&path, FILE_LIST_CACHE_TTL).await.ok()?;
+    let (value, _source): (CfValue<Option<String>>, String) = get_json(&path).await.ok()?;
     value.data.filter(|url| !url.trim().is_empty())
-}
-
-/// Every downloadable file of one CurseForge Java mod, newest first.
-pub async fn java_mod_project_files(mod_id: u32) -> Result<Vec<ContentVersionItem>, String> {
-    let path = format!("v1/mods/{mod_id}/files?index=0&pageSize={FILE_LIST_PAGE_SIZE}");
-    let (response, _source): (CfList<CfFile>, String) =
-        get_json_cached(&path, FILE_LIST_CACHE_TTL).await?;
-
-    let mut items = Vec::new();
-    for file in response.data {
-        let mut version = java_mod_file_to_version(mod_id, file.clone());
-        if let Some(entry) = version.files.first_mut() {
-            if entry.url.trim().is_empty() {
-                if let Some(url) = resolve_download_url(mod_id, file.id).await {
-                    entry.url = url;
-                }
-            }
-        }
-        if version
-            .files
-            .first()
-            .map(|f| f.url.trim().is_empty())
-            .unwrap_or(true)
-        {
-            continue;
-        }
-        items.push(version);
-    }
-
-    items.sort_by(|a, b| b.date_published.cmp(&a.date_published));
-    resolve_dependency_names(&mut items).await;
-    Ok(items)
 }
 
 /// Every downloadable file of one Bedrock project, newest first.
@@ -876,8 +605,7 @@ async fn project_files(
     fallback_version: &str,
 ) -> Result<Vec<ContentVersionItem>, String> {
     let path = format!("v1/mods/{mod_id}/files?index=0&pageSize={FILE_LIST_PAGE_SIZE}");
-    let (response, _source): (CfList<CfFile>, String) =
-        get_json_cached(&path, FILE_LIST_CACHE_TTL).await?;
+    let (response, _source): (CfList<CfFile>, String) = get_json(&path).await?;
 
     let mut items = Vec::new();
     for file in response.data {
@@ -909,44 +637,6 @@ async fn project_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `relationType` decides what is shown: 3 is required, 2 optional, and the
-    /// rest (embedded libraries, tools, incompatibilities) must stay hidden.
-    #[test]
-    fn cf_dependencies_keep_only_installable_relations() {
-        let file = CfFile {
-            dependencies: vec![
-                CfDependency {
-                    mod_id: 238222,
-                    relation_type: 3,
-                },
-                CfDependency {
-                    mod_id: 306770,
-                    relation_type: 2,
-                },
-                CfDependency {
-                    mod_id: 1234,
-                    relation_type: 1,
-                },
-                CfDependency {
-                    mod_id: 238222,
-                    relation_type: 3,
-                },
-                CfDependency {
-                    mod_id: 0,
-                    relation_type: 3,
-                },
-            ],
-            ..Default::default()
-        };
-
-        let deps = cf_dependencies(&file);
-        assert_eq!(deps.len(), 2, "重复项与不可安装项都要丢掉");
-        assert_eq!(deps[0].project_id, "cfj:238222");
-        assert!(deps[0].required);
-        assert_eq!(deps[1].project_id, "cfj:306770");
-        assert!(!deps[1].required);
-    }
 
     const PROJECT_FIXTURE: &str = r#"{
         "id": 1575941,
@@ -1049,24 +739,6 @@ mod tests {
         let version = file_to_version_with(1, file, "world", "Java 版");
         assert_eq!(version.loaders, vec!["world".to_string()]);
         assert_eq!(version.version_number, "1.21.4");
-    }
-
-    #[test]
-    fn java_mod_files_split_loader_tags_from_game_versions() {
-        // CurseForge mixes the loader into `gameVersions` for Java mods.
-        let file: CfFile = serde_json::from_str(
-            r#"{"id": 4455, "fileName": "jei-1.20.1.jar", "displayName": "JEI 15.0",
-                "fileLength": 100, "downloadUrl": "https://edge.forgecdn.net/f/jei.jar",
-                "gameVersions": ["1.20.1", "Forge", "Client", "Server"],
-                "fileDate": "2026-09-17T09:05:26.977Z"}"#,
-        )
-        .unwrap();
-
-        let version = java_mod_file_to_version(238222, file);
-        assert_eq!(version.loaders, vec!["forge".to_string()]);
-        assert_eq!(version.game_versions, vec!["1.20.1".to_string()]);
-        assert_eq!(version.version_number, "1.20.1");
-        assert_eq!(version.id, "238222:4455");
     }
 
     #[test]

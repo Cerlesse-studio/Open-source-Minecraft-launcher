@@ -2253,6 +2253,20 @@ static BEDROCK_CONTENT_CACHE: std::sync::Mutex<Option<(Instant, Vec<BedrockConte
 /// Never performs network I/O: callers on a latency-critical path (opening a
 /// mod's version list) must not wait for the remote catalog, which can take
 /// seconds when its mirrors are unreachable.
+pub fn get_bedrock_content_cached() -> Vec<BedrockContentItem> {
+    let mut items = get_curated_bedrock_content();
+    if let Ok(guard) = BEDROCK_CONTENT_CACHE.lock() {
+        if let Some((_, ref cached)) = *guard {
+            for entry in cached {
+                if !items.iter().any(|i| i.id == entry.id) {
+                    items.push(entry.clone());
+                }
+            }
+        }
+    }
+    items
+}
+
 pub async fn get_bedrock_content_async(category: Option<&str>) -> Vec<BedrockContentItem> {
     if let Ok(guard) = BEDROCK_CONTENT_CACHE.lock() {
         if let Some((timestamp, ref cached)) = *guard {
@@ -2262,7 +2276,7 @@ pub async fn get_bedrock_content_async(category: Option<&str>) -> Vec<BedrockCon
         }
     }
 
-    let client = net::api_client();
+    let client = net::client();
     let remote_endpoints = [
         "https://fastly.jsdelivr.net/gh/bedrock-oss/bedrock-resource-db@main/content.json",
         "https://cdn.jsdelivr.net/gh/bedrock-oss/bedrock-resource-db@main/content.json",
@@ -3950,7 +3964,7 @@ async fn fetch_bds_registry_versions() -> Vec<BedrockVersionItem> {
         "https://ghproxy.net/https://raw.githubusercontent.com/Bedrock-OSS/BDS-Versions/main/versions.json",
     ];
 
-    let client = net::api_client();
+    let client = net::client();
     for endpoint in ENDPOINTS {
         let Ok(response) = client
             .get(*endpoint)
@@ -4685,7 +4699,7 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
         lower.contains(".msixvc") || lower.contains(".appx") || lower.contains(".msix")
     });
 
-    let client = net::api_client();
+    let client = net::client();
     if !has_client_package {
         for meta_url in meta_endpoints {
             if let Ok(resp) = client
@@ -5384,6 +5398,7 @@ pub async fn delete_bedrock_version(game_root: &Path, version_id: &str) -> Resul
 
     let target = resolve_bedrock_version_dir(&root, version_id);
 
+    let mut deleted = false;
     if target.is_dir() {
         // Locally deployed cores are registered in place; unregister first so
         // Windows releases the folder and no package points at a missing path.
@@ -5400,6 +5415,7 @@ pub async fn delete_bedrock_version(game_root: &Path, version_id: &str) -> Resul
         if target.exists() {
             return Err(format!("删除未完成，{} 仍然存在。", target.display()));
         }
+        deleted = true;
     }
 
     // Clean up residual zip, insPack, appx, msixvc and part files from cache
@@ -5419,13 +5435,15 @@ pub async fn delete_bedrock_version(game_root: &Path, version_id: &str) -> Resul
     for cf in candidate_cache_files {
         if cf.exists() {
             let _ = force_remove_file(&cf);
+            deleted = true;
         }
     }
 
-    // Nothing left to remove is a success, not an error: the core may have
-    // been deleted by hand, and the download history entry still has to be
-    // removable afterwards.
-    Ok(())
+    if deleted {
+        Ok(())
+    } else {
+        Err(format!("未找到基岩版核心目录或残留缓存文件: {version_id}"))
+    }
 }
 
 pub async fn clean_download_cache(game_root: &Path) -> Result<u64, String> {
@@ -7504,7 +7522,7 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
     let mut matched_versions = Vec::new();
     let mut matched_key = String::new();
 
-    let client = net::api_client();
+    let client = net::client();
     for ep in endpoints {
         if let Ok(resp) = client
             .get(ep)
@@ -7594,6 +7612,23 @@ pub async fn fetch_bedrock_loaders(mc_version: &str) -> BedrockLoadersCatalog {
     }
 
     catalog
+}
+
+pub fn get_bedrock_loader_config(
+    game_root: &Path,
+    version_id: &str,
+) -> BedrockInstanceLoaderConfig {
+    let root = net::absolute_path(game_root);
+    let ver_dir = resolve_bedrock_version_dir(&root, version_id);
+    let cfg_file = ver_dir.join("loader.json");
+    if cfg_file.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&cfg_file) {
+            if let Ok(parsed) = serde_json::from_str::<BedrockInstanceLoaderConfig>(&content) {
+                return parsed;
+            }
+        }
+    }
+    BedrockInstanceLoaderConfig::default()
 }
 
 pub async fn install_bedrock_loader(
@@ -8211,29 +8246,6 @@ mod tests {
         );
         assert!(!ver_dir.exists(), "Version directory should be deleted");
         assert!(!dummy_zip.exists(), "Cache zip residue should be deleted");
-
-        let _ = force_remove_dir_all(&temp_dir);
-    }
-
-    /// Deleting a core whose files are already gone must succeed: the download
-    /// history entry is removed through the same command afterwards.
-    #[tokio::test]
-    async fn test_delete_bedrock_version_tolerates_missing_files() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "cobble_bds_delmissing_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        ));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let res = delete_bedrock_version(&temp_dir, "1.26.42").await;
-        assert!(
-            res.is_ok(),
-            "missing core must not block log removal: {:?}",
-            res
-        );
 
         let _ = force_remove_dir_all(&temp_dir);
     }

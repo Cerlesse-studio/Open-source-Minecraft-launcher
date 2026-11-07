@@ -74,18 +74,6 @@ export function formatSpeed(bytesPerSec?: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
-/**
- * 任务管理器/路由器按 Mbps（兆比特每秒）显示速率，而下载器按 KB/s 显示字节速率。
- * 845 KB/s 其实是 6.9 Mbps，同屏给出换算值，免得被当成只有 8 Mbps 带宽的十分之一。
- */
-export function formatBitRate(bytesPerSec?: number): string {
-  if (!bytesPerSec || !Number.isFinite(bytesPerSec) || bytesPerSec <= 0) {
-    return "0 Mbps";
-  }
-  const mbps = (bytesPerSec * 8) / 1_000_000;
-  return `${mbps >= 10 ? mbps.toFixed(0) : mbps.toFixed(1)} Mbps`;
-}
-
 export function progressPercent(done: number, total: number): number | null {
   if (!total || total <= 0) return null;
   return Math.max(0, Math.min(100, Math.round((done / total) * 100)));

@@ -32,7 +32,6 @@ import {
   deleteVersion,
 } from "../lib/backend";
 import {
-  formatBitRate,
   formatBytes,
   formatSpeed,
   progressPercent,
@@ -104,8 +103,6 @@ interface DownloadsViewProps {
   backgroundTasks?: BackgroundDownloadTask[];
   onRetryBackgroundTask?: (id: string) => void;
   onDismissBackgroundTask?: (id: string) => void;
-  /** 取消正在跑的后台内容下载；版本安装有自己的暂停/取消按钮。 */
-  onCancelBackgroundTask?: (id: string) => void;
 }
 
 const THREAD_PRESETS = [4, 8, 16, 32, 64];
@@ -451,7 +448,6 @@ export function DownloadsView({
   backgroundTasks = [],
   onRetryBackgroundTask,
   onDismissBackgroundTask,
-  onCancelBackgroundTask,
 }: DownloadsViewProps) {
   const [activeTab, setActiveTab] = useState<ListTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -750,15 +746,9 @@ export function DownloadsView({
             <StatusDot tone={isDownloading ? "live" : "muted"} animated={isDownloading} />
           </div>
           <div className="mt-1.5 flex items-baseline justify-between gap-2">
-            <div className="flex flex-wrap items-baseline gap-x-1.5">
-              <p className="font-mono text-[20px] font-semibold tracking-tight text-foreground">
-                {formatSpeed(speedBps)}
-              </p>
-              {/* 与网卡监控同口径，否则 KB/s 和 Mbps 并排时很容易被误读成差了一个数量级。 */}
-              <span className="font-mono text-[10px] text-muted-foreground">
-                ≈ {formatBitRate(speedBps)}
-              </span>
-            </div>
+            <p className="font-mono text-[20px] font-semibold tracking-tight text-foreground">
+              {formatSpeed(speedBps)}
+            </p>
             <SpeedSparkline samples={speedHistory} />
           </div>
           <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
@@ -1155,12 +1145,7 @@ export function DownloadsView({
                     </div>
                   ) : (
                     <div className="py-6 text-center text-[11.5px] text-muted-foreground">
-                      {
-                        // 没有活动分片时（例如正在跑 Forge/NeoForge 安装器），
-                        // 固定文案看起来像卡死；直接显示后端上报的阶段详情。
-                        activeProgress?.detail?.trim() ||
-                          `正在调度 ${downloadThreads} 线程工作池连接远端 CDN 分片...`
-                      }
+                      正在调度 {downloadThreads} 线程工作池连接远端 CDN 分片...
                     </div>
                   )
                 ) : null}
@@ -1369,19 +1354,6 @@ export function DownloadsView({
                         {percent !== null ? `${percent}%` : "分片并行拉取"}
                       </p>
                     </div>
-                  ) : null}
-
-                  {running && onCancelBackgroundTask ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7.5 gap-1.5 border-destructive/40 px-2.5 text-[11px] text-destructive hover:bg-destructive/10"
-                      onClick={() => onCancelBackgroundTask(task.id)}
-                      title="中止这个资源下载"
-                    >
-                      <XCircle className="size-3" />
-                      <span>取消</span>
-                    </Button>
                   ) : null}
 
                   {!running && onDismissBackgroundTask ? (
@@ -1781,56 +1753,36 @@ export function DownloadsView({
                 disabled={isDeleting}
                 className="gap-1.5"
                 onClick={async () => {
-                  const record = deletingRecord;
-                  if (!record) return;
+                  if (!deletingRecord) return;
                   setIsDeleting(true);
-                  let fileError: string | null = null;
                   try {
                     if (deleteLocalFiles) {
-                      const edition = getTaskEdition(record.versionId);
-                      const cleanVer = record.versionId
+                      const edition = getTaskEdition(deletingRecord.versionId);
+                      const cleanVer = deletingRecord.versionId
                         .replace(/^Minecraft 基岩版 /, "")
                         .replace(/^Minecraft /, "")
                         .replace(/^bedrock:/, "")
                         .trim();
-                      try {
-                        if (edition === "bedrock") {
-                          await deleteBedrockVersion(cleanVer, gameRoot);
-                        } else {
-                          await deleteVersion(gameRoot, cleanVer);
-                        }
-                      } catch (err) {
-                        // The log entry is the player's own record and stays
-                        // separate from the files: a missing or locked folder
-                        // only means the cleanup failed, never that the record
-                        // has to stay forever.
-                        fileError = String(err);
+                      if (edition === "bedrock") {
+                        await deleteBedrockVersion(cleanVer, gameRoot);
+                      } else {
+                        await deleteVersion(gameRoot, cleanVer);
                       }
-                      try {
-                        await onRefreshInstalled?.();
-                      } catch {
-                        // Refreshing the installed list is cosmetic here.
-                      }
+                      await onRefreshInstalled?.();
                     }
-                  } finally {
-                    onDeleteHistoryItem?.(record.id);
-                    setIsDeleting(false);
-                    setDeletingRecord(null);
-                  }
-                  if (fileError) {
-                    onNotify?.(
-                      "error",
-                      "记录已删除，本地文件未清理",
-                      `${record.versionId} 已从下载历史中移除。${fileError}`,
-                    );
-                  } else {
+                    onDeleteHistoryItem?.(deletingRecord.id);
                     onNotify?.(
                       "success",
                       "已成功删除",
                       deleteLocalFiles
-                        ? `已彻底删除 ${record.versionId} 及其本地残留文件。`
+                        ? `已彻底删除 ${deletingRecord.versionId} 及其本地残留文件。`
                         : "已从下载历史记录中移除该任务。",
                     );
+                    setDeletingRecord(null);
+                  } catch (err) {
+                    onNotify?.("error", "删除失败", String(err));
+                  } finally {
+                    setIsDeleting(false);
                   }
                 }}
               >
