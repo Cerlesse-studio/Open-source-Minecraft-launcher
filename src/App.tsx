@@ -10,6 +10,7 @@ import {
   type CSSProperties,
 } from "react";
 import { LoaderCircle } from "lucide-react";
+import { getCategoryLabelForWireValue } from "./lib/resource-catalog";
 import { getCurrentWindow } from "@/lib/desktop";
 import { Sidebar, TitleBar } from "./components/Chrome";
 import type { DownloadFileEvent } from "./components/DownloadsView";
@@ -160,6 +161,7 @@ import {
   readSkinAsDataUrl,
   setBedrockAccountMode,
   setDownloadPreference,
+  setDownloadSpeedLimit,
   stopGame,
   subscribe,
 } from "./lib/backend";
@@ -201,6 +203,7 @@ interface RuntimeView {
   detail?: string | null;
   pid?: number | null;
   versionId?: string | null;
+  windowVisible?: boolean | null;
 }
 
 const MAX_LOGS = 1500;
@@ -485,6 +488,13 @@ export default function App() {
     });
   }, [settings.downloadSource, settings.customSourceUrl, settings.downloadThreads]);
 
+  // PCL2 `NetTaskSpeedLimitHigh` is process-wide on the Rust side.
+  useEffect(() => {
+    setDownloadSpeedLimit(settings.downloadSpeedLimit).catch((error) => {
+      console.warn("无法同步下载限速", error);
+    });
+  }, [settings.downloadSpeedLimit]);
+
   useEffect(() => {
     let alive = true;
     if (settings.backgroundType === "custom" && settings.customBackgroundPath) {
@@ -631,15 +641,7 @@ export default function App() {
         ? "error"
         : "running";
 
-    const typeNameMap: Record<string, string> = {
-      mod: "模组",
-      modpack: "整合包",
-      shader: "光影包",
-      resourcepack: "材质包",
-      datapack: "数据包",
-      world: "地图",
-    };
-    const categoryLabel = typeNameMap[payload.projectType] || "组件";
+    const categoryLabel = getCategoryLabelForWireValue(payload.projectType);
 
     const task: BackgroundDownloadTask = {
       id: payload.id,
@@ -953,6 +955,7 @@ export default function App() {
           detail: status.detail,
           pid: status.pid,
           versionId: status.versionId,
+          windowVisible: status.windowVisible,
         });
         if (status.state !== "preparing") {
           setLaunchProgress(null);
@@ -960,7 +963,7 @@ export default function App() {
         if (status.state === "running") {
           extensionRuntime.notifyGameLaunch(status);
         }
-        if (status.state === "running" && isDesktop) {
+        if (status.state === "running" && status.windowVisible !== false && isDesktop) {
           const vis = activeVisibilityRef.current;
           if (vis === "close") {
             try {
@@ -1550,7 +1553,12 @@ export default function App() {
         total: 0,
         detail: "检查运行环境",
       });
-      setRuntime({ status: "preparing", versionId, detail: "正在检查游戏文件与 Java" });
+      setRuntime({
+        status: "preparing",
+        versionId,
+        detail: "正在检查游戏文件与 Java",
+        windowVisible: false,
+      });
       pushLog("cobble", `准备启动 Minecraft ${versionId}…`);
       if (!activeAccount) {
         pushLog("cobble", "离线模式：单人游戏和离线服务器可用，Realms 请求会被 Mojang 拒绝。");
@@ -1609,6 +1617,7 @@ export default function App() {
           status: "preparing",
           versionId,
           detail: "正在自动补全缺失的游戏文件",
+          windowVisible: false,
         });
         setLaunchProgress({
           versionId,
@@ -1814,7 +1823,7 @@ export default function App() {
           javaPath={settings.javaPath}
           javaDetecting={javaDetecting}
           runtimeStatus={runtime.status}
-          launcherVersion={systemInfo?.launcherVersion ?? "0.1.6"}
+          launcherVersion={systemInfo?.launcherVersion ?? "0.1.7"}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
           skinType={settings.offlineSkinType}
@@ -2145,7 +2154,7 @@ export default function App() {
         </Suspense>
       ) : null}
 
-      <Toaster theme="dark" position="bottom-right" />
+      <Toaster position="bottom-right" />
     </div>
   );
 }

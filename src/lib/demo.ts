@@ -1,3 +1,4 @@
+import { translateSearchQuery } from "./search-i18n";
 import type {
   AppUpdateInfo,
   AppUpdateProgress,
@@ -159,7 +160,7 @@ export function demoSystemInfo(): SystemInfo {
     arch: "x86_64",
     javaInstalls: javaInstalls.map((java) => ({ ...java })),
     gameRunning,
-    launcherVersion: "0.1.6",
+    launcherVersion: "0.1.7",
   };
 }
 
@@ -669,11 +670,23 @@ export async function demoLaunch(request: LaunchRequest): Promise<number> {
     window.setTimeout(() => {
       emit("game:status", {
         state: "running",
-        detail: "游戏已启动，Java 21",
+        detail: "游戏进程已启动，正在等待游戏窗口…",
         pid: 4812,
         versionId: request.versionId,
+        windowVisible: false,
       });
     }, 250),
+  );
+  gameTimers.push(
+    window.setTimeout(() => {
+      emit("game:status", {
+        state: "running",
+        detail: "游戏窗口已出现",
+        pid: 4812,
+        versionId: request.versionId,
+        windowVisible: true,
+      });
+    }, 2800),
   );
 
   const lines = [
@@ -710,7 +723,13 @@ export function demoStopGame(): void {
   emit("game:log", { stream: "cobble", line: "正在结束游戏进程…" });
   window.setTimeout(() => {
     emit("game:exit", { code: 0, versionId: null });
-    emit("game:status", { state: "idle", detail: null, pid: null, versionId: null });
+    emit("game:status", {
+      state: "idle",
+      detail: null,
+      pid: null,
+      versionId: null,
+      windowVisible: false,
+    });
   }, 300);
 }
 
@@ -1050,14 +1069,22 @@ export async function demoSearchContent(options: {
             ? DEMO_WORLDS
             : DEMO_DATAPACKS;
 
-  const q = options.query?.trim().toLowerCase();
-  if (q) {
-    pool = pool.filter(
-      (item) =>
-        item.title.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q) ||
-        item.slug.toLowerCase().includes(q),
-    );
+  const rawQuery = options.query?.trim() ?? "";
+  const translated = translateSearchQuery(rawQuery);
+  if (rawQuery) {
+    const matches = (needle: string) =>
+      pool.filter(
+        (item) =>
+          item.title.toLowerCase().includes(needle) ||
+          item.description.toLowerCase().includes(needle) ||
+          item.slug.toLowerCase().includes(needle) ||
+          item.categories.some((category) =>
+            category.toLowerCase().includes(needle),
+          ),
+      );
+    pool = matches((translated ?? rawQuery).toLowerCase());
+    // Mirrors the core: a project may genuinely be titled in Chinese.
+    if (pool.length === 0 && translated) pool = matches(rawQuery.toLowerCase());
   }
 
   if (options.gameVersion && options.gameVersion !== "all") {
@@ -1078,6 +1105,7 @@ export async function demoSearchContent(options: {
     offset: options.offset ?? 0,
     limit: options.limit ?? 20,
     totalHits: pool.length,
+    translatedQuery: translated,
   };
 }
 

@@ -32,12 +32,19 @@ export function hslToRgb(h: number, s: number, l: number): string {
   return `${Math.round(255 * f(0))}, ${Math.round(255 * f(8))}, ${Math.round(255 * f(4))}`;
 }
 
+/** Pick the foreground with the higher WCAG contrast ratio, not a fixed
+ *  perceived-brightness threshold (which misjudges saturated yellows/greens). */
 function readableForeground(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-  return brightness > 150 ? "#0b1408" : "#ffffff";
+  const linear = [1, 3, 5].map((offset) => {
+    const channel = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  const onDark = (luminance + 0.05) / (0.006 + 0.05);
+  const onWhite = 1.05 / (luminance + 0.05);
+  return onDark >= onWhite ? "#0b1408" : "#ffffff";
 }
 
 /** Position of the accent on the color wheel, in degrees. */
@@ -67,9 +74,11 @@ export function getEffectivePrimaryColor(
 
 export function getLightModePrimary(hex: string): string {
   const h = accentHue(hex);
-  // 黄绿色在人眼视觉中亮度极高，微调明度确保浅色底上有 >= 4.8:1 的充足对比度
+  // Yellow/green accents are perceptually bright. 22%/28% keeps `text-primary`
+  // >= 4.5:1 even on the tinted `bg-primary/10` selected state, not just on
+  // a pure white surface.
   const isYellowOrGreen = h >= 50 && h <= 150;
-  const targetLightness = isYellowOrGreen ? 27 : 33;
+  const targetLightness = isYellowOrGreen ? 22 : 28;
   const rgbParts = hslToRgb(h, 85, targetLightness).split(", ").map(Number);
   return "#" + rgbParts.map((x) => x.toString(16).padStart(2, "0")).join("");
 }
@@ -99,7 +108,8 @@ const DARK_PANELS: ReadonlyArray<readonly [string, number, number]> = [
   ["--card-foreground", 8, 93.5],
   ["--popover-foreground", 8, 93.5],
   ["--secondary-foreground", 9, 88.5],
-  ["--muted-foreground", 7, 61],
+  /* 68% keeps 9-11px muted labels >= 4.5:1 on the darkest panels. */
+  ["--muted-foreground", 7, 68],
   ["--accent-foreground", 8, 95],
   ["--sidebar-foreground", 8, 93.5],
   ["--sidebar-accent-foreground", 8, 95],
@@ -121,7 +131,8 @@ const LIGHT_PANELS: ReadonlyArray<readonly [string, number, number]> = [
   ["--card-foreground", 13, 10],
   ["--popover-foreground", 13, 10],
   ["--secondary-foreground", 13, 15],
-  ["--muted-foreground", 10, 38],
+  /* 32% keeps muted text >= 6:1 on white cards (38% was borderline). */
+  ["--muted-foreground", 10, 32],
   ["--accent-foreground", 13, 10],
   ["--sidebar-foreground", 13, 10],
   ["--sidebar-accent-foreground", 13, 10],

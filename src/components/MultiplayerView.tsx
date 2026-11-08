@@ -56,6 +56,7 @@ import {
   ipv6FromPeer,
   isPureP2p,
   isRoomPassword,
+  normalizeRoomName,
   loadActiveRoom,
   loadCachedCommunityServers,
   loadCustomServers,
@@ -66,7 +67,8 @@ import {
   parseShareCode,
   peerFromAddress,
   pickFastestRelayServer,
-  buildMultiplayerPeers,
+  buildGuestRelayPeers,
+  buildRoomRelayPeers,
   loadCachedServerLatencies,
   batchProbeMultiplayerLatencies,
   roomResourcePort,
@@ -1128,7 +1130,7 @@ export function MultiplayerView({
             if (!hostOnline) {
               return await rollback(
                 "无法加入房间",
-                "房主可能尚未开启房间，或者网络中继异常，请确认房间名和密码一致。",
+                "房主可能尚未开启房间，或者双方没有共同可达的中继节点；请确认房间名和密码一致，并在设置中选择本机可用的节点。",
               );
             }
           } else {
@@ -1138,7 +1140,7 @@ export function MultiplayerView({
             if (!found) {
               return await rollback(
                 "找不到房主",
-                "请确认房主已创建房间并在单人游戏中【对局域网开放】，且双方连的是同一个公益节点。",
+                "请确认房主已创建房间并在单人游戏中【对局域网开放】，且双方至少共享一个可达的中继节点。",
               );
             }
             next = {
@@ -1284,7 +1286,7 @@ export function MultiplayerView({
       return;
     }
     const server = effectiveServer.trim() || DEFAULT_PUBLIC_SERVER;
-    const peersList = buildMultiplayerPeers(server);
+    const peersList = buildRoomRelayPeers([server]);
     setConfig((current) => ({
       ...current,
       relay: true,
@@ -1323,7 +1325,7 @@ export function MultiplayerView({
       onNotify("error", "先选择房间版本", "创建房间前必须选一个已安装的版本。");
       return;
     }
-    const roomName = (config.networkName || "").trim();
+    const roomName = normalizeRoomName(config.networkName || "");
     if (!roomName) {
       onNotify("error", "先填写房间名称", "房间名称用于标识你的联机网络。");
       return;
@@ -1383,7 +1385,8 @@ export function MultiplayerView({
     }
 
     const srv = effectiveServer.trim() || DEFAULT_PUBLIC_SERVER;
-    const peersList = buildMultiplayerPeers(srv);
+    // 房主也带上官方交汇节点：不同中继下的访客因此总能找到这个房间。
+    const peersList = buildRoomRelayPeers([srv]);
 
     const next: MultiplayerConfig = {
       ...config,
@@ -1441,8 +1444,20 @@ export function MultiplayerView({
           ? createOverlayIpv4()
           : current.overlayIpv4;
 
-      const serverUri = info.publicServer || (info.relayNodes && info.relayNodes[0]) || DEFAULT_PUBLIC_SERVER;
-      const peersList = info.p2pOnly && info.peer ? [info.peer] : buildMultiplayerPeers(serverUri);
+      // 中继房间：访客先使用自己当前网络的优选/指定节点，再并入房主声明
+      // 的节点和官方交汇节点。房主的中继在访客网络可能被屏蔽，不能把它
+      // 当成唯一入口；本机节点在前，才能保证访客先有一条可用链路。
+      const localRelay = info.p2pOnly
+        ? ""
+        : (effectiveServer.trim() || DEFAULT_PUBLIC_SERVER);
+      const guestRelayPeers = info.p2pOnly
+        ? []
+        : buildGuestRelayPeers(localRelay, [
+            info.publicServer ?? "",
+            ...info.relayNodes,
+          ]);
+      const peersList = info.p2pOnly && info.peer ? [info.peer] : guestRelayPeers;
+      const serverUri = info.p2pOnly ? "" : (peersList[0] ?? DEFAULT_PUBLIC_SERVER);
 
       const next: MultiplayerConfig = {
         ...current,
@@ -1491,7 +1506,8 @@ export function MultiplayerView({
 
   // Astral 原生模式：通过【房间名 + 密码】加入
   const handleJoinByManual = async () => {
-    const roomName = manualRoomName.trim();
+    // 房间名是 EasyTier 的网络标识，空白/大小写不同就会变成另一张网络。
+    const roomName = normalizeRoomName(manualRoomName);
     if (!roomName) {
       onNotify("error", "请输入房间名称", "与房主设置的房间名称保持一致。");
       return;
@@ -1519,14 +1535,16 @@ export function MultiplayerView({
       }
     }
 
-    const peersList = buildMultiplayerPeers(serverUri);
+    // 手动加入时拿不到房主的节点清单，只能靠官方交汇节点兜底：双方各自
+    // 选中不同中继也能通过这组公共节点互相发现，房间因此不再被中继隔离。
+    const peersList = buildRoomRelayPeers([serverUri]);
 
     const next: MultiplayerConfig = {
       ...configRef.current,
       networkName: roomName,
       networkSecret: password,
       overlayIpv4: createOverlayIpv4(),
-      publicServer: serverUri,
+      publicServer: peersList[0] ?? serverUri,
       peers: peersList,
       relay: true,
       p2pOnly: false,
@@ -2609,7 +2627,7 @@ export function MultiplayerView({
                     >
                       {joinPreview.mode === "p2p"
                         ? "纯 IPv6 P2P：不经过公益中继。加入后把本机回执码发给房主，房主登记后才会建立直连。"
-                        : `公益节点：${joinPreview.publicServer ?? DEFAULT_PUBLIC_SERVER}`}
+                        : `公益节点：本机 ${effectiveServer}；同时尝试房主节点 ${joinPreview.publicServer ?? DEFAULT_PUBLIC_SERVER} 与公共交汇节点。`}
                     </p>
                   </div>
                 </div>

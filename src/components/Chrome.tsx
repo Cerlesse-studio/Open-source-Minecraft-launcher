@@ -103,7 +103,7 @@ export function TitleBar({ demo, title }: { demo: boolean; title?: string }) {
         <Button
           variant="ghost"
           size="icon-sm"
-          className="rounded-md text-muted-foreground hover:bg-destructive hover:text-white"
+          className="rounded-md text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
           aria-label={t("关闭")}
           onClick={() => withWindow((window) => window.close())}
         >
@@ -415,7 +415,7 @@ export function Sidebar({
       <div
         className={cn(
           "mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/70",
-          collapsed ? "justify-center" : "px-1",
+          collapsed ? "justify-center" : "min-w-0 px-1",
         )}
         title={
           collapsed
@@ -426,8 +426,15 @@ export function Sidebar({
         <img src="/logo.png" alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
         {!collapsed ? (
           <>
-            <span className="font-mono">Open-source-Minecraft-launcher {launcherVersion}</span>
-            <span className="ml-auto flex items-center gap-1.5">
+            {/* 版本号必须单行省略：允许换行时会按字符折断，把右侧的
+                运行状态挤成一字一行的竖排（“空/闲”），看起来像文字没显示。 */}
+            <span
+              className="min-w-0 truncate font-mono"
+              title={`Open-source-Minecraft-launcher ${launcherVersion}`}
+            >
+              Open-source-Minecraft-launcher {launcherVersion}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
               <StatusDot tone={runtimeStatus === "running" ? "live" : "muted"} />
               {runtimeStatus === "running" ? t("运行中") : t("空闲")}
             </span>

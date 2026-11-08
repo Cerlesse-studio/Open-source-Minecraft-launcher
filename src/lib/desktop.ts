@@ -16,7 +16,15 @@ declare global { interface Window { launcher?: LauncherBridge } }
 export const isDesktop = Boolean(window.launcher);
 export function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.launcher) return Promise.reject(new Error('桌面核心不可用'));
-  return window.launcher.invoke<T>(command, args);
+  return window.launcher.invoke<T>(command, args).catch((error: unknown) => {
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = raw
+      .replace(/^Error:\s*/, '')
+      .replace(/^Error invoking remote method '[^']+':\s*/, '')
+      .replace(/^Error:\s*/, '')
+      .trim();
+    throw new Error(message || raw);
+  });
 }
 export async function listen<T>(event: string, handler: (message: { payload: T }) => void): Promise<() => void> {
   if (!window.launcher) throw new Error('桌面核心不可用');

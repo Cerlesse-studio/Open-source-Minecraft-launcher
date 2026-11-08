@@ -52,6 +52,7 @@ export const defaultSettings: LauncherSettings = {
   width: 1280,
   height: 720,
   downloadThreads: 16,
+  downloadSpeedLimit: 0,
   downloadSource: "official_ap",
   customSourceUrl: "",
   offlineSkinType: "random",
@@ -116,6 +117,10 @@ export function loadSettings(): LauncherSettings {
         typeof parsed.downloadThreads === "number"
           ? Math.min(64, Math.max(1, Math.round(parsed.downloadThreads)))
           : defaultSettings.downloadThreads,
+      downloadSpeedLimit:
+        typeof parsed.downloadSpeedLimit === "number" && Number.isFinite(parsed.downloadSpeedLimit)
+          ? Math.min(1024 * 1024 * 1024, Math.max(0, Math.round(parsed.downloadSpeedLimit)))
+          : defaultSettings.downloadSpeedLimit,
       downloadSource:
         parsed.downloadSource === "bmclapi" || parsed.downloadSource === "custom"
           ? parsed.downloadSource

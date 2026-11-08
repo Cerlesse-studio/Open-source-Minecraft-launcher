@@ -67,8 +67,24 @@
   --accent-foreground: #f0f5ec;
   --accent-fg-rgb: 240, 245, 236;
   --destructive: #e07363;
+  --destructive-rgb: 224, 115, 99;
   --destructive-foreground: #1b0906;
+  --destructive-fg-rgb: 27, 9, 6;
   --success: #34d399;
+  --success-rgb: 52, 211, 153;
+  --grass-bright-rgb: 184, 236, 146;
+  /* Semantic accent inks. Dark mode keeps the bright accents; light mode
+     swaps to deeper shades so small labels stay >= 4.5:1 (WCAG AA). */
+  --gold: #e3c269;
+  --gold-rgb: 227, 194, 105;
+  --diamond: #6de0d0;
+  --diamond-rgb: 109, 224, 208;
+  --ember: #e59b68;
+  --ember-rgb: 229, 155, 104;
+  --grass-bright: #b8ec92;
+  --grass-deep: #4f802d;
+  /* Terminal panes stay dark in both themes; their ink is fixed below. */
+  --console-surface: rgba(12, 18, 13, 0.7);
   --border: #26312a;
   --border-rgb: 38, 49, 42;
   --input: #2a352d;
@@ -133,8 +149,24 @@
   --accent-foreground: #f0f5ec;
   --accent-fg-rgb: 240, 245, 236;
   --destructive: #e07363;
+  --destructive-rgb: 224, 115, 99;
   --destructive-foreground: #1b0906;
+  --destructive-fg-rgb: 27, 9, 6;
   --success: #34d399;
+  --success-rgb: 52, 211, 153;
+  --grass-bright-rgb: 184, 236, 146;
+  /* Semantic accent inks. Dark mode keeps the bright accents; light mode
+     swaps to deeper shades so small labels stay >= 4.5:1 (WCAG AA). */
+  --gold: #e3c269;
+  --gold-rgb: 227, 194, 105;
+  --diamond: #6de0d0;
+  --diamond-rgb: 109, 224, 208;
+  --ember: #e59b68;
+  --ember-rgb: 229, 155, 104;
+  --grass-bright: #b8ec92;
+  --grass-deep: #4f802d;
+  /* Terminal panes stay dark in both themes; their ink is fixed below. */
+  --console-surface: rgba(12, 18, 13, 0.7);
   --border: #26312a;
   --border-rgb: 38, 49, 42;
   --input: #2a352d;
@@ -181,9 +213,27 @@
   --accent-rgb: 223, 235, 224;
   --accent-foreground: #151e16;
   --accent-fg-rgb: 21, 30, 22;
-  --destructive: #e05243;
+  /* #a3372a on white = 6.69:1 (WCAG AA); #e05243 was only ~3.5:1. */
+  --destructive: #a3372a;
+  --destructive-rgb: 163, 55, 42;
   --destructive-foreground: #ffffff;
-  --success: #059669;
+  --destructive-fg-rgb: 255, 255, 255;
+  /* #059669 was only 3.77:1 on white; #065f46 is 7.68:1 (6.89:1 on the
+     tinted bg-success/10 badge). */
+  --success: #065f46;
+  --success-rgb: 6, 95, 70;
+  --grass-bright-rgb: 63, 111, 34;
+  /* Light-mode accent inks, all >= 5.3:1 on #f6f8f5 / #ffffff. */
+  --gold: #7a580f;
+  --gold-rgb: 122, 88, 15;
+  --diamond: #0f6f68;
+  --diamond-rgb: 15, 111, 104;
+  --ember: #9a4a1c;
+  --ember-rgb: 154, 74, 28;
+  --grass-bright: #3f6f22;
+  --grass-deep: #274a16;
+  /* The console is a terminal: it keeps its dark pane and fixed light ink. */
+  --console-surface: rgba(12, 18, 13, 0.7);
   --border: #c8d7c7;
   --border-rgb: 200, 215, 199;
   --input: #c8d7c7;
@@ -271,15 +321,21 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-grass: var(--primary);
-  --color-grass-bright: #b8ec92;
-  --color-grass-deep: #4f802d;
-  --color-diamond: #6de0d0;
-  --color-gold: #e3c269;
-  --color-ember: #e59b68;
+  --color-grass-bright: var(--grass-bright);
+  --color-grass-deep: var(--grass-deep);
+  --color-diamond: var(--diamond);
+  --color-gold: var(--gold);
+  --color-ember: var(--ember);
   --font-sans: "Geist Variable", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
     "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
-  --font-mono: "Geist Mono Variable", "Cascadia Mono", Consolas, monospace;
-  --font-pixel: "Silkscreen", "Geist Mono Variable", monospace;
+  /* 每个字体栈都显式列出中文字体。Geist 与 Silkscreen 只有拉丁字形，
+     缺了这一层时 font-mono / font-pixel 里的中文只能靠渲染器自己去挑
+     系统字体：精简版 Windows（没有微软雅黑映射）或没装 Noto CJK 的
+     Linux 上，徽标、版本号、像素标题里的中文会整段不显示。 */
+  --font-mono: "Geist Mono Variable", "Cascadia Mono", Consolas, "PingFang SC",
+    "Microsoft YaHei UI", "Noto Sans CJK SC", monospace;
+  --font-pixel: "Silkscreen", "Geist Mono Variable", "PingFang SC",
+    "Microsoft YaHei UI", "Noto Sans CJK SC", monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -372,16 +428,42 @@
   }
 
   .media-surface-fade {
+    /* A faint backing over the whole tile keeps white captions legible on
+       bright wallpapers too; previously the top 45% was fully transparent. */
+    background-color: rgba(12, 18, 13, 0.28);
     background-image: linear-gradient(
       to top,
       #0c120d,
-      rgba(12, 18, 13, 0.45) 55%,
-      transparent 100%
+      rgba(12, 18, 13, 0.72) 55%,
+      rgba(12, 18, 13, 0.45) 100%
     );
   }
 
+  /* Plain rgba: Chromium 108 cannot parse the oklab() output Tailwind 4
+     emits for `bg-black/70`, so a Tailwind opacity utility would silently
+     drop the backing and leave white captions on a light surface. */
+  .media-caption-surface {
+    background-color: rgba(12, 18, 13, 0.75);
+  }
+
+  /* The caption pane stays dark in both themes, so accent inks inside it must
+     stay bright even when the light theme switches them to deep shades. */
+  .media-caption-surface [class*="text-gold"] { color: #e3c269 !important; }
+  .media-caption-surface [class*="text-primary"] { color: #9bdd6b !important; }
+  .media-caption-surface [class*="text-diamond"] { color: #6de0d0 !important; }
+  .media-caption-surface [class*="text-ember"] { color: #e59b68 !important; }
+  .media-caption-surface [class*="text-muted-foreground"] { color: #b9c6bb !important; }
+
   .console-surface {
-    background-color: rgba(12, 18, 13, 0.7);
+    background-color: var(--console-surface);
+    color: #e9efe6;
+  }
+
+  /* The console is a dark terminal in both themes. A theme-driven
+     `text-muted-foreground` would flip to a dark ink in light mode and vanish,
+     so pin the ink here (#b9c6bb on #0c120d = 10.7:1). */
+  .console-surface [class*="text-muted-foreground"] {
+    color: #b9c6bb !important;
   }
 
   .accent-glow {
@@ -425,6 +507,38 @@
 .bg-primary\/30 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.3) !important; }
 .bg-primary\/40 { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.4) !important; }
 
+/* success 语义色也要有 rgba 保底：Chromium 108 不支持 color-mix 时会退回
+   纯色 var(--success)，与同色文字叠加后徽标内容完全不可见。 */
+.bg-success\/10 { background-color: rgba(var(--success-rgb, 52, 211, 153), 0.1) !important; }
+.bg-success\/15 { background-color: rgba(var(--success-rgb, 52, 211, 153), 0.15) !important; }
+.bg-success\/20 { background-color: rgba(var(--success-rgb, 52, 211, 153), 0.2) !important; }
+.border-success\/25 { border-color: rgba(var(--success-rgb, 52, 211, 153), 0.25) !important; }
+.border-success\/30 { border-color: rgba(var(--success-rgb, 52, 211, 153), 0.3) !important; }
+.border-success\/40 { border-color: rgba(var(--success-rgb, 52, 211, 153), 0.4) !important; }
+.text-success\/90 { color: rgba(var(--success-rgb, 52, 211, 153), 0.9) !important; }
+
+/* gold 语义色也需要显式 rgba 保底：Chromium 108 不支持 color-mix 时，
+   bg-gold/15 会退化成实心金色，金色徽标文字与底色重合而看不见。 */
+.bg-gold\/5 { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.05) !important; }
+.bg-gold\/10 { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.1) !important; }
+.bg-gold\/15 { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.15) !important; }
+.bg-gold\/20 { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.2) !important; }
+.bg-gold\/\[0\.03\] { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.03) !important; }
+.bg-gold\/\[0\.04\] { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.04) !important; }
+.bg-gold\/\[0\.05\] { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.05) !important; }
+.bg-gold\/\[0\.06\] { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.06) !important; }
+.border-gold\/25 { border-color: rgba(var(--gold-rgb, 227, 194, 105), 0.25) !important; }
+.border-gold\/30 { border-color: rgba(var(--gold-rgb, 227, 194, 105), 0.3) !important; }
+.border-gold\/35 { border-color: rgba(var(--gold-rgb, 227, 194, 105), 0.35) !important; }
+.border-gold\/40 { border-color: rgba(var(--gold-rgb, 227, 194, 105), 0.4) !important; }
+.text-gold\/70 { color: rgba(var(--gold-rgb, 227, 194, 105), 0.7) !important; }
+.text-gold\/75 { color: rgba(var(--gold-rgb, 227, 194, 105), 0.75) !important; }
+.text-gold\/80 { color: rgba(var(--gold-rgb, 227, 194, 105), 0.8) !important; }
+.text-gold\/85 { color: rgba(var(--gold-rgb, 227, 194, 105), 0.85) !important; }
+.text-gold\/90 { color: rgba(var(--gold-rgb, 227, 194, 105), 0.9) !important; }
+.hover\:bg-gold\/15:hover { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.15) !important; }
+.hover\:bg-gold\/20:hover { background-color: rgba(var(--gold-rgb, 227, 194, 105), 0.2) !important; }
+
 /* 细粒度任意值透明度保底 */
 .bg-primary\/\[0\.02\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.02) !important; }
 .bg-primary\/\[0\.03\] { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.03) !important; }
@@ -448,7 +562,9 @@
 .ring-primary\/40 { --tw-ring-color: rgba(var(--primary-rgb, 155, 221, 107), 0.4) !important; }
 .ring-primary\/50 { --tw-ring-color: rgba(var(--primary-rgb, 155, 221, 107), 0.5) !important; }
 
-.text-primary { color: var(--primary) !important; }
+/* Tailwind already emits `.text-primary { color: var(--primary) }`. A global
+   !important override here used to beat every hover/active/selected variant,
+   e.g. `hover:text-accent-foreground`, making those states unreadable. */
 
 /* 悬停与组合选择器高亮状态 */
 .hover\:bg-primary\/5:hover { background-color: rgba(var(--primary-rgb, 155, 221, 107), 0.05) !important; }
@@ -469,12 +585,11 @@
   border-color: rgba(var(--primary-rgb, 155, 221, 107), 0.45) !important;
 }
 .group:hover .group-hover\:text-primary {
-  color: var(--primary) !important;
+  color: var(--primary);
 }
 
 /* 浅色模式专属对比度与高亮强化 */
 .light .text-primary {
-  color: var(--primary) !important;
   font-weight: 500;
 }
 .light .border-primary {
@@ -494,3 +609,123 @@
 .light .bg-primary\/\[0\.035\] {
   background-color: rgba(var(--primary-rgb), 0.08) !important;
 }
+
+/* ---------------------------------------------------------------------------
+ * WCAG AA text contrast
+ * --------------------------------------------------------------------------- */
+
+/* Tailwind's built-in amber 100..400 are near-white on light surfaces. Some
+   opacity variants are emitted as literal hex+alpha instead of var(), so both
+   the theme tokens and the generated classes need remapping. #8a4d00 is
+   6.68:1 on white. Dark mode keeps the original bright scale untouched. */
+.light {
+  --color-amber-100: #8a4d00;
+  --color-amber-200: #8a4d00;
+  --color-amber-300: #8a4d00;
+  --color-amber-400: #8a4d00;
+}
+
+/* Opacity variants such as `text-amber-100/75` are emitted as literal
+   hex+alpha and ignore the theme tokens, so pin those too. Variant-prefixed
+   classes (hover/selected) are handled separately to keep state feedback. */
+.light [class*="text-amber-"]:not([class*=":text-amber-"]),
+.light :is([class*="text-orange-1"], [class*="text-orange-2"], [class*="text-orange-3"], [class*="text-orange-4"],
+           [class*="text-yellow-1"], [class*="text-yellow-2"], [class*="text-yellow-3"], [class*="text-yellow-4"]) {
+  color: #8a4d00 !important;
+}
+.light [class*=":text-amber-"]:hover {
+  color: #8a4d00 !important;
+}
+
+/* The other Tailwind 100-400 steps are near-white as well (version badges,
+   status pills, 9-10px labels). Remap text variants to a deep ink of the
+   same hue family in light mode only; dark mode keeps the original palette.
+   The `1|2|3|4` prefixes also cover `/70`-`/90` opacity variants. */
+.light :is([class*="text-purple-1"], [class*="text-purple-2"], [class*="text-purple-3"], [class*="text-purple-4"],
+           [class*="text-violet-1"], [class*="text-violet-2"], [class*="text-violet-3"], [class*="text-violet-4"],
+           [class*="text-fuchsia-1"], [class*="text-fuchsia-2"], [class*="text-fuchsia-3"], [class*="text-fuchsia-4"],
+           [class*="text-pink-1"], [class*="text-pink-2"], [class*="text-pink-3"], [class*="text-pink-4"]) {
+  color: #6b21a8 !important;
+}
+.light :is([class*="text-cyan-1"], [class*="text-cyan-2"], [class*="text-cyan-3"], [class*="text-cyan-4"],
+           [class*="text-sky-1"], [class*="text-sky-2"], [class*="text-sky-3"], [class*="text-sky-4"],
+           [class*="text-blue-1"], [class*="text-blue-2"], [class*="text-blue-3"], [class*="text-blue-4"],
+           [class*="text-indigo-1"], [class*="text-indigo-2"], [class*="text-indigo-3"], [class*="text-indigo-4"]) {
+  color: #155e75 !important;
+}
+.light :is([class*="text-emerald-1"], [class*="text-emerald-2"], [class*="text-emerald-3"], [class*="text-emerald-4"],
+           [class*="text-teal-1"], [class*="text-teal-2"], [class*="text-teal-3"], [class*="text-teal-4"],
+           [class*="text-green-1"], [class*="text-green-2"], [class*="text-green-3"], [class*="text-green-4"],
+           [class*="text-lime-1"], [class*="text-lime-2"], [class*="text-lime-3"], [class*="text-lime-4"]) {
+  color: #166534 !important;
+}
+.light :is([class*="text-rose-1"], [class*="text-rose-2"], [class*="text-rose-3"], [class*="text-rose-4"],
+           [class*="text-red-1"], [class*="text-red-2"], [class*="text-red-3"], [class*="text-red-4"]) {
+  color: #9f1239 !important;
+}
+
+/* `--color-gold|diamond|ember` resolve to `var(--gold)` etc, which Tailwind
+   emits as plain `color: var(--gold)` — compatible with Chromium 108 and
+   already theme-aware. No !important override here: it would suppress the
+   hover/selected text colors we just restored above. */
+
+/* These rules sit outside any @layer, so they win over Tailwind's utilities
+   without needing !important (and therefore do not freeze state variants).
+   Faint secondary text kept its hierarchy but was effectively invisible on
+   light surfaces; lift the alpha floor while staying visibly secondary. */
+[class*="text-muted-foreground/30"],
+[class*="text-muted-foreground/40"] {
+  color: rgba(var(--muted-fg-rgb), 0.9);
+}
+[class*="text-muted-foreground/50"],
+[class*="text-muted-foreground/60"],
+[class*="text-muted-foreground/70"],
+[class*="text-muted-foreground/75"],
+[class*="text-muted-foreground/80"],
+[class*="text-muted-foreground/85"],
+[class*="text-muted-foreground/90"] {
+  color: rgba(var(--muted-fg-rgb), 0.95);
+}
+[class*="text-foreground/50"],
+[class*="text-foreground/60"],
+[class*="text-foreground/70"],
+[class*="text-foreground/80"],
+[class*="text-foreground/85"],
+[class*="text-foreground/90"] {
+  color: rgba(var(--foreground-rgb), 0.9);
+}
+
+/* `text-border` used for "/" separators is a border color, not an ink: it
+   was ~1.4:1 on light surfaces. Use the muted ink instead. */
+[class~="text-border"] {
+  color: var(--muted-foreground);
+}
+[class*="text-primary/70"],
+[class*="text-primary/80"] {
+  color: rgba(var(--primary-rgb), 0.9);
+}
+
+/* Disabled controls: WCAG 1.4.3 exempts inactive components, but a 40-50%
+   fade made their labels effectively invisible. Keep pointer-events/cursor
+   as the disabled cue and restore a readable label. */
+:is(button, input, select, textarea)[class*="disabled:opacity-"]:disabled {
+  opacity: 0.8;
+}
+[class*="data-[disabled]:opacity-"][data-disabled] {
+  opacity: 0.8;
+}
+
+/* Disabled resource cards are faded as a whole; keep the desaturated look
+   without dropping the card's text below a legible level. */
+[class*="opacity-55"][class*="saturate-50"],
+[class*="opacity-60"][class*="saturate-50"] {
+  opacity: 0.8;
+}
+
+/* Black overlays behind white captions/badges. Tailwind 4 emits oklab()
+   literals for these; Chromium 108 drops them, so pin plain rgba values. */
+.bg-black\/40 { background-color: rgba(0, 0, 0, 0.4) !important; }
+.bg-black\/50 { background-color: rgba(0, 0, 0, 0.5) !important; }
+.bg-black\/60 { background-color: rgba(0, 0, 0, 0.6) !important; }
+.bg-black\/70 { background-color: rgba(0, 0, 0, 0.7) !important; }
+.bg-black\/80 { background-color: rgba(0, 0, 0, 0.8) !important; }

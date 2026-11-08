@@ -80,6 +80,11 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             argument(&args, "customUrl")?,
             argument(&args, "threads")?,
         )),
+        "set_download_speed_limit" => {
+            let bytes_per_second: Option<u64> = argument(&args, "bytesPerSecond")?;
+            to_value(crate::set_download_speed_limit(bytes_per_second))
+        }
+        "get_download_stats" => to_value(crate::get_download_stats()),
         "probe_download_sources" => {
             to_value(crate::probe_download_sources(argument(&args, "customUrl")?).await)
         }

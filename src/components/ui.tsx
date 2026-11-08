@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Archive, Boxes, Map, Package, Sparkles } from "lucide-react";
+import { Package } from "lucide-react";
+import { CONTENT_TYPE_ICONS } from "../lib/resource-catalog";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "cn";
@@ -28,18 +29,6 @@ export function GrassBlock({
     />
   );
 }
-
-const CONTENT_TYPE_ICONS: Record<
-  ContentProjectType,
-  typeof Boxes
-> = {
-  mod: Boxes,
-  modpack: Package,
-  shader: Sparkles,
-  datapack: Archive,
-  resourcepack: Package,
-  world: Map,
-};
 
 /**
  * Icon tile for a marketplace project.

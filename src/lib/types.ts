@@ -416,6 +416,7 @@ export interface GameStatus {
   detail?: string | null;
   pid?: number | null;
   versionId?: string | null;
+  windowVisible?: boolean | null;
 }
 
 export interface GameLogPayload {
@@ -614,6 +615,8 @@ export interface LauncherSettings {
   width: number;
   height: number;
   downloadThreads: number;
+  /** PCL2 NetTaskSpeedLimitHigh in bytes/second; 0 = unlimited. */
+  downloadSpeedLimit: number;
   downloadSource: DownloadSourceId;
   customSourceUrl?: string;
   offlineSkinType: OfflineSkinType;

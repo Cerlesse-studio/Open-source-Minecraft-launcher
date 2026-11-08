@@ -58,6 +58,7 @@ interface RuntimeView {
   detail?: string | null;
   pid?: number | null;
   versionId?: string | null;
+  windowVisible?: boolean | null;
 }
 
 interface PlayViewProps {
@@ -217,50 +218,62 @@ export function PlayView({
   const isLatest = Boolean(manifest && manifest.latest.release === selectedVersion);
   const isInstalling = installingVersion === selectedVersion;
   const activeVersion = runtime.versionId ?? selectedVersion;
-  const isLaunching =
+  const isPreparing =
     runtime.status === "preparing" &&
+    (!runtime.versionId || activeVersion === selectedVersion);
+  const isWindowPending =
+    runtime.status === "running" &&
+    runtime.windowVisible === false &&
     (!runtime.versionId || activeVersion === selectedVersion);
   const isRunning =
     runtime.status === "running" &&
+    !isWindowPending &&
     (!runtime.versionId || activeVersion === selectedVersion);
+  const isLaunching = isPreparing;
   const bestJava = findBestJava(javaInstalls, javaPath);
   const gameFolder = joinPath(gameRoot, "versions", selectedVersion);
 
   const activeProgress = isInstalling
     ? installProgress
-    : isLaunching
+    : isPreparing
       ? launchProgress
       : null;
 
   const headerLabel = isRunning
     ? "游戏运行中"
-    : isLaunching
-      ? "启动准备中"
-      : isInstalling
-        ? "正在下载"
-        : isInstalled
-          ? "准备就绪"
-          : "等待安装";
+    : isWindowPending
+      ? "启动中"
+      : isPreparing
+        ? "启动准备中"
+        : isInstalling
+          ? "正在下载"
+          : isInstalled
+            ? "准备就绪"
+            : "等待安装";
   const headerTone = isRunning
     ? "live"
-    : isInstalled && !isLaunching
+    : isInstalled && !isPreparing && !isWindowPending
       ? "online"
-      : isLaunching || isInstalling
+      : isPreparing || isWindowPending || isInstalling
         ? "pending"
         : "muted";
 
   let statusCopy = "游戏文件已就绪";
   if (isRunning) statusCopy = `游戏正在运行${runtime.pid ? ` · PID ${runtime.pid}` : ""}`;
-  else if (isLaunching) statusCopy = activeProgress?.detail || runtime.detail || "正在启动游戏";
+  else if (isWindowPending)
+    statusCopy = runtime.detail || "游戏进程已启动，正在等待窗口";
+  else if (isPreparing) statusCopy = activeProgress?.detail || runtime.detail || "正在启动游戏";
   else if (isInstalling) statusCopy = activeProgress?.detail || "正在下载游戏文件";
   else if (!isInstalled) statusCopy = "需要下载客户端、依赖库与资源文件";
 
   const primaryLabel = isRunning
     ? "结束游戏"
-    : isLaunching
-      ? "正在启动…"
-      : isInstalled
-        ? "开始游戏"
+    : isWindowPending
+      ? "取消启动"
+      : isPreparing
+        ? "正在启动…"
+        : isInstalled
+          ? "开始游戏"
         : isInstalling
           ? "正在安装…"
           : "下载并安装";
@@ -272,7 +285,10 @@ export function PlayView({
           title="版本设置"
           actions={
             <div className="flex h-7 items-center gap-2 rounded-full border border-border/70 bg-card/60 px-3 text-[11px] text-muted-foreground">
-              <StatusDot tone={headerTone} animated={isRunning} />
+              <StatusDot
+                tone={headerTone}
+                animated={isRunning || isPreparing || isWindowPending}
+              />
               {headerLabel}
             </div>
           }
@@ -345,8 +361,14 @@ export function PlayView({
                   )}
                 >
                   <StatusDot
-                    tone={isRunning ? "live" : isLaunching || isInstalling ? "pending" : "online"}
-                    animated={isRunning || isLaunching}
+                    tone={
+                      isRunning
+                        ? "live"
+                        : isPreparing || isWindowPending || isInstalling
+                          ? "pending"
+                          : "online"
+                    }
+                    animated={isRunning || isPreparing || isWindowPending}
                   />
                   <span className="truncate">{statusCopy}</span>
                 </p>
@@ -356,10 +378,14 @@ export function PlayView({
                     <Button
                       size="lg"
                       className="accent-glow h-10 gap-2 rounded-lg px-5 text-[13px] font-semibold"
-                      onClick={isRunning ? onStop : onLaunch}
-                      disabled={isLaunching}
+                      onClick={isRunning || isWindowPending ? onStop : onLaunch}
+                      disabled={isPreparing}
                     >
-                      {isRunning ? <Square className="size-3.5 fill-current" /> : <Play className="size-4 fill-current" />}
+                      {isRunning || isWindowPending ? (
+                        <Square className="size-3.5 fill-current" />
+                      ) : (
+                        <Play className="size-4 fill-current" />
+                      )}
                       {primaryLabel}
                     </Button>
                   ) : (

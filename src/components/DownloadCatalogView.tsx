@@ -8,7 +8,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Cpu,
   Download,
   ExternalLink,
   FlaskConical,
@@ -16,7 +15,6 @@ import {
   HardDriveDownload,
   Layers3,
   LoaderCircle,
-  Map as MapIcon,
   Package,
   PackageOpen,
   Play,
@@ -48,12 +46,16 @@ import {
   installBedrockVersion,
   launchBedrock,
 } from "../lib/backend";
+import {
+  RESOURCE_CATEGORIES,
+  getResourceCategory,
+  type CatalogCategory,
+} from "../lib/resource-catalog";
 import { ContentMarketplaceView } from "./ContentMarketplaceView";
 import { BedrockModLoaderModal } from "./BedrockModLoaderModal";
 import type {
   BedrockStatus,
   BedrockVersionItem,
-  ContentProjectType,
   InstallProgress,
   InstalledVersion,
   VersionManifest,
@@ -267,30 +269,6 @@ interface DownloadCatalogViewProps {
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
 }
 
-type CatalogCategory =
-  | "versions"
-  | "resourcepack"
-  | "shader"
-  | "mod"
-  | "datapack"
-  | "modpack"
-  | "world";
-
-const CATALOG_CATEGORIES: Array<{
-  id: CatalogCategory;
-  label: string;
-  icon: typeof Package;
-  desc: string;
-}> = [
-  { id: "versions", label: "游戏版本", icon: Package, desc: "Java 与基岩版核心" },
-  { id: "world", label: "地图", icon: MapIcon, desc: "Java 存档与冒险地图" },
-  { id: "resourcepack", label: "材质与资源包", icon: Sparkles, desc: "基岩版与 Java 材质包" },
-  { id: "shader", label: "光影包", icon: FlaskConical, desc: "Java 光影与基岩版 RTX/PBR" },
-  { id: "mod", label: "模组 (Mods)", icon: Layers3, desc: "Java 模组与基岩版行为包" },
-  { id: "datapack", label: "数据包", icon: Cpu, desc: "原版世界与规则" },
-  { id: "modpack", label: "整合包", icon: Archive, desc: "精选整合包" },
-];
-
 function VersionGlyph({ type, source }: { type: string; source?: string }) {
   let iconSrc = "/icons/minecraft/grass_block.png";
   let borderClass = "border-primary/25 bg-primary/10";
@@ -390,6 +368,7 @@ export function DownloadCatalogView({
   onNotify,
 }: DownloadCatalogViewProps) {
   const [activeCategory, setActiveCategory] = useState<CatalogCategory>("versions");
+  const activeProjectType = getResourceCategory(activeCategory).projectType;
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [deletingItem, setDeletingItem] = useState<{ id: string; name: string; edition: "java" | "bedrock" } | null>(null);
@@ -779,9 +758,9 @@ export function DownloadCatalogView({
 
   return (
     <div className="space-y-5">
-      {/* Category Tabs: 游戏版本 | 模组 | 整合包 | 光影包 | 数据包 */}
+      {/* Category Tabs: PCL2 ResourceTypes order, from RESOURCE_CATEGORIES */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border/60 pb-3">
-        {CATALOG_CATEGORIES.map((cat) => {
+        {RESOURCE_CATEGORIES.map((cat) => {
           const Icon = cat.icon;
           const isActive = activeCategory === cat.id;
           return (
@@ -803,9 +782,9 @@ export function DownloadCatalogView({
         })}
       </div>
 
-      {activeCategory !== "versions" ? (
+      {activeProjectType ? (
         <ContentMarketplaceView
-          projectType={activeCategory as ContentProjectType}
+          projectType={activeProjectType}
           installed={installed}
           selectedVersion={selectedVersion}
           gameRoot={gameRoot}
@@ -933,7 +912,7 @@ export function DownloadCatalogView({
         <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-3">
           <AlertTriangle />
           <AlertTitle>无法刷新版本清单</AlertTitle>
-          <AlertDescription className="line-clamp-2">{error}</AlertDescription>
+          <AlertDescription className="max-h-32 overflow-y-auto break-words whitespace-pre-wrap">{error}</AlertDescription>
           <Button variant="outline" size="xs" className="mt-1 w-fit" onClick={onRefresh}>
             重试
           </Button>

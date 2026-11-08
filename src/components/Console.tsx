@@ -27,7 +27,12 @@ export function ConsolePanel({
   onOpenFolder,
 }: {
   logs: LogEntry[];
-  runtime: { status: GameStateName; detail?: string | null; pid?: number | null };
+  runtime: {
+    status: GameStateName;
+    detail?: string | null;
+    pid?: number | null;
+    windowVisible?: boolean | null;
+  };
   onClear: () => void;
   onOpenFolder: () => void;
 }) {
@@ -49,14 +54,18 @@ export function ConsolePanel({
     stickToBottom.current = distance < 60;
   };
 
-  const stateLabel =
-    runtime.status === "running"
+  const windowPending =
+    runtime.status === "running" && runtime.windowVisible === false;
+  const stateLabel = windowPending
+    ? "启动中"
+    : runtime.status === "running"
       ? "游戏中"
       : runtime.status === "preparing"
         ? "准备中"
         : "空闲";
-  const stateTone =
-    runtime.status === "running"
+  const stateTone = windowPending
+    ? "pending"
+    : runtime.status === "running"
       ? "live"
       : runtime.status === "preparing"
         ? "pending"

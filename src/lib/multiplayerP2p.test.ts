@@ -3,15 +3,20 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_PUBLIC_SERVER,
   buildPeerReceipt,
+  buildGuestRelayPeers,
+  buildRoomRelayPeers,
   buildShareCode,
   defaultMultiplayerConfig,
+  isSameRoom,
   normalizeMultiplayerConfig,
+  normalizeRoomName,
   parsePeerReceipt,
   parseShareCode,
   pickFastestRelayServer,
   buildMultiplayerPeers,
   inferServerLatencies,
   FALLBACK_REDUNDANT_RELAYS,
+  ROOM_BRIDGE_RELAYS,
   supportsIpv6P2p,
 } from "./multiplayer.ts";
 
@@ -180,4 +185,83 @@ test("inferServerLatencies infers UDP node latency from same host TCP latency", 
   const inferred = inferServerLatencies(servers, raw);
   assert.equal(inferred["udp://public.easytier.cn:11010"], 20);
   assert.equal(inferred["tcp://other.host.cn:11010"], 80);
+});
+
+test("relay share code carries every host relay so a guest can bridge across relays", () => {
+  const hostRelay = "tcp://relay-a.example.com:11010";
+  const guestRelay = "udp://relay-b.example.net:11010";
+  const hostNodes = buildRoomRelayPeers([hostRelay]);
+  const hostConfig = {
+    ...defaultMultiplayerConfig(),
+    networkName: "星空-abcd",
+    networkSecret: "secret123",
+    relay: true,
+    p2pOnly: false,
+    allowPublicStun: true,
+    publicServer: hostRelay,
+    peers: hostNodes,
+    relayNodes: hostNodes,
+  };
+
+  const code = buildShareCode(hostConfig);
+  assert.match(code, /server=tcp%3A%2F%2Frelay-a/);
+  assert.match(code, /[?&]r=/, "其余房主节点要写进 r 参数");
+
+  const parsed = parseShareCode(code);
+  assert.ok(parsed);
+  assert.equal(parsed.publicServer, hostRelay);
+  assert.ok(parsed.relayNodes.includes(hostRelay));
+  for (const bridge of ROOM_BRIDGE_RELAYS) {
+    assert.ok(parsed.relayNodes.includes(bridge), `分享码应带上交汇节点 ${bridge}`);
+  }
+
+  // 访客自己的节点和房主不同：本机节点仍排在最前，同时保留房主节点
+  // 与公共交汇节点作为发现入口。
+  const guestNodes = buildGuestRelayPeers(guestRelay, [
+    parsed.publicServer ?? "",
+    ...parsed.relayNodes,
+  ]);
+  assert.equal(guestNodes[0], guestRelay);
+  const shared = guestNodes.filter((peer) => parsed.relayNodes.includes(peer));
+  assert.ok(shared.length > 0, "不同中继下的客户端必须有共同引导节点");
+});
+
+test("a single isolated relay still gets a public bridge node", () => {
+  const peers = buildRoomRelayPeers(["tcp://only-node.example.com:11010"]);
+  assert.equal(peers[0], "tcp://only-node.example.com:11010");
+  assert.ok(peers.length > 1);
+  // 房主再多自建节点也不能把交汇节点挤掉。
+  const crowded = buildRoomRelayPeers(
+    Array.from({ length: 20 }, (_, index) => `tcp://node-${index}.example.com:11010`),
+  );
+  assert.ok(crowded.some((peer) => (ROOM_BRIDGE_RELAYS as readonly string[]).includes(peer)));
+});
+
+test("guest relay peers put the guest's own reachable node before the host's list", () => {
+  const guestRelay = "udp://guest-local.example.net:11010";
+  const hostNodes = [
+    "tcp://host-a.example.com:11010",
+    "udp://host-b.example.com:11010",
+  ];
+  const peers = buildGuestRelayPeers(guestRelay, hostNodes);
+  assert.equal(peers[0], guestRelay);
+  for (const node of hostNodes) assert.ok(peers.includes(node));
+  for (const bridge of ROOM_BRIDGE_RELAYS) assert.ok(peers.includes(bridge));
+  assert.equal(new Set(peers).size, peers.length);
+});
+
+test("guest local node is not dropped by a crowded host relay list", () => {
+  const guestRelay = "tcp://guest-local.example.net:11010";
+  const hostNodes = Array.from({ length: 20 }, (_, index) => `tcp://host-${index}.example.com:11010`);
+  const peers = buildGuestRelayPeers(guestRelay, hostNodes);
+  assert.equal(peers[0], guestRelay);
+  assert.ok(peers.length <= 8);
+  for (const bridge of ROOM_BRIDGE_RELAYS) assert.ok(peers.includes(bridge));
+});
+
+test("room identity ignores stray whitespace but keeps EasyTier case sensitivity", () => {
+  assert.equal(normalizeRoomName("  星空  abcd "), "星空 abcd");
+  assert.ok(isSameRoom(" 星空-abcd", "星空-abcd "));
+  assert.ok(!isSameRoom("MC-Room", "mc-room"), "EasyTier 网络名区分大小写");
+  assert.ok(!isSameRoom("room-1", "room-2"));
 });

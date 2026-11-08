@@ -407,13 +407,84 @@ export function saveCachedServerLatencies(latencies: Record<string, number | nul
 }
 
 /**
- * 官方高可用备选中继线路（用于多中继冗余兜底，确保网络高可用不掉线）
+ * 房间引导节点（跨中继交汇点）。
+ *
+ * EasyTier 没有房间目录服务：两个客户端只有「至少连上同一个节点」时，才会
+ * 在握手阶段互相发现并出现在成员列表里。房主和访客如果各自选中不同的公益/
+ * 自建节点，即使房间名和密码完全一致，也会停留在两张互不相连的孤岛网络上，
+ * 表现为「同一个房间却互相看不到」。
+ *
+ * 下面这组官方节点全球可达，固定追加进每个房间的启动参数（不是把流量交给
+ * 它们，只是提供发现入口）。任意两个房间标识相同的客户端因此至少共享一个
+ * 引导节点，跨中继也能发现彼此；实际数据链路仍按 EasyTier 的延迟优先策略
+ * 走最优直连或最优中继。
  */
-export const FALLBACK_REDUNDANT_RELAYS = [
+export const ROOM_BRIDGE_RELAYS = [
   "tcp://public.easytier.cn:11010",
   "udp://public.easytier.cn:11010",
   "tcp://easytier.cn:11010",
-];
+] as const;
+
+/** 兼容旧名字：这些节点同时承担「多线路冗余兜底」的角色。 */
+export const FALLBACK_REDUNDANT_RELAYS: readonly string[] = ROOM_BRIDGE_RELAYS;
+
+/** 一个房间最多携带的引导节点数：足够跨中继，又不至于让启动握手变慢。 */
+const MAX_ROOM_RELAY_PEERS = 8;
+
+/**
+ * 是否已经登记过同一个节点。
+ *
+ * `tcp://` 和 `udp://` 指向同一台机器的不同传输入口，EasyTier 视为两条独立
+ * 连接，所以只按完整 URI（忽略大小写）判重，不按域名合并。
+ */
+function hasSameRelay(list: readonly string[], uri: string): boolean {
+  const target = uri.trim().toLowerCase();
+  return Boolean(target) && list.some((item) => item.trim().toLowerCase() === target);
+}
+
+/** 中继 URI 去重（保持首次出现顺序），非法项直接丢掉。 */
+function uniqueRelayNodes(nodes: Iterable<string>): string[] {
+  const peers: string[] = [];
+  for (const raw of nodes) {
+    if (typeof raw !== "string") continue;
+    const node = normalizeRelayNode(raw);
+    if (node && !hasSameRelay(peers, node)) peers.push(node);
+  }
+  return peers;
+}
+
+/**
+ * 房间的权威引导节点清单：房主声明的节点在前，官方交汇节点追加在后。
+ *
+ * 房主以这份清单启动；访客先通过 buildGuestRelayPeers 放入自己的本机
+ * 节点，再并入这份清单。两份清单都包含官方交汇节点，任取两个客户端
+ * 至少有一个共同入口，同时各自保留本机可用的中继。
+ */
+export function buildRoomRelayPeers(hostNodes: Iterable<string> = []): string[] {
+  const bridgeSlots = ROOM_BRIDGE_RELAYS.length;
+  // 给交汇节点预留位置，房主再多的自建节点也不能把它们挤掉。
+  const peers = uniqueRelayNodes(hostNodes).slice(0, MAX_ROOM_RELAY_PEERS - bridgeSlots);
+  if (peers.length === 0) peers.push(DEFAULT_PUBLIC_SERVER);
+  for (const bridge of ROOM_BRIDGE_RELAYS) {
+    if (!hasSameRelay(peers, bridge)) peers.push(bridge);
+  }
+  return peers.slice(0, MAX_ROOM_RELAY_PEERS);
+}
+
+/**
+ * 访客侧的中继节点清单。
+ *
+ * 分享码加入不能直接把房主的节点表当成访客的节点表：房主选中的中继在
+ * 访客所在网络可能被屏蔽。访客先连自己当前网络测速优选/手动指定的节点，
+ * 再并入房主声明的节点和公共交汇节点；这样本机至少有一条可用入口，
+ * 同时仍能通过共同节点发现房主。
+ */
+export function buildGuestRelayPeers(
+  localServer: string,
+  hostNodes: Iterable<string> = [],
+): string[] {
+  return buildRoomRelayPeers([localServer, ...hostNodes]);
+}
 
 /**
  * 构造高可用多线路中继与对等节点列表。
@@ -422,14 +493,23 @@ export const FALLBACK_REDUNDANT_RELAYS = [
  * 避免单一节点瞬间不可达或丢包时导致 EasyTier 无法连接或异常退出。
  */
 export function buildMultiplayerPeers(primaryServer: string): string[] {
-  const primary = (primaryServer || DEFAULT_PUBLIC_SERVER).trim();
-  const peers: string[] = [primary];
-  for (const fallback of FALLBACK_REDUNDANT_RELAYS) {
-    if (fallback !== primary && !peers.includes(fallback)) {
-      peers.push(fallback);
-    }
-  }
-  return peers;
+  return buildRoomRelayPeers([primaryServer]);
+}
+
+/**
+ * 房间标识归一化。
+ *
+ * EasyTier 的 `--network-name` 区分大小写和空白：房主写 `MC-Room`、访客写
+ * `mc-room ` 会各自建一张网络，房间号再一致也永远看不到对方。分享码、回执码
+ * 和内核参数统一经过这里，保证「房间标识匹配」只有一种写法。
+ */
+export function normalizeRoomName(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 48);
+}
+
+/** 两个房间标识归一化后是否同一个房间（分享码 / 回执码校验用）。 */
+export function isSameRoom(a: string, b: string): boolean {
+  return normalizeRoomName(a) === normalizeRoomName(b);
 }
 
 /**
@@ -705,8 +785,8 @@ export function normalizeMultiplayerConfig(raw: unknown): MultiplayerConfig {
     : value.publicServer || finalPeers[0] || DEFAULT_PUBLIC_SERVER;
   return {
     networkName:
-      typeof value.networkName === "string" && value.networkName.trim()
-        ? value.networkName.trim().slice(0, 48)
+      typeof value.networkName === "string" && normalizeRoomName(value.networkName)
+        ? normalizeRoomName(value.networkName)
         : base.networkName,
     networkSecret:
       typeof value.networkSecret === "string" ? value.networkSecret.trim().slice(0, 64) : "",
@@ -871,7 +951,7 @@ export function loadActiveRoom(): ActiveRoom | null {
     if (typeof value.networkName !== "string" || !value.networkName.trim()) return null;
     return {
       role: value.role,
-      networkName: value.networkName.trim(),
+      networkName: normalizeRoomName(value.networkName),
       startedAt: typeof value.startedAt === "number" ? value.startedAt : Date.now(),
     };
   } catch {
@@ -935,11 +1015,11 @@ export interface ShareInfo {
 
 /**
  * 一键分享码：Astral 风格 URL 格式，包含房间名、密码、公共服务器以及房主虚拟 IP 和端口。
- * `cobble-mp://join?name=…&secret=…&server=…&ip=…&port=…&res=…&rt=…`
+ * `cobble-mp://join?name=…&secret=…&server=…&r=…&ip=…&port=…&res=…&rt=…`
  */
 export function buildShareCode(config: MultiplayerConfig, _legacyAddress = ""): string {
   const params = new URLSearchParams();
-  params.set("name", config.networkName);
+  params.set("name", normalizeRoomName(config.networkName));
   params.set("secret", config.networkSecret);
   params.set("ip", config.overlayIpv4);
   params.set("port", String(config.hostPort));
@@ -948,8 +1028,17 @@ export function buildShareCode(config: MultiplayerConfig, _legacyAddress = ""): 
     if (config.hostEntry) params.set("peer", config.hostEntry);
     params.set("lp", String(config.listenPort));
   } else {
-    const server = config.publicServer || config.peers[0] || DEFAULT_PUBLIC_SERVER;
-    params.set("server", server);
+    // 房主实际连着的全部引导节点都写进分享码。EasyTier 没有房间目录，
+    // 访客只有连到和房主相同的节点才能发现彼此；旧版只带 `server` 一个
+    // 节点，一旦房主换了节点或它在访客侧不互通，访客就落进另一张孤岛网络。
+    const publicServer = (config.publicServer ?? "").trim();
+    const declared = config.relayNodes.length > 0 ? config.relayNodes : config.peers;
+    const nodes = buildRoomRelayPeers([publicServer, ...declared]);
+    const primary = publicServer || nodes[0] || DEFAULT_PUBLIC_SERVER;
+    params.set("server", primary);
+    for (const node of nodes) {
+      if (node !== primary) params.append("r", node);
+    }
   }
   if (config.hostVersion) {
     params.set("v", config.hostVersion);
@@ -975,7 +1064,7 @@ export function parseShareCode(text: string): ShareInfo | null {
   }
   if (url.protocol !== "cobble-mp:") return null;
   const params = url.searchParams;
-  const networkName = (params.get("name") ?? "").trim();
+  const networkName = normalizeRoomName(params.get("name") ?? "");
   const networkSecret = (params.get("secret") ?? "").trim();
   const hostIpv4 = (params.get("ip") ?? "").trim();
   const hostPort = clampPort(params.get("port"), DEFAULT_HOST_PORT);
@@ -983,14 +1072,16 @@ export function parseShareCode(text: string): ShareInfo | null {
   const modeParam = (params.get("mode") ?? "").trim().toLowerCase();
   const p2p = modeParam === "p2p";
   const peerParam = (params.get("peer") ?? params.get("server") ?? "").trim();
-  const relayNodes = params
-    .getAll("r")
-    .map((node) => normalizeRelayNode(node))
-    .filter((node): node is string => Boolean(node));
+  // `r` 是房主声明的完整引导节点清单（可重复出现），`server` 是主节点。
+  // 两者合并去重后才能还原房主的真实网络位置，跨中继也不会漏掉交汇节点。
+  const declaredRelayNodes = uniqueRelayNodes(params.getAll("r"));
   const parsedPeer = peerParam ? parseServerUri(peerParam) : null;
   if (p2p && (!parsedPeer || !ipv6FromPeer(parsedPeer.full))) return null;
   const server = peerParam ? normalizeRelayNode(peerParam) : null;
-  const finalServer = p2p ? "" : (server || relayNodes[0] || DEFAULT_PUBLIC_SERVER);
+  const hostRelayNodes = p2p
+    ? []
+    : uniqueRelayNodes([server ?? "", ...declaredRelayNodes]);
+  const finalServer = p2p ? "" : (hostRelayNodes[0] || DEFAULT_PUBLIC_SERVER);
   const hostVersion = (params.get("v") ?? "").trim();
   const listenPort = p2p
     ? clampPort(params.get("lp") ?? parsedPeer?.port, parsedPeer?.port ?? DEFAULT_LISTEN_PORT)
@@ -1008,7 +1099,11 @@ export function parseShareCode(text: string): ShareInfo | null {
     p2pOnly: p2p,
     allowPublicStun: !p2p,
     listenPort,
-    relayNodes: p2p ? [] : [finalServer],
+    relayNodes: p2p
+      ? []
+      : hostRelayNodes.length > 0
+        ? hostRelayNodes
+        : [DEFAULT_PUBLIC_SERVER],
     resourcePort: clampResourcePort(params.get("res")),
     resourceToken: resourceToken(params.get("rt")),
   };
@@ -1037,7 +1132,7 @@ export function buildPeerReceipt(
   const peer = peerFromAddress(address.address, config.listenPort);
   if (!peer) return "";
   const params = new URLSearchParams();
-  params.set("name", config.networkName);
+  params.set("name", normalizeRoomName(config.networkName));
   params.set("peer", peer);
   return `cobble-mp://reply?${params.toString()}`;
 }
@@ -1053,7 +1148,7 @@ export function parsePeerReceipt(text: string): PeerReceipt | null {
     return null;
   }
   if (url.protocol !== "cobble-mp:") return null;
-  const networkName = (url.searchParams.get("name") ?? "").trim();
+  const networkName = normalizeRoomName(url.searchParams.get("name") ?? "");
   const peerParam = (url.searchParams.get("peer") ?? "").trim();
   if (!networkName || !peerParam) return null;
   const peer = parseServerUri(peerParam);

@@ -16,6 +16,7 @@ import {
   buildPeerReceipt,
   ipv6FromPeer,
   isPureP2p,
+  isSameRoom,
   parsePeerReceipt,
   peerFromAddress,
 } from "../lib/multiplayer";
@@ -118,7 +119,7 @@ function P2pPanelBody({
       setReceiptError("回执码无法识别，请让访客重新复制完整的 cobble-mp://reply 链接。");
       return;
     }
-    if (parsed.networkName !== config.networkName) {
+    if (!isSameRoom(parsed.networkName, config.networkName)) {
       setReceiptError("回执码属于另一个房间，请确认房主和访客的房间名称一致。");
       return;
     }

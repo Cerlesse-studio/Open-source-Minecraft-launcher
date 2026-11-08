@@ -3,6 +3,7 @@ pub mod bedrock;
 pub mod bedrock_store;
 pub mod bridge;
 pub mod content;
+pub mod download;
 pub mod extension;
 pub mod java;
 pub mod littleskin;
@@ -31,6 +32,67 @@ use std::time::Duration;
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 进程启动后，Java 可能还在加载资源，窗口尚未出现。这里按 PID 枚举
+/// Windows 顶层窗口，只有同时满足可见、有标题、无 owner 的窗口才算是
+/// 游戏窗口；这样启动页就能在窗口出现前显示“取消启动”，而不是“停止游戏”。
+#[cfg(windows)]
+mod game_window_probe {
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+    type Bool = i32;
+    type Dword = u32;
+
+    const GW_OWNER: u32 = 4;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumWindows(
+            callback: Option<unsafe extern "system" fn(Hwnd, isize) -> Bool>,
+            l_param: isize,
+        ) -> Bool;
+        fn GetWindowThreadProcessId(window: Hwnd, process_id: *mut Dword) -> Dword;
+        fn IsWindowVisible(window: Hwnd) -> Bool;
+        fn GetWindowTextLengthW(window: Hwnd) -> i32;
+        fn GetWindow(window: Hwnd, command: u32) -> Hwnd;
+    }
+
+    unsafe extern "system" fn find_game_window(window: Hwnd, l_param: isize) -> Bool {
+        let state = unsafe { &mut *(l_param as *mut (u32, bool)) };
+        let mut window_pid: Dword = 0;
+        unsafe {
+            GetWindowThreadProcessId(window, &mut window_pid);
+        }
+        if window_pid == state.0
+            && unsafe { IsWindowVisible(window) } != 0
+            && unsafe { GetWindow(window, GW_OWNER) }.is_null()
+            && unsafe { GetWindowTextLengthW(window) } > 0
+        {
+            state.1 = true;
+            return 0;
+        }
+        1
+    }
+
+    pub fn visible(pid: u32) -> bool {
+        let mut state = (pid, false);
+        unsafe {
+            EnumWindows(Some(find_game_window), &mut state as *mut _ as isize);
+        }
+        state.1
+    }
+}
+
+#[cfg(windows)]
+fn game_window_visible(pid: u32) -> bool {
+    game_window_probe::visible(pid)
+}
+
+#[cfg(not(windows))]
+fn game_window_visible(_pid: u32) -> bool {
+    false
+}
 
 #[derive(Default)]
 pub struct InstallState {
@@ -90,6 +152,8 @@ struct GameStatus {
     detail: Option<String>,
     pid: Option<u32>,
     version_id: Option<String>,
+    /// 游戏是否已经创建可见窗口。进程刚启动时为 false，窗口出现后变为 true。
+    window_visible: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -163,6 +227,30 @@ fn set_download_preference(source: String, custom_url: Option<String>, threads: 
         custom_url.as_deref().unwrap_or(""),
         threads.map(|value| value as usize),
     );
+}
+
+/// PCL2 `NetTaskSpeedLimitHigh`. `null` / `0` means unlimited.
+fn set_download_speed_limit(bytes_per_second: Option<u64>) {
+    net::set_download_speed_limit(bytes_per_second.unwrap_or(0));
+}
+
+/// PCL2 `NetManagerClass` state, exposed for the download progress view.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadStats {
+    pub speed_limit_bps: Option<u64>,
+    pub active_threads: u32,
+    pub thread_limit: u32,
+    pub speed_limit_low_bps: u64,
+}
+
+fn get_download_stats() -> DownloadStats {
+    DownloadStats {
+        speed_limit_bps: net::download_speed_limit(),
+        active_threads: net::download_active_threads(),
+        thread_limit: crate::download::thread_limit(),
+        speed_limit_low_bps: crate::download::NET_TASK_SPEED_LIMIT_LOW,
+    }
 }
 
 async fn probe_download_sources(custom_url: Option<String>) -> Vec<net::DownloadSourceProbe> {
@@ -671,6 +759,7 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     stream: &'static str,
     reader: R,
     log: Arc<LaunchLog>,
+    window_ready: Option<Arc<AtomicBool>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
@@ -705,6 +794,13 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                 Some(line)
             };
             if let Some(line) = formatted {
+                if let Some(window_ready) = window_ready.as_ref() {
+                    // 原生窗口检测在部分环境（无 Windows API、窗口标题为空）
+                    // 不可用；渲染线程启动日志是跨平台的补充信号。
+                    if line.contains("[Render thread/") || line.contains("LWJGL version") {
+                        window_ready.store(true, Ordering::Relaxed);
+                    }
+                }
                 let stream = if line.contains("/ERROR]") {
                     "stderr"
                 } else {
@@ -796,6 +892,7 @@ async fn launch_game(
             detail: Some("正在检查游戏文件与 Java".to_string()),
             pid: None,
             version_id: Some(request.version_id.clone()),
+            window_visible: false,
         },
     );
 
@@ -809,6 +906,7 @@ async fn launch_game(
                     detail: Some(error.clone()),
                     pid: None,
                     version_id: Some(request.version_id.clone()),
+                    window_visible: false,
                 },
             );
             error
@@ -909,6 +1007,7 @@ async fn launch_game(
     let pid = child.id();
     launch_log.write("cobble", &format!("已创建游戏进程，PID {pid}"));
     state.stopping.store(false, Ordering::Relaxed);
+    let window_ready = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     *state
@@ -923,6 +1022,7 @@ async fn launch_game(
             "stdout",
             stdout,
             launch_log.clone(),
+            Some(window_ready.clone()),
         ));
     }
     if let Some(stderr) = stderr {
@@ -931,6 +1031,7 @@ async fn launch_game(
             "stderr",
             stderr,
             launch_log.clone(),
+            Some(window_ready.clone()),
         ));
     }
 
@@ -938,9 +1039,10 @@ async fn launch_game(
         "game:status",
         GameStatus {
             state: "running".to_string(),
-            detail: Some(format!("游戏已启动，Java {}", spec.java_major)),
+            detail: Some("游戏进程已启动，正在等待游戏窗口…".to_string()),
             pid: Some(pid),
             version_id: Some(request.version_id.clone()),
+            window_visible: false,
         },
     );
     let _ = app.emit(
@@ -1035,6 +1137,7 @@ async fn launch_game(
                             detail: None,
                             pid: None,
                             version_id: Some(version_id.clone()),
+                            window_visible: false,
                         },
                     );
                     break;
@@ -1042,6 +1145,72 @@ async fn launch_game(
                 Ok(None) => {}
                 Err(_) => break,
             }
+        }
+    });
+
+    // 进程已启动但窗口可能还没出现。轮询窗口状态，出现后单独发一条
+    // running，前端据此把“取消启动”切换成“停止游戏”。
+    let window_app = app.clone();
+    let window_stopping = state.stopping.clone();
+    let window_child_slot = state.child.clone();
+    let window_flag = window_ready.clone();
+    let window_version = request.version_id.clone();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+            if window_stopping.load(Ordering::Relaxed) {
+                return;
+            }
+            let alive = window_child_slot
+                .lock()
+                .map(|child| child.is_some())
+                .unwrap_or(false);
+            if !alive {
+                return;
+            }
+            if window_flag.load(Ordering::Relaxed) || game_window_visible(pid) {
+                // stop_game 会先置 stopping 再发 idle；重新确认一次，避免窗口恰好
+                // 出现时把刚取消的启动又推回 running。
+                let still_alive = window_child_slot
+                    .lock()
+                    .map(|child| child.is_some())
+                    .unwrap_or(false);
+                if window_stopping.load(Ordering::Relaxed) || !still_alive {
+                    return;
+                }
+                let _ = window_app.emit(
+                    "game:status",
+                    GameStatus {
+                        state: "running".to_string(),
+                        detail: Some("游戏窗口已出现".to_string()),
+                        pid: Some(pid),
+                        version_id: Some(window_version.clone()),
+                        window_visible: true,
+                    },
+                );
+                return;
+            }
+            if started.elapsed() >= Duration::from_secs(60) {
+                let still_alive = window_child_slot
+                    .lock()
+                    .map(|child| child.is_some())
+                    .unwrap_or(false);
+                if window_stopping.load(Ordering::Relaxed) || !still_alive {
+                    return;
+                }
+                let _ = window_app.emit(
+                    "game:status",
+                    GameStatus {
+                        state: "running".to_string(),
+                        detail: Some("未能确认游戏窗口，但游戏进程仍在运行".to_string()),
+                        pid: Some(pid),
+                        version_id: Some(window_version.clone()),
+                        window_visible: true,
+                    },
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     });
 
@@ -1147,6 +1316,7 @@ fn stop_game(app: AppHandle, state: State<'_, GameState>) -> Result<(), String> 
             detail: None,
             pid: None,
             version_id: None,
+            window_visible: false,
         },
     );
     let _ = app.emit(
@@ -1370,6 +1540,7 @@ fn launch_bedrock(
             detail: Some("Minecraft 基岩版正在运行".to_string()),
             pid: None,
             version_id: Some(vid.clone()),
+            window_visible: true,
         },
     );
 
@@ -1414,6 +1585,7 @@ fn launch_bedrock(
                         detail: None,
                         pid: None,
                         version_id: Some(target_vid.clone()),
+                        window_visible: false,
                     },
                 );
                 break;

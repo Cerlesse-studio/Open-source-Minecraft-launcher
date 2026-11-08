@@ -192,6 +192,8 @@ const EN: Record<string, string> = {
   // Home: runtime labels
   // -------------------------------------------------------------------------
   游戏运行中: "Game running",
+  取消启动: "Cancel launch",
+  "正在等待游戏窗口…": "Waiting for the game window…",
   "正在检查运行环境…": "Checking the runtime…",
   "基岩版已就绪，随时出发": "Bedrock is ready",
   "尚未下载安装此基岩版本": "This Bedrock version is not installed",

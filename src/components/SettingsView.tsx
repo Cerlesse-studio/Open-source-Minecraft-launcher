@@ -1718,6 +1718,9 @@ export function SettingsView({
                       <span className="rounded bg-muted/50 px-1 py-0.5">东京</span>
                       <span className="rounded bg-muted/50 px-1 py-0.5">新加坡</span>
                     </div>
+                    <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground/80">
+                      Java 版游戏本体（client.jar / 版本 JSON）优先从 Mojang 官方 CDN 获取，失败后自动回退镜像源。
+                    </p>
                   </div>
                 </label>
 
@@ -1939,6 +1942,41 @@ export function SettingsView({
                       {threads} 线程
                     </Button>
                   ))}
+                </div>
+
+                <div className="space-y-2 border-t border-border/50 pt-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-[11px] font-normal text-muted-foreground">
+                      全局下载限速（PCL2 NetTaskSpeedLimitHigh）
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        className="h-7 w-20 font-mono text-[11px]"
+                        aria-label="全局下载限速 (MB/s)"
+                        value={
+                          settings.downloadSpeedLimit
+                            ? Number((settings.downloadSpeedLimit / (1024 * 1024)).toFixed(2))
+                            : 0
+                        }
+                        onChange={(e) => {
+                          const mb = Number(e.target.value);
+                          onChange({
+                            downloadSpeedLimit:
+                              Number.isFinite(mb) && mb > 0
+                                ? Math.round(mb * 1024 * 1024)
+                                : 0,
+                          });
+                        }}
+                      />
+                      <span className="text-[11px] text-muted-foreground">MB/s</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/80">
+                    0 表示不限速。限速对分片下载、单流下载与断点续传统一生效。
+                  </p>
                 </div>
               </div>
             </SettingsSection>
@@ -2378,7 +2416,9 @@ export function SettingsView({
 
         {/* 个性化设置 Tab */}
         <TabsContent value="personalization" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-2xl space-y-4">
+          {/* 自适应：窄窗口单列铺满，宽窗口按卡片高度瀑布流排成两列，
+              避免网格逐行对齐在短列下方留下大块空白。 */}
+          <div className="w-full max-w-[1500px] columns-1 gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid [&>*:last-child]:mb-0 xl:columns-2">
             {/* 语言与地区：放在个性化首项，切换后整个启动器立即跟随 */}
             <SettingsSection
               title={t("语言与地区")}
@@ -2890,7 +2930,9 @@ export function SettingsView({
 
         {/* 关于启动器 Tab */}
         <TabsContent value="about" className="mt-0 space-y-4 focus-visible:outline-none">
-          <div className="max-w-2xl space-y-4">
+          {/* 自适应：窄窗口单列铺满，宽窗口按卡片高度瀑布流排成两列，
+              避免网格逐行对齐在短列下方留下大块空白。 */}
+          <div className="w-full max-w-[1500px] columns-1 gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid [&>*:last-child]:mb-0 xl:columns-2">
             <SettingsSection
               title="软件更新"
               icon={<CloudDownload className="size-4" />}

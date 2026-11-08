@@ -17,6 +17,129 @@ const VERSION_LIST_TTL: Duration = Duration::from_secs(10 * 60);
 /// Upper bound on cached lists so a long session cannot grow without limit.
 const VERSION_CACHE_MAX_ENTRIES: usize = 64;
 
+/// PCL2 `ResourceTypes`: `Mod` / `ModPack` / `DataPack` / `Shader` /
+/// `ResourcePack` / `World` / `Any`. The wire value stays a plain string; this
+/// enum only replaces the scattered `project_type == "..."` string branches
+/// with PCL2's vocabulary. No serialized shape changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceType {
+    Mod,
+    ModPack,
+    DataPack,
+    Shader,
+    ResourcePack,
+    World,
+    Any,
+}
+
+impl ResourceType {
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "mod" => Self::Mod,
+            "modpack" => Self::ModPack,
+            "datapack" => Self::DataPack,
+            "shader" => Self::Shader,
+            "resourcepack" => Self::ResourcePack,
+            "world" => Self::World,
+            _ => Self::Any,
+        }
+    }
+
+    /// PCL2 `GetModrinthAddress`: `facets=[["project_type:{Type}"]]`.
+    pub fn as_modrinth_facet(self) -> &'static str {
+        match self {
+            Self::ModPack => "modpack",
+            Self::DataPack => "datapack",
+            Self::Shader => "shader",
+            Self::ResourcePack => "resourcepack",
+            Self::Mod | Self::World | Self::Any => "mod",
+        }
+    }
+
+    /// PCL2 `PageResource.TypeName` (English words are left untranslated).
+    pub fn as_type_name(self) -> &'static str {
+        match self {
+            Self::Mod | Self::Any => "Mod",
+            Self::ModPack => "整合包",
+            Self::DataPack => "数据包",
+            Self::Shader => "光影包",
+            Self::ResourcePack => "资源包",
+            Self::World => "地图",
+        }
+    }
+}
+
+/// PCL2 `ResourcePlatforms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourcePlatform {
+    CurseForge,
+    Modrinth,
+    #[allow(dead_code)]
+    Any,
+}
+
+/// PCL2 `ResourceSearcher.SearchRequest`. Rust uses snake_case field names,
+/// but the concepts (`search_text`, `target_result_count`, `loader_name`,
+/// `sources`) mirror PCL2 so both sides of the stdio bridge share one
+/// vocabulary. Metadata-only fields are intentionally kept for parity.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct SearchRequest {
+    pub search_text: String,
+    pub resource_type: ResourceType,
+    pub game_version: Option<String>,
+    pub mod_loaders: Option<String>,
+    pub tag: String,
+    pub sources: ResourcePlatform,
+    pub sort: Option<String>,
+    pub offset: u32,
+    pub limit: u32,
+    pub is_bedrock: bool,
+    /// PCL2 `(Page + 1) * PAGE_SIZE`, with `Page = offset / limit` (0-based).
+    pub target_result_count: u32,
+    /// PCL2 `Loader.Name = $"社区资源获取：{TypeName}"`.
+    pub loader_name: String,
+}
+
+impl SearchRequest {
+    pub fn new(
+        query: String,
+        project_type: &str,
+        game_version: Option<String>,
+        loader: Option<String>,
+        sort: Option<String>,
+        offset: u32,
+        limit: u32,
+    ) -> Self {
+        let resource_type = ResourceType::from_wire(project_type);
+        let is_bedrock = loader.as_deref() == Some("bedrock")
+            || game_version.as_deref() == Some("bedrock")
+            || game_version.as_deref() == Some("基岩版");
+        let sources = if is_bedrock || resource_type == ResourceType::World {
+            ResourcePlatform::CurseForge
+        } else {
+            ResourcePlatform::Modrinth
+        };
+        let page = offset / limit.max(1);
+        let target_result_count = (page + 1).saturating_mul(limit);
+        let loader_name = format!("社区资源获取：{}", resource_type.as_type_name());
+        Self {
+            search_text: query,
+            resource_type,
+            game_version,
+            mod_loaders: loader,
+            tag: String::new(),
+            sources,
+            sort,
+            offset,
+            limit,
+            is_bedrock,
+            target_result_count,
+            loader_name,
+        }
+    }
+}
+
 type VersionListCache = std::collections::HashMap<String, (Instant, Vec<ContentVersionItem>)>;
 
 fn version_list_cache() -> &'static std::sync::Mutex<VersionListCache> {
@@ -185,68 +308,60 @@ pub async fn search_content(
     limit: u32,
 ) -> Result<SearchContentResult, String> {
     let limit = limit.clamp(1, 50);
-
-    // If explicitly searching bedrock (by loader or version)
-    let is_bedrock = loader.as_deref() == Some("bedrock")
-        || game_version.as_deref() == Some("bedrock")
-        || game_version.as_deref() == Some("基岩版");
+    // PCL2 `ResourceSearcher.SearchRequest`, built the same way as
+    // `PageResource.LoaderInput` does from the current page/filters.
+    let request = SearchRequest::new(
+        query,
+        &project_type,
+        game_version,
+        loader,
+        sort,
+        offset,
+        limit,
+    );
+    let search_text = request.search_text.as_str();
+    let game_version = request.game_version.as_deref();
+    let loader = request.mod_loaders.as_deref();
+    let sort = request.sort.as_deref();
+    let offset = request.offset;
+    let limit = request.limit;
+    let is_bedrock = request.is_bedrock;
+    let resource_type = request.resource_type;
+    let facet = resource_type.as_modrinth_facet();
 
     // The catalogues index English metadata, so `钠` or `機械動力` found nothing.
     // Search the English keywords first; when even those return nothing the
     // raw query is retried, because a project can genuinely be titled in
     // Chinese and the glossary must not hide it.
-    let translated = crate::search_i18n::translate_query(&query);
-    let effective = translated.as_deref().unwrap_or(&query);
+    let translated = crate::search_i18n::translate_query(search_text);
+    let effective = translated.as_deref().unwrap_or(search_text);
 
-    if project_type == "world" {
+    if resource_type == ResourceType::World {
         // Maps live on CurseForge, never Modrinth: Java in gameId 432 and
         // Bedrock in gameId 78022. The UI sends `loader=bedrock` to request the
         // Bedrock catalogue. `game_version` only applies to Java builds.
         let world_version = game_version
-            .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty() && *value != "all");
         let mut result = if is_bedrock {
-            crate::bedrock_store::search_bedrock_worlds(
-                effective,
-                offset,
-                limit,
-                sort.as_deref(),
-            )
-            .await
-            .map_err(|e| format!("搜索基岩版地图失败: {e}"))?
+            crate::bedrock_store::search_bedrock_worlds(effective, offset, limit, sort)
+                .await
+                .map_err(|e| format!("搜索基岩版地图失败: {e}"))?
         } else {
-            crate::bedrock_store::search_worlds(
-                effective,
-                world_version,
-                offset,
-                limit,
-                sort.as_deref(),
-            )
-            .await
-            .map_err(|e| format!("搜索 Java 地图失败: {e}"))?
+            crate::bedrock_store::search_worlds(effective, world_version, offset, limit, sort)
+                .await
+                .map_err(|e| format!("搜索 Java 地图失败: {e}"))?
         };
 
         if result.total_hits == 0 && translated.is_some() {
-            if let Ok(fallback) = if is_bedrock {
-                crate::bedrock_store::search_bedrock_worlds(
-                    &query,
-                    offset,
-                    limit,
-                    sort.as_deref(),
-                )
-                .await
+            if let Ok(mut fallback) = if is_bedrock {
+                crate::bedrock_store::search_bedrock_worlds(search_text, offset, limit, sort).await
             } else {
-                crate::bedrock_store::search_worlds(
-                    &query,
-                    world_version,
-                    offset,
-                    limit,
-                    sort.as_deref(),
-                )
-                .await
+                crate::bedrock_store::search_worlds(search_text, world_version, offset, limit, sort)
+                    .await
             } {
                 if fallback.total_hits > 0 {
+                    fallback.translated_query = translated.clone();
                     return Ok(fallback);
                 }
             }
@@ -260,27 +375,23 @@ pub async fn search_content(
         // Bedrock content is browsed through CurseForge, the catalogue
         // BedrockBoot-DM uses: add-ons and texture packs with real download
         // counts, icons and per-file CDN links.
-        let mut result = crate::bedrock_store::search_bedrock(
-            effective,
-            &project_type,
-            offset,
-            limit,
-            sort.as_deref(),
-        )
-        .await
-        .map_err(|e| format!("搜索基岩版资源失败: {e}"))?;
+        let mut result =
+            crate::bedrock_store::search_bedrock(effective, &project_type, offset, limit, sort)
+                .await
+                .map_err(|e| format!("搜索基岩版资源失败: {e}"))?;
 
         if result.total_hits == 0 && translated.is_some() {
-            if let Ok(fallback) = crate::bedrock_store::search_bedrock(
-                &query,
+            if let Ok(mut fallback) = crate::bedrock_store::search_bedrock(
+                search_text,
                 &project_type,
                 offset,
                 limit,
-                sort.as_deref(),
+                sort,
             )
             .await
             {
                 if fallback.total_hits > 0 {
+                    fallback.translated_query = translated.clone();
                     return Ok(fallback);
                 }
             }
@@ -290,30 +401,23 @@ pub async fn search_content(
         return Ok(result);
     }
 
-    let mut result = search_modrinth(
-        effective,
-        &project_type,
-        game_version.as_deref(),
-        loader.as_deref(),
-        sort.as_deref(),
-        offset,
-        limit,
-    )
-    .await?;
+    let mut result =
+        search_modrinth(effective, facet, game_version, loader, sort, offset, limit).await?;
 
     if result.total_hits == 0 && translated.is_some() {
-        if let Ok(fallback) = search_modrinth(
-            &query,
-            &project_type,
-            game_version.as_deref(),
-            loader.as_deref(),
-            sort.as_deref(),
+        if let Ok(mut fallback) = search_modrinth(
+            search_text,
+            facet,
+            game_version,
+            loader,
+            sort,
             offset,
             limit,
         )
         .await
         {
             if fallback.total_hits > 0 {
+                fallback.translated_query = translated.clone();
                 return Ok(fallback);
             }
         }
@@ -1373,6 +1477,65 @@ pub async fn download_content_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_type_uses_pcl2_names_and_modrinth_facets() {
+        assert_eq!(ResourceType::from_wire("mod"), ResourceType::Mod);
+        assert_eq!(ResourceType::from_wire("modpack"), ResourceType::ModPack);
+        assert_eq!(ResourceType::from_wire("datapack"), ResourceType::DataPack);
+        assert_eq!(ResourceType::from_wire("shader"), ResourceType::Shader);
+        assert_eq!(
+            ResourceType::from_wire("resourcepack"),
+            ResourceType::ResourcePack
+        );
+        assert_eq!(ResourceType::from_wire("world"), ResourceType::World);
+        assert_eq!(ResourceType::from_wire("unknown"), ResourceType::Any);
+
+        assert_eq!(ResourceType::Mod.as_modrinth_facet(), "mod");
+        assert_eq!(ResourceType::ModPack.as_modrinth_facet(), "modpack");
+        assert_eq!(ResourceType::Shader.as_modrinth_facet(), "shader");
+        assert_eq!(ResourceType::Mod.as_type_name(), "Mod");
+        assert_eq!(ResourceType::ResourcePack.as_type_name(), "资源包");
+    }
+
+    #[test]
+    fn search_request_matches_pcl2_loader_input() {
+        let first = SearchRequest::new(
+            "钠".to_string(),
+            "mod",
+            None,
+            None,
+            Some("relevance".to_string()),
+            0,
+            20,
+        );
+        assert_eq!(first.offset, 0);
+        assert_eq!(first.limit, 20);
+        assert_eq!(first.target_result_count, 20);
+        assert_eq!(first.loader_name, "社区资源获取：Mod");
+        assert_eq!(first.sources, ResourcePlatform::Modrinth);
+        assert!(!first.is_bedrock);
+
+        // PCL2 `(Page + 1) * PAGE_SIZE`, Page = offset / limit (0-based).
+        let third = SearchRequest::new("".to_string(), "modpack", None, None, None, 40, 20);
+        assert_eq!(third.target_result_count, 60);
+        assert_eq!(third.offset, 40);
+
+        let bedrock = SearchRequest::new(
+            "".to_string(),
+            "shader",
+            Some("基岩版".to_string()),
+            Some("bedrock".to_string()),
+            None,
+            0,
+            20,
+        );
+        assert!(bedrock.is_bedrock);
+        assert_eq!(bedrock.sources, ResourcePlatform::CurseForge);
+
+        let worlds = SearchRequest::new("".to_string(), "world", None, None, None, 0, 20);
+        assert_eq!(worlds.sources, ResourcePlatform::CurseForge);
+    }
 
     fn instance(
         id: &str,

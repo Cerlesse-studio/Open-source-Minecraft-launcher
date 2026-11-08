@@ -78,14 +78,14 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <span class="eyebrow"><span class="eyebrow-dot"></span> OPEN SOURCE · v0.1.4</span>
+          <span class="eyebrow"><span class="eyebrow-dot"></span> OPEN SOURCE · v0.1.7</span>
           <h1 class="hero-title">
             轻量、现代、<span class="gradient-text">开源</span><br />
             <span class="gradient-text">Minecraft 启动器</span>
           </h1>
           <p class="hero-lede">
             把 <strong>Java 版与基岩版</strong> 的版本、模组、账户、下载与联机收进一个界面。
-            基于 Electron + Rust + React；0.1.4 带来扩展系统、中英双语、P2P / 公益节点联机与 OTA 更新。
+            基于 Electron + Rust + React；0.1.7 重做下载引擎，带来断点续传、全局限速与更稳的联机，0.1.6 补上了 LittleSkin 外置登录。
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary btn-lg" href="download.html">
@@ -110,7 +110,7 @@
             <div class="window-bar">
               <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
               <span class="window-title">Open-source-Minecraft-launcher · 主页</span>
-              <span>v0.1.4</span>
+              <span>v0.1.7</span>
             </div>
             <img src="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" data-local-src="images/home.png" onerror="if(this.src!==this.dataset.localSrc){this.src=this.dataset.localSrc;}" width="1440" height="900" alt="Open-source-Minecraft-launcher 主页界面：版本选择、账户状态与启动控制" fetchpriority="high" />
           </div>
@@ -168,46 +168,79 @@
       <div class="container">
         <div class="section-head" data-reveal>
           <div class="section-head-main">
-            <span class="eyebrow section-kicker">WHAT'S NEW · 0.1.4</span>
-            <h2 class="section-title">0.1.4，多了这些。</h2>
-            <p class="section-desc">这一版把启动器从「版本工具」推进到可扩展的桌面平台：扩展、双语、双模式联机、OTA 更新与跨平台基岩版路径都已就位。</p>
+            <span class="eyebrow section-kicker">WHAT'S NEW · 0.1.6 → 0.1.7</span>
+            <h2 class="section-title">0.1.6 → 0.1.7，更新总览。</h2>
+            <p class="section-desc">0.1.6 补上外置登录与账户体系，0.1.7 重做下载引擎并修掉一批影响观感与速度的缺陷。每一版做了什么、修了哪些 Bug，都写在下面两张清单里。</p>
           </div>
-          <a class="link-arrow section-link" href="docs.html#extensions">
-            查看 0.1.4 文档
+          <a class="link-arrow section-link" href="docs.html#downloads">
+            下载引擎文档
             <svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
           </a>
         </div>
 
-        <div class="feature-grid">
-          <article class="feature-card" data-reveal>
-            <h3>扩展系统</h3>
-            <p>原生扩展支持 JavaScript + Rust/WASM；同时兼容 Chrome Manifest V2 / V3，支持 ZIP / CRX / 已解压目录、启停、导出与卸载。</p>
-            <div class="feature-tags"><span class="feature-tag">Chrome MV2/MV3</span><span class="feature-tag">Rust/WASM</span><span class="feature-tag">NEW</span></div>
+        <div class="changelog-grid">
+          <article class="changelog-card" data-reveal>
+            <header class="changelog-head">
+              <div class="changelog-version">
+                <h3>0.1.7</h3>
+                <p>下载引擎重做 · 文字与排版修复</p>
+              </div>
+              <span class="changelog-badge">最新</span>
+            </header>
+
+            <section class="changelog-group">
+              <h4>更新内容</h4>
+              <ul class="changelog-list">
+                <li>下载引擎对齐 PCL2 语义：全局线程上限、令牌桶限速与分片看门狗；客户端、依赖库、资源、加载器与安装器共用同一套多线程策略。</li>
+                <li>断点续传：分片布局与已完成分片写入 <code>.part.meta</code>，重启启动器或切换镜像只补缺失分片。</li>
+                <li>设置新增全局下载限速（MB/s，0 为不限速），对分片下载、单流下载与断点续传统一生效。</li>
+                <li>下载源优先级整理：Java 版本清单与游戏本体优先官方 CDN，失败后按镜像链回退，并可在设置里查看每个源的说明。</li>
+                <li>内容市场统一检索：模组、整合包、数据包、光影、资源包与地图共用同一套类型、分页与筛选规则。</li>
+                <li>联机：P2P 连接健康检查与公共节点发现，切换中继后房间仍能互相发现。</li>
+              </ul>
+            </section>
+
+            <section class="changelog-group changelog-group-fix">
+              <h4>修复的 Bug</h4>
+              <ul class="changelog-list">
+                <li><strong>开启系统代理后下载速度掉到直连的五分之一</strong>：下载改走独立的直连客户端，只有连接层失败时才回退系统代理。</li>
+                <li><strong>部分文字不显示</strong>：<code>font-mono</code> 与 <code>font-pixel</code> 字体栈缺少中文字体回退，徽标、版本号与像素标题里的中文会整段空白。</li>
+                <li>侧栏底部的「空闲」被挤成一字一行的竖排，启动器版本号被折断成两行。</li>
+                <li>右栏底部统计（Java 版本 / 基岩版 / 附加包）在窄窗口被裁掉，现在会自动换行。</li>
+                <li>新闻卡版本号在连字符处折行（<code>26.4-snapsho</code> / <code>p-7</code>）。</li>
+                <li>旧渲染器（Chromium 108）把 <code>bg-gold/10</code> 降级成实心金色，金色徽标文字与底色重合而看不见；透明度改用显式 rgba 回退。</li>
+              </ul>
+            </section>
           </article>
-          <article class="feature-card" data-reveal>
-            <h3>中英双语</h3>
-            <p>界面语言可在简体中文与 English 之间即时切换，设置会持久保存，不需要重启启动器。</p>
-            <div class="feature-tags"><span class="feature-tag">zh-CN</span><span class="feature-tag">en-US</span><span class="feature-tag">NEW</span></div>
-          </article>
-          <article class="feature-card" data-reveal>
-            <h3>纯 P2P / 公益节点</h3>
-            <p>纯 IPv6 P2P 使用分享码 + 回执码交换入口；公益节点模式通过 EasyTier 协助节点打洞与中继，支持自动优选、手动指定、社区节点同步与自建节点。</p>
-            <div class="feature-tags"><span class="feature-tag">IPv6 P2P</span><span class="feature-tag">Relay</span><span class="feature-tag">NEW</span></div>
-          </article>
-          <article class="feature-card" data-reveal>
-            <h3>房间资源克隆</h3>
-            <p>访客可以按房主的版本与资源清单，一键克隆游戏版本、模组、光影与数据包，减少版本差异导致的世界进不去。</p>
-            <div class="feature-tags"><span class="feature-tag">Room</span><span class="feature-tag">Clone</span><span class="feature-tag">NEW</span></div>
-          </article>
-          <article class="feature-card" data-reveal>
-            <h3>OTA 自动更新</h3>
-            <p>在设置中检查 GitHub Releases、查看说明、下载并安装；Windows 单文件 / 安装包与 Linux AppImage 可自动替换，macOS 打开 DMG 安装。</p>
-            <div class="feature-tags"><span class="feature-tag">GitHub Releases</span><span class="feature-tag">OTA</span><span class="feature-tag">NEW</span></div>
-          </article>
-          <article class="feature-card" data-reveal>
-            <h3>跨平台基岩版</h3>
-            <p>Windows 支持 UWP / GDK / 商店与 BDS；Linux 支持官方 <code>bin-linux</code> BDS；macOS 可接管已安装的 MCPELauncher 客户端。</p>
-            <div class="feature-tags"><span class="feature-tag">Linux BDS</span><span class="feature-tag">macOS</span><span class="feature-tag">NEW</span></div>
+
+          <article class="changelog-card" data-reveal>
+            <header class="changelog-head">
+              <div class="changelog-version">
+                <h3>0.1.6</h3>
+                <p>外置登录 · 账户与安装流程</p>
+              </div>
+              <span class="changelog-badge changelog-badge-muted">稳定版</span>
+            </header>
+
+            <section class="changelog-group">
+              <h4>更新内容</h4>
+              <ul class="changelog-list">
+                <li>新增 LittleSkin 外置登录（Yggdrasil），与微软账户、离线账户并列，可切换档案与皮肤。</li>
+                <li>账户对话框重做：登录方式、账户档案与皮肤入口集中在同一处，不再分散在多个面板。</li>
+                <li>版本安装与启动编排整理：Java 版版本清单与本体优先走官方 CDN，失败后自动回退镜像源。</li>
+                <li>加载器流程统一：Forge / NeoForge / Fabric / Quilt 的依赖库与安装器共用同一套镜像链。</li>
+                <li>联机房间资源清单完善：访客按房主的版本与资源一键补齐模组、光影与数据包。</li>
+              </ul>
+            </section>
+
+            <section class="changelog-group changelog-group-fix">
+              <h4>修复的 Bug</h4>
+              <ul class="changelog-list">
+                <li>Quilt 加载器的库此前没有任何镜像回退，官方源一慢就只能干等，现在会回退到 BMCLAPI。</li>
+                <li>Java 版单连接下载没有停滞检测：一个卡住的小文件会占住 worker 直到 600 秒全局超时，现在 30 秒收不到字节就重试或换源。</li>
+                <li>下载速度显示在停顿帧会突然跳回全局平均值，造成数字忽高忽低，改为指数移动平均平滑。</li>
+              </ul>
+            </section>
           </article>
         </div>
       </div>
@@ -256,7 +289,7 @@
               <div class="window-bar">
                 <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
                 <span class="window-title">Open-source-Minecraft-launcher · 界面预览</span>
-                <span>v0.1.4</span>
+                <span>v0.1.7</span>
               </div>
               <img src="https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/home.png" width="1440" height="900" alt="主页界面：版本选择、账户面板与启动控制" data-gallery-image data-local-src="images/home.png" onerror="if(this.src!==this.dataset.localSrc){this.src=this.dataset.localSrc;}" loading="lazy" />
               <figcaption class="gallery-caption">
@@ -328,7 +361,7 @@
           <aside class="about-aside" data-reveal aria-label="项目摘要">
             <h3>项目摘要</h3>
             <div class="fact-list">
-              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.1.4</span></div>
+              <div class="fact"><span class="fact-label">当前版本</span><span class="fact-value">v0.1.7</span></div>
               <div class="fact"><span class="fact-label">开源协议</span><span class="fact-value">MIT</span></div>
               <div class="fact"><span class="fact-label">主要平台</span><span class="fact-value">Windows / macOS / Linux</span></div>
               <div class="fact"><span class="fact-label">桌面框架</span><span class="fact-value">Electron</span></div>
@@ -383,7 +416,7 @@
         <div class="footer-col">
           <h3>产品</h3>
           <div class="footer-links">
-            <a href="index.html#whats-new">0.1.4 新功能</a>
+            <a href="index.html#whats-new">更新总览</a>
             <a href="index.html#capabilities">功能</a>
             <a href="index.html#preview">界面预览</a>
             <a href="download.html">下载</a>

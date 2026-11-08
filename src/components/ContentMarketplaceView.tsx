@@ -44,6 +44,25 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ContentIcon } from "@/components/ui";
+import {
+  getLoadingText,
+  getSearchPlaceholder,
+  getSearchTitle,
+  getTargetDir,
+} from "../lib/resource-catalog";
+import {
+  getControlTitle,
+  subTitleText,
+  toDisplayTags,
+  toResourceProject,
+} from "../lib/resource-project";
+import {
+  applySearchResponse,
+  createSearchRequest,
+  createSearchResult,
+  toSearchContentOptions,
+  type SearchResult,
+} from "../lib/resource-search";
 
 export interface ContentMarketplaceViewProps {
   projectType: ContentProjectType;
@@ -98,23 +117,7 @@ function typeDestinationLabel(type: ContentProjectType, bedrock: boolean): strin
       ? "com.mojang/resource_packs"
       : "com.mojang/behavior_packs";
   }
-  switch (type) {
-    case "mod":
-      // Mods live with their instance; there is no shared `mods/` folder.
-      return "versions/<对应版本>/mods";
-    case "shader":
-      return "shaderpacks/";
-    case "datapack":
-      return "datapacks/";
-    case "resourcepack":
-      return "resourcepacks/";
-    case "modpack":
-      return "modpacks/";
-    case "world":
-      return "saves/<地图名>";
-    default:
-      return "downloads/";
-  }
+  return getTargetDir(type) ?? "downloads/";
 }
 
 function getPaginationRange(current: number, total: number, maxVisible = 7): Array<number | "..."> {
@@ -344,28 +347,42 @@ export function ContentMarketplaceView({
     }
   };
 
-  // Load content whenever query, filters, or page change
+  // PCL2 `PageResource.Storage` — the last SearchResult survives across
+  // requests, and a monotonically increasing sequence implements
+  // `Loader.ShouldStart`'s "only the current request may publish" rule.
+  const storageRef = useRef<SearchResult>(createSearchResult());
+  const requestSeqRef = useRef(0);
+
+  // Load content whenever query, filters, or page change.
   const doSearch = async (targetPage = page, targetPageSize = pageSize) => {
+    const request = createSearchRequest({
+      projectType,
+      wireProjectType: projectType,
+      query: debouncedQuery,
+      gameVersion:
+        !isBedrockSource && gameVersion !== "all" ? gameVersion : undefined,
+      loader: isBedrockSource ? "bedrock" : loader !== "all" ? loader : undefined,
+      sort,
+      page: targetPage,
+      pageSize: targetPageSize,
+      storage: storageRef.current,
+    });
+    const sequence = ++requestSeqRef.current;
     setLoading(true);
     setError(null);
     try {
-      const offset = (targetPage - 1) * targetPageSize;
-      const res = await searchContent({
-        query: debouncedQuery,
-        projectType,
-        gameVersion: !isBedrockSource && gameVersion !== "all" ? gameVersion : undefined,
-        loader: isBedrockSource ? "bedrock" : loader !== "all" ? loader : undefined,
-        sort,
-        offset,
-        limit: targetPageSize,
-      });
-      setHits(res.hits);
-      setTotalHits(res.totalHits);
-      setTranslatedQuery(res.translatedQuery ?? null);
+      const response = await searchContent(toSearchContentOptions(request));
+      if (sequence !== requestSeqRef.current) return;
+      const storage = applySearchResponse(request, response);
+      storageRef.current = storage;
+      setHits(storage.Results);
+      setTotalHits(response.totalHits);
+      setTranslatedQuery(storage.TranslatedQuery);
     } catch (err) {
+      if (sequence !== requestSeqRef.current) return;
       setError(String(err));
     } finally {
-      setLoading(false);
+      if (sequence === requestSeqRef.current) setLoading(false);
     }
   };
 
@@ -476,25 +493,11 @@ export function ContentMarketplaceView({
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={
-                isWorldSource
-                  ? isBedrockWorld
-                    ? "在 CurseForge 搜索基岩版地图 (支持中文，如 空岛/跑酷/生存)…"
-                    : "在 CurseForge 搜索 Java 地图 (支持中文，如 空岛/跑酷/生存)…"
-                  : isBedrockSource
-                    ? "在 CurseForge 搜索基岩版附加包 (支持中文，如 家具/枪械/空岛)…"
-                    : `在 Modrinth 搜索${
-                        projectType === "mod"
-                          ? "模组 (JEI、Sodium，支持中文，如 钠/机械动力)…"
-                          : projectType === "shader"
-                            ? "光影包 (Complementary、BSL，支持中文，如 光影)…"
-                            : projectType === "datapack"
-                              ? "数据包 (Terralith、Incendium，支持中文)…"
-                              : projectType === "modpack"
-                                ? "整合包 (支持中文，如 空岛/科技)…"
-                                : "资源包 (支持中文，如 材质/卡通)…"
-                      }`
-              }
+              placeholder={getSearchPlaceholder(projectType, {
+                isWorldSource,
+                isBedrockWorld,
+                isBedrockSource,
+              })}
               className="h-10 rounded-xl border-border/70 bg-background/60 pl-9 pr-9 text-xs shadow-xs focus-visible:ring-1"
             />
             {query ? (
@@ -758,7 +761,10 @@ export function ContentMarketplaceView({
           ) : null}
         </span>
         {loading ? (
-          <span className="flex items-center gap-1.5 text-primary">
+          <span
+            className="flex items-center gap-1.5 text-primary"
+            title={getLoadingText(projectType)}
+          >
             <LoaderCircle className="size-3 animate-spin" />
             正在检索…
           </span>
@@ -772,12 +778,20 @@ export function ContentMarketplaceView({
       ) : null}
 
       {/* List of Content Items */}
-      <div className="space-y-2">
+      <div
+        className="space-y-2"
+        role="list"
+        aria-label={getSearchTitle(projectType)}
+      >
         {hits.map((hit) => {
           const isBedrock =
             hit.categories.includes("bedrock") ||
             hit.categories.includes("基岩版") ||
             hit.versions.includes("基岩版");
+          // PCL2 `ResourceProject.ToResourceItem` -> `GetControlTitle`.
+          const controlTitle = getControlTitle(toResourceProject(hit));
+          const subTitle = subTitleText(controlTitle.SubTitle);
+          const tags = toDisplayTags(hit, projectType);
           return (
             <Card
               key={hit.projectId}
@@ -805,8 +819,13 @@ export function ContentMarketplaceView({
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-[13.5px] font-semibold text-foreground transition-colors group-hover:text-primary">
-                      {hit.title}
+                      {controlTitle.Title}
                     </h3>
+                    {subTitle ? (
+                      <span className="text-[10.5px] text-muted-foreground">
+                        {subTitle}
+                      </span>
+                    ) : null}
                     {isBedrock ? (
                       <Badge className="h-4 border-0 bg-primary/15 px-1.5 text-[9px] font-medium text-primary">
                         基岩版
@@ -816,26 +835,15 @@ export function ContentMarketplaceView({
                       <UserRound className="size-3" />
                       {hit.author}
                     </span>
-                    {hit.categories
-                      .filter(
-                        (c) =>
-                          c !== "bedrock" &&
-                          c !== "基岩版" &&
-                          !(
-                            projectType === "world" &&
-                            (c === "world" || c === "地图")
-                          ),
-                      )
-                      .slice(0, 3)
-                      .map((c) => (
-                        <Badge
-                          key={c}
-                          variant="outline"
-                          className="h-4 border-border/60 bg-muted/20 px-1.5 text-[9px] font-normal text-muted-foreground/80"
-                        >
-                          {c}
-                        </Badge>
-                      ))}
+                    {tags.map((tag) => (
+                      <Badge
+                        key={tag}
+                        variant="outline"
+                        className="h-4 border-border/60 bg-muted/20 px-1.5 text-[9px] font-normal text-muted-foreground/80"
+                      >
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
 
                   <p className="line-clamp-1 text-[11.5px] leading-5 text-muted-foreground">

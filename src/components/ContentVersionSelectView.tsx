@@ -27,6 +27,12 @@ import {
   resolveMcmodEntry,
 } from "../lib/backend";
 import { formatBytes, formatRelativeDate, pathUnderRoot } from "../lib/format";
+import { getCategoryLabel, getTargetDir } from "../lib/resource-catalog";
+import {
+  getControlTitle,
+  subTitleText,
+  toResourceProject,
+} from "../lib/resource-project";
 import type {
   ContentHit,
   ContentProjectType,
@@ -69,43 +75,34 @@ export interface ContentVersionSelectViewProps {
 
 const LOADERS = ["all", "fabric", "forge", "neoforge", "quilt", "bedrock"];
 
+/** PCL2 `PageResource.TypeName`-style label, from the shared catalog. */
 function projectTypeLabel(type: ContentProjectType): string {
-  switch (type) {
-    case "mod":
-      return "模组";
-    case "shader":
-      return "光影包";
-    case "datapack":
-      return "数据包";
-    case "resourcepack":
-      return "资源包";
-    case "modpack":
-      return "整合包";
-    case "world":
-      return "地图";
-    default:
-      return "资源";
-  }
+  return getCategoryLabel(type);
 }
 
 function typeDestinationPath(type: ContentProjectType): string {
-  switch (type) {
-    case "mod":
-      // Mods live with their instance; there is no shared `mods/` folder.
-      return "versions/<对应版本>/mods";
-    case "shader":
-      return "shaderpacks/";
-    case "datapack":
-      return "datapacks/";
-    case "resourcepack":
-      return "resourcepacks/";
-    case "modpack":
-      return "modpacks/";
-    case "world":
-      return "saves/<地图名>";
-    default:
-      return "downloads/";
-  }
+  return getTargetDir(type) ?? "downloads/";
+}
+
+/**
+ * PCL2 `MyResourceItem.SubTitle` (`LabTitleRaw`): the original English name
+ * or edition marker, collapsed when PCL2 `GetControlTitle` produces none.
+ * The main heading stays `project.title` so the page title is unchanged.
+ */
+function DetailSubTitle({
+  project,
+  translatedName,
+}: {
+  project: ContentHit;
+  translatedName?: string;
+}) {
+  const subTitle = subTitleText(
+    getControlTitle(toResourceProject(project, translatedName)).SubTitle,
+  );
+  if (!subTitle) return null;
+  return (
+    <span className="w-full text-[11px] text-muted-foreground">{subTitle}</span>
+  );
 }
 
 /** Modrinth path segment for each project type. */
@@ -794,6 +791,10 @@ export function ContentVersionSelectView({
                 <h1 className="text-[17px] font-bold text-foreground">
                   {project.title}
                 </h1>
+                <DetailSubTitle
+                  project={project}
+                  translatedName={wikiEntry?.title}
+                />
                 <Badge
                   variant="outline"
                   className="h-4 border-primary/30 bg-primary/10 px-1.5 text-[9.5px] font-medium text-primary"

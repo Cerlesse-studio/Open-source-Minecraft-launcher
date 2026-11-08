@@ -178,6 +178,36 @@ export async function setDownloadPreference(
   });
 }
 
+/** PCL2 `NetTaskSpeedLimitHigh`. `null` / `0` restores unlimited downloads. */
+export async function setDownloadSpeedLimit(
+  bytesPerSecond: number | null,
+): Promise<void> {
+  if (!isDesktop) return;
+  await invoke("set_download_speed_limit", {
+    bytesPerSecond: bytesPerSecond && bytesPerSecond > 0 ? bytesPerSecond : null,
+  });
+}
+
+/** PCL2 `NetManagerClass` state. */
+export interface DownloadStats {
+  speedLimitBps: number | null;
+  activeThreads: number;
+  threadLimit: number;
+  speedLimitLowBps: number;
+}
+
+export async function getDownloadStats(): Promise<DownloadStats> {
+  if (!isDesktop) {
+    return {
+      speedLimitBps: null,
+      activeThreads: 0,
+      threadLimit: 0,
+      speedLimitLowBps: 256 * 1024,
+    };
+  }
+  return invoke<DownloadStats>("get_download_stats");
+}
+
 /** Time each source's version-manifest request. Demo mode returns plausible
  * numbers so the settings page can be exercised in a browser. */
 export async function probeDownloadSources(

@@ -88,6 +88,7 @@ interface RuntimeView {
   detail?: string | null;
   pid?: number | null;
   versionId?: string | null;
+  windowVisible?: boolean | null;
 }
 
 interface HomeViewProps {
@@ -847,10 +848,13 @@ export function HomeView({
 
   const installedVersion = installed.find((entry) => entry.id === selectedVersion);
   const isInstalled = Boolean(installedVersion);
-  const isLaunching = runtime.status === "preparing";
-  const isRunning = runtime.status === "running";
+  const isPreparing = runtime.status === "preparing";
+  const isWindowPending =
+    runtime.status === "running" && runtime.windowVisible === false;
+  const isRunning = runtime.status === "running" && !isWindowPending;
+  const isLaunching = isPreparing || isWindowPending;
   const nameInvalid = !/^[A-Za-z0-9_]{1,16}$/.test(playerName.trim());
-  const activeProgress = isLaunching ? launchProgress : null;
+  const activeProgress = isPreparing ? launchProgress : null;
   const percent = activeProgress
     ? progressPercent(activeProgress.done, activeProgress.total)
     : null;
@@ -866,9 +870,11 @@ export function HomeView({
         : "warn";
   const statusLabel = isRunning
     ? t("游戏运行中")
-    : isLaunching || bedrockLaunching
-      ? activeProgress?.detail || runtime.detail || t("正在检查运行环境…")
-      : isBedrock
+    : isWindowPending
+      ? runtime.detail || t("正在等待游戏窗口…")
+      : isPreparing || bedrockLaunching
+        ? activeProgress?.detail || runtime.detail || t("正在检查运行环境…")
+        : isBedrock
         ? isBedrockInstalled
           ? settings?.statusText?.trim() || t("基岩版已就绪，随时出发")
           : t("尚未下载安装此基岩版本")
@@ -881,8 +887,10 @@ export function HomeView({
     ? isBedrock
       ? t("终止基岩版")
       : t("结束游戏")
-    : isLaunching || bedrockLaunching
-      ? t("正在启动…")
+    : isWindowPending
+      ? t("取消启动")
+      : isPreparing || bedrockLaunching
+        ? t("正在启动…")
       : isBedrock
         ? isBedrockInstalled
           ? settings?.launchButtonText?.trim() || t("启动基岩版")
@@ -896,8 +904,10 @@ export function HomeView({
     ? isBedrock
       ? t("终止基岩版")
       : t("停止运行")
-    : isLaunching || bedrockLaunching
-      ? t("正在启动…")
+    : isWindowPending
+      ? t("取消启动")
+      : isPreparing || bedrockLaunching
+        ? t("正在启动…")
       : isBedrock
         ? isBedrockInstalled
           ? settings?.launchButtonText?.trim() || t("启动基岩版")
@@ -906,7 +916,7 @@ export function HomeView({
 
   /** The big button and the launch menu run the same action. */
   const handlePrimaryAction = () => {
-    if (isRunning) {
+    if (isRunning || isWindowPending) {
       onStop();
     } else if (isBedrock) {
       if (isBedrockInstalled) {
@@ -920,13 +930,13 @@ export function HomeView({
   };
 
   return (
-    <div className="relative z-10 h-full overflow-y-auto p-4 min-[900px]:overflow-hidden">
-      <div className="grid min-h-full gap-4 min-[900px]:h-full min-[900px]:min-h-0 min-[900px]:grid-cols-[minmax(0,1fr)_338px]">
+    <div className="relative z-10 h-full overflow-y-auto p-4 min-[1080px]:overflow-hidden">
+      <div className="grid min-h-full gap-4 min-[1080px]:h-full min-[1080px]:min-h-0 min-[1080px]:grid-cols-[minmax(0,1fr)_minmax(300px,338px)]">
         {/* 自定义主页：空白 / 本地 HTML / 联网 HTML，占据新闻面板的位置 */}
         {homeMode !== "preset" ? (
           <section
             aria-label={t("自定义主页")}
-            className="flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[900px]:min-h-0"
+            className="flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[1080px]:min-h-0"
             onContextMenu={(event) => {
               event.preventDefault();
               openMenuAt(menuAnchorHomeRef.current, event.clientX, event.clientY);
@@ -1113,7 +1123,7 @@ export function HomeView({
         <section
           aria-label={t("我的世界更新新闻")}
           className={cn(
-            "flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[900px]:min-h-0",
+            "flex min-h-[560px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card/45 min-[1080px]:min-h-0",
             homeMode !== "preset" && "hidden",
           )}
           onContextMenu={(event) => {
@@ -1193,27 +1203,31 @@ export function HomeView({
                   <div className="relative h-[260px] w-full overflow-hidden bg-muted">
                     <NewsCover note={activeNews} eager />
                     <div className="media-surface-fade pointer-events-none absolute inset-0" />
-                    <div className="absolute inset-x-0 bottom-0 p-5">
+                    {/* Explicit dark backing for the caption block: the fade is
+                        a sibling overlay, so white text needs its own surface
+                        to stay legible on bright custom wallpapers. */}
+                    <div className="media-caption-surface absolute inset-x-0 bottom-0 p-5">
                       <div className="flex flex-wrap items-center gap-2">
                         <TypeBadge
                           type={activeNews.type}
                           tone={isRelease(activeNews) ? "grass" : "gold"}
                           label={t(channelLabel(activeNews))}
                         />
-                        <span className="font-mono text-[10px] text-white/70">
+                        {/* 版本号是一个整体，不能被 flex 换行从连字符处折断。 */}
+                        <span className="whitespace-nowrap font-mono text-[10px] text-white/90">
                           {activeNews.version}
                         </span>
                         <span className="h-3 w-px bg-white/20" />
                         <time
                           dateTime={activeNews.date || undefined}
-                          className="text-[10.5px] text-white/60"
+                          className="whitespace-nowrap text-[10.5px] text-white/90"
                         >
                           {formatDate(
                             activeNews.date,
                             language === "en-US" ? "en-US" : "zh-CN",
                           )}
                         </time>
-                        <span className="ml-auto hidden text-[10px] text-white/45 sm:inline">
+                        <span className="ml-auto hidden text-[10px] text-white/85 sm:inline">
                           Java Edition
                         </span>
                       </div>
@@ -1318,7 +1332,7 @@ export function HomeView({
         </section>
 
         <aside
-          className="flex min-h-[560px] flex-col overflow-y-auto rounded-xl border border-border/70 bg-card/45 p-5 min-[900px]:min-h-0"
+          className="flex min-h-[560px] flex-col overflow-y-auto rounded-xl border border-border/70 bg-card/45 p-5 min-[1080px]:min-h-0"
           onContextMenu={(event) => {
             event.preventDefault();
             openMenuAt(menuAnchorLaunchRef.current, event.clientX, event.clientY);
@@ -1381,7 +1395,7 @@ export function HomeView({
                 }
                 skinUrl={msActive?.skinUrl}
               />
-              <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
+              <span className="pointer-events-none absolute bottom-2 left-2 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white/95 backdrop-blur-sm">
                 {isOffline ? t("离线档案") : t("在线档案")}
               </span>
 
@@ -1393,7 +1407,7 @@ export function HomeView({
                   <span className="text-[12px] font-medium text-white shadow-sm">
                     {t("点击上传皮肤")}
                   </span>
-                  <span className="text-[9.5px] text-white/70">
+                  <span className="text-[9.5px] text-white/90">
                     {t("支持 64×64 PNG")}
                   </span>
                 </div>
@@ -1612,23 +1626,26 @@ export function HomeView({
               <Button
                 type="button"
                 size="lg"
-                variant={isRunning ? "outline" : "default"}
+                variant={isRunning || isWindowPending ? "outline" : "default"}
                 onClick={handlePrimaryAction}
                 disabled={
-                  (isLaunching ||
+                  (isPreparing ||
                     bedrockLaunching ||
                     (!isBedrock && !account?.signedIn && nameInvalid)) &&
-                  !isRunning
+                  !isRunning &&
+                  !isWindowPending
                 }
                 className={cn(
                   "h-16 w-full rounded-xl text-[16px] font-semibold tracking-[-0.01em]",
-                  isRunning
+                  isRunning || isWindowPending
                     ? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
                     : "shadow-[0_18px_44px_-24px_var(--primary)]",
-                  (isLaunching || bedrockLaunching) && "disabled:opacity-100",
+                  (isPreparing || bedrockLaunching) && "disabled:opacity-100",
                 )}
               >
-                {isLaunching || bedrockLaunching ? (
+                {isWindowPending ? (
+                  <Square className="size-4 fill-current" />
+                ) : isPreparing || bedrockLaunching ? (
                   <LoaderCircle className="size-5 animate-spin" />
                 ) : isRunning ? (
                   <Square className="size-4 fill-current" />
@@ -1642,7 +1659,7 @@ export function HomeView({
                   value={percent ?? 30}
                   aria-label="启动进度"
                   className={cn(
-                    "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 bg-primary-foreground/20",
+                    "pointer-events-none absolute inset-x-4 bottom-2 h-0.5 w-auto bg-primary-foreground/20",
                     "[&_[data-slot=progress-indicator]]:bg-primary-foreground",
                     percent === null && "animate-pulse",
                   )}
@@ -1683,10 +1700,11 @@ export function HomeView({
             </div>
 
             {/* Unified Stats Footer */}
-            <div className="mt-2 rounded-lg border border-border/60 bg-background/30 p-2.5 text-[11px] text-muted-foreground flex items-center justify-between">
-              <span>{t("Java 版本:")} <strong className="text-foreground">{installed.length}</strong></span>
-              <span>{t("基岩版:")} <strong className="text-foreground">{bedrockStatus?.uwpInstalled ? t("UWP 已就绪") : t("{count} 个核心", { count: bedrockStatus?.installedVersions.length ?? 0 })}</strong></span>
-              <span>{t("附加包:")} <strong className="text-foreground">{(bedrockStatus?.resourcePacksCount ?? 0) + (bedrockStatus?.behaviorPacksCount ?? 0)}</strong></span>
+            {/* 三项统计横向排不下时要换行，而不是让最后一项被侧栏宽度裁掉。 */}
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-border/60 bg-background/30 p-2.5 text-[11px] text-muted-foreground">
+              <span className="whitespace-nowrap">{t("Java 版本:")} <strong className="text-foreground">{installed.length}</strong></span>
+              <span className="whitespace-nowrap">{t("基岩版:")} <strong className="text-foreground">{bedrockStatus?.uwpInstalled ? t("UWP 已就绪") : t("{count} 个核心", { count: bedrockStatus?.installedVersions.length ?? 0 })}</strong></span>
+              <span className="whitespace-nowrap">{t("附加包:")} <strong className="text-foreground">{(bedrockStatus?.resourcePacksCount ?? 0) + (bedrockStatus?.behaviorPacksCount ?? 0)}</strong></span>
             </div>
           </div>
         </aside>
@@ -1726,8 +1744,8 @@ export function HomeView({
         </ContextMenuTrigger>
         <LaunchContextMenu
           primaryLabel={primaryLabel}
-          running={isRunning}
-          busy={isLaunching || bedrockLaunching}
+          running={isRunning || isWindowPending}
+          busy={isPreparing || bedrockLaunching}
           installed={effectiveInstalled}
           isOffline={isOffline}
           signedIn={Boolean(account?.signedIn)}

@@ -1,6 +1,8 @@
 use crate::java::{self, JavaProgressFn};
 use crate::net;
+use futures_util::StreamExt;
 use futures_util::future::try_join_all;
+use futures_util::stream::FuturesUnordered;
 use md5::{Digest as Md5Digest, Md5};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -498,6 +500,46 @@ fn safe_version_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The official manifest is ~280 KB. On slow links a full download regularly
+/// takes 10 s+, and BMCLAPI answers with a 302 to a storage node that can be
+/// slower still. reqwest's per-request timeout covers the whole exchange
+/// (headers *and* body), so the old 4 s deadline cancelled every candidate
+/// before `response.text()` could finish — reported as "无法刷新版本清单".
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn fetch_manifest_from(url: String) -> (String, Result<(VersionManifest, String), String>) {
+    let result = async {
+        let response = net::client()
+            .get(&url)
+            .timeout(MANIFEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {e}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("HTTP {status}"));
+        }
+        let text = response
+            .text()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        let manifest = serde_json::from_str::<VersionManifest>(&text)
+            .map_err(|e| format!("内容解析失败: {e}"))?;
+        Ok::<_, String>((manifest, text))
+    }
+    .await;
+    (url, result)
+}
+
+/// Keep the aggregated failure readable in the UI by showing hosts, not full
+/// URLs with BMCLAPI's long-lived signed redirect query strings.
+fn manifest_source_label(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| url.to_string())
+}
+
 pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest, String> {
     let root = net::absolute_path(root);
     let root = root.as_path();
@@ -513,53 +555,40 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
         }
     }
 
-    let fetched = async {
-        // Respect the selected mirror and keep the automatic fallback chain.
-        let manifest_urls = net::preferred_urls(VERSION_MANIFEST_URL);
-        let mut last_err = String::new();
-        for u in manifest_urls {
-            match net::client()
-                .get(&u)
-                .timeout(Duration::from_secs(4))
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    if let Ok(text) = response.text().await {
-                        if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
-                            return Ok::<_, String>((manifest, text));
-                        }
-                    }
-                }
-                Ok(response) => {
-                    last_err = format!("HTTP {}", response.status());
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                }
-            }
-        }
-        Err(format!("版本清单请求失败: {last_err}"))
+    // Race every mirror at once: a slow or unreachable mirror must not delay
+    // the others. The first one returning a complete, parsable manifest wins.
+    let mut pending = FuturesUnordered::new();
+    for url in net::preferred_urls(VERSION_MANIFEST_URL) {
+        pending.push(fetch_manifest_from(url));
     }
-    .await;
 
-    match fetched {
-        Ok((manifest, text)) => {
-            if let Some(parent) = cache.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            let _ = tokio::fs::write(&cache, text).await;
-            Ok(manifest)
-        }
-        Err(error) => {
-            if let Ok(text) = tokio::fs::read_to_string(&cache).await {
-                if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
-                    return Ok(manifest);
+    let mut failures = Vec::new();
+    while let Some((url, result)) = pending.next().await {
+        match result {
+            Ok((manifest, text)) => {
+                if let Some(parent) = cache.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
                 }
+                let _ = tokio::fs::write(&cache, text).await;
+                return Ok(manifest);
             }
-            Err(error)
+            Err(error) => failures.push(format!("{}: {}", manifest_source_label(&url), error)),
         }
     }
+
+    // A stale cached manifest is still more useful than an empty version list,
+    // even when the user explicitly asked for a refresh.
+    if let Ok(text) = tokio::fs::read_to_string(&cache).await {
+        if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+            return Ok(manifest);
+        }
+    }
+
+    Err(format!(
+        "版本清单请求失败（{} 个源均不可用）：{}。请检查网络或代理，或在「设置 → 下载源」切换镜像。",
+        failures.len(),
+        failures.join("；")
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2062,13 +2091,18 @@ async fn download_client_with_tracker(
     let client = match version.downloads.as_ref().and_then(|d| d.client.as_ref()) {
         Some(c) => c.clone(),
         None => {
-            // Fallback for imported or custom loader profiles that omit downloads.client:
-            // Download vanilla client directly from BMCLAPI
-            let url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client");
+            // Imported / custom loader profiles omit `downloads.client`.
+            // Resolve Mojang's official client.jar from the official version
+            // manifest; `download_file_with_mirrors` then appends the other
+            // official hosts and the BMCLAPI mirror as fallbacks.
+            let official = net::official_vanilla_artifacts(&clean_mc).await;
+            let url = official.client_url.unwrap_or_else(|| {
+                format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client")
+            });
             Artifact {
                 path: None,
-                sha1: None,
-                size: None,
+                sha1: official.client_sha1,
+                size: official.client_size,
                 url: Some(url),
             }
         }

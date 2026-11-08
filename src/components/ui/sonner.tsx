@@ -8,10 +8,18 @@ import {
 } from "lucide-react";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
-const Toaster = ({ ...props }: ToasterProps) => {
+const Toaster = ({ theme, ...props }: ToasterProps) => {
+  // Toast surfaces use `--popover` / `--popover-foreground`; a hardcoded dark
+  // theme made sonner paint light-colored ink on the light theme's white card.
+  const resolvedTheme =
+    theme ??
+    (typeof document !== "undefined" &&
+    document.documentElement.classList.contains("light")
+      ? "light"
+      : "dark");
   return (
     <Sonner
-      theme="dark"
+      theme={resolvedTheme}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

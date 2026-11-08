@@ -1064,13 +1064,17 @@ pub async fn ensure_forge_or_neoforge_client_jar(
         if let Some(src) = found_jar {
             let _ = tokio::fs::copy(&src, &vanilla_jar).await;
         } else {
-            let vanilla_client_url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client");
-            // 走镜像回退链：BMCLAPI 不可用时自动换到官方 CDN，而不是直接失败。
+            // Mojang's official client.jar first; the mirror chain adds the
+            // other official hosts and BMCLAPI automatically.
+            let official = net::official_vanilla_artifacts(clean_mc).await;
+            let vanilla_client_url = official.client_url.unwrap_or_else(|| {
+                format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client")
+            });
             let _ = net::download_file_with_mirrors(
                 &vanilla_client_url,
                 &vanilla_jar,
-                None,
-                None,
+                official.client_sha1.as_deref(),
+                official.client_size,
                 net::download_threads(),
                 None,
                 None,
@@ -1094,7 +1098,12 @@ pub async fn ensure_forge_or_neoforge_client_jar(
         } else if nested_meta_json.is_file() {
             let _ = tokio::fs::copy(&nested_meta_json, &vanilla_json).await;
         } else {
-            let vanilla_json_url = format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/json");
+            // Official version JSON from Mojang's manifest, with the other
+            // official hosts and BMCLAPI as fallbacks.
+            let official = net::official_vanilla_artifacts(clean_mc).await;
+            let vanilla_json_url = official.json_urls.first().cloned().unwrap_or_else(|| {
+                format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/json")
+            });
             let _ = net::download_file_with_mirrors(
                 &vanilla_json_url,
                 &vanilla_json,

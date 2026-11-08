@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use futures_util::future::try_join_all;
+use futures_util::stream::FuturesUnordered;
 use reqwest::header::RANGE;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.1.6";
+pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CobbleLauncher/0.1.7";
 
 /// Files at or above 1 MB are eligible for multi-segment HTTP Range downloading.
 const MIN_MULTITHREAD_SIZE: u64 = 1_048_576;
@@ -29,6 +30,8 @@ const SEGMENT_WATCHDOG_INTERVAL: Duration = Duration::from_secs(3);
 const SEGMENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+/// 下载专用：强制直连，忽略系统代理（见 `direct_client`）。
+static DIRECT_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Chosen mirror family, optional custom base URL and the thread count used by
 /// downloads that do not carry their own (mods, resource packs, pack archives).
@@ -52,17 +55,34 @@ fn preference_lock() -> &'static std::sync::RwLock<DownloadPreference> {
     })
 }
 
+/// 通用客户端：接口请求、登录、版本清单都走它，系统代理对它生效。
 pub fn client() -> &'static reqwest::Client {
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .pool_max_idle_per_host(64)
-            .tcp_nodelay(true)
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(600))
-            .build()
-            .expect("failed to build http client")
-    })
+    CLIENT.get_or_init(|| build_client(false))
+}
+
+/// 下载专用客户端：刻意绕开系统代理。
+///
+/// 系统代理（Clash / Surge 等写入的 `HTTP_PROXY`、`HTTPS_PROXY`）会把每一条
+/// 分片连接都绕到远端节点再回来，而 Minecraft 的下载源——官方 CDN、BMCLAPI、
+/// 各类 maven 镜像——本身直连就很快；开着代理时整体吞吐往往只剩直连的五分之一。
+/// 下载是大流量长连接，绕一圈没有任何好处，所以这里用 `.no_proxy()` 强制直连。
+/// 直连确实不通时，下载入口会用带系统代理的 `client()` 再跑一遍
+/// （见 `proxy_retry_worthwhile`）。
+pub fn direct_client() -> &'static reqwest::Client {
+    DIRECT_CLIENT.get_or_init(|| build_client(true))
+}
+
+fn build_client(direct: bool) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .pool_max_idle_per_host(64)
+        .tcp_nodelay(true)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600));
+    if direct {
+        builder = builder.no_proxy();
+    }
+    builder.build().expect("failed to build http client")
 }
 
 /// `source` is one of `official_ap` / `bmclapi` / `custom`; `custom_url` is the
@@ -76,6 +96,24 @@ pub fn set_download_preference(source: &str, custom_url: &str, threads: Option<u
     if let Some(threads) = threads {
         guard.threads = threads.clamp(1, 64);
     }
+    let configured = guard.threads;
+    drop(guard);
+    // PCL2 `NetTaskThreadLimit = ToolDownloadThread + 1`.
+    crate::download::set_thread_limit(configured + 1);
+}
+
+/// PCL2 `NetTaskSpeedLimitHigh`: `0` removes the cap (the default).
+pub fn set_download_speed_limit(bytes_per_sec: u64) {
+    crate::download::set_speed_limit(bytes_per_sec);
+}
+
+pub fn download_speed_limit() -> Option<u64> {
+    crate::download::speed_limit()
+}
+
+/// PCL2 `NetTaskThreadCount`, for the download progress view.
+pub fn download_active_threads() -> u32 {
+    crate::download::active_threads()
 }
 
 fn download_preference() -> DownloadPreference {
@@ -265,6 +303,47 @@ fn describe_error(err: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
+/// 直连失败后，换成系统代理还有没有可能把文件拿回来。
+///
+/// 只有连接层的问题（连不上、超时、连接被重置、久不出数据）值得再走一次代理：
+/// 404 / 403、校验不符、磁盘写满之类的错误，换代理也救不了。
+fn proxy_retry_worthwhile(error: &str) -> bool {
+    if error.contains("HTTP 404")
+        || error.contains("HTTP 403")
+        || error.contains("HTTP 416")
+        || error.contains("空间不足")
+        || error.contains("SHA1")
+    {
+        return false;
+    }
+    const CONNECT_HINTS: [&str; 10] = [
+        "下载请求失败",
+        "分片请求失败",
+        "分片重定向请求失败",
+        "分片探测失败",
+        "分片重定向探测失败",
+        "下载中断",
+        "分片下载中断",
+        "下载停滞",
+        "没有收到数据",
+        "下载未完成",
+    ];
+    if CONNECT_HINTS.iter().any(|hint| error.contains(hint)) {
+        return true;
+    }
+    let lower = error.to_ascii_lowercase();
+    [
+        "error sending request",
+        "timed out",
+        "connect",
+        "dns",
+        "reset by peer",
+        "unexpected eof",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
 /// Trim a response body to a short, char-boundary-safe snippet for messages.
 fn body_snippet(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
@@ -416,12 +495,29 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
         mirrors.push(format!("https://resources.betacraft.uk/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/assets/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://piston-meta.mojang.com/") {
+        // `launchermeta` is Mojang's older hostname on the same CDN and is
+        // often noticeably faster than `piston-meta`. Keeping both hostnames
+        // in the chain makes the version list reachable when one is throttled
+        // or blocked, without relying on the much slower BMCLAPI 302 target.
+        mirrors.push(format!("https://launchermeta.mojang.com/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://piston-data.mojang.com/") {
+        // `/v1/objects/...` (client.jar) exists only on piston-data; the other
+        // Mojang hosts answer 404. Version-JSON `/v1/packages/...` does have
+        // official host fallbacks.
+        if path.starts_with("v1/packages/") {
+            mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
+            mirrors.push(format!("https://launchermeta.mojang.com/{path}"));
+        }
+        // `bmclapi.bangbang93.com` mirrors the official `/v1/objects` layout
+        // directly (verified 200); bmclapi2 redirects it to a slow storage node.
+        mirrors.push(format!("https://bmclapi.bangbang93.com/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://launcher.mojang.com/") {
+        mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://launchermeta.mojang.com/") {
+        mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
         mirrors.push(format!("https://bmclapi2.bangbang93.com/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://maven.fabricmc.net/") {
         mirrors.push(format!("https://bmclapi2.bangbang93.com/maven/{path}"));
@@ -452,8 +548,13 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
     } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/assets/") {
         mirrors.push(format!("https://resources.download.minecraft.net/{path}"));
     } else if let Some(path) = trimmed.strip_prefix("https://bmclapi2.bangbang93.com/") {
-        mirrors.push(format!("https://piston-data.mojang.com/{path}"));
-        mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
+        // `/version/{id}/client|json` are BMCLAPI-only endpoints; Mojang has
+        // no such path, so rewriting them would only produce 404s. The
+        // official objects URL is resolved by `official_vanilla_artifacts`.
+        if !path.starts_with("version/") {
+            mirrors.push(format!("https://piston-data.mojang.com/{path}"));
+            mirrors.push(format!("https://piston-meta.mojang.com/{path}"));
+        }
     } else if let Some(path) = trimmed.strip_prefix("https://authlib-injector.yushi.moe/") {
         // authlib-injector（外置登录必需）的官方 artifact 服务在国内很慢，
         // BMCLAPI 镜像了同样的路径；校验和仍以官方 JSON 为准。
@@ -497,6 +598,185 @@ pub fn get_mirror_urls(url: &str) -> Vec<String> {
     mirrors
 }
 
+// ---------------------------------------------------------------------------
+// Official Mojang sources for the Java Edition game body
+// ---------------------------------------------------------------------------
+
+/// Both hosts serve the same `version_manifest_v2.json`; `launchermeta` is
+/// often faster on congested links, so they are raced.
+pub const OFFICIAL_MANIFEST_HOSTS: [&str; 2] =
+    ["piston-meta.mojang.com", "launchermeta.mojang.com"];
+pub const OFFICIAL_MANIFEST_PATH: &str = "/mc/game/version_manifest_v2.json";
+/// Mojang's CDN hosts are NOT interchangeable. Live probes for 1.20.1:
+/// - `/v1/objects/<sha1>/client.jar` -> only `piston-data` (others 404)
+/// - `/v1/packages/<hash>/<id>.json` -> `piston-meta` + `launchermeta`
+pub const OFFICIAL_OBJECT_HOSTS: [&str; 1] = ["piston-data.mojang.com"];
+pub const OFFICIAL_PACKAGE_HOSTS: [&str; 2] = ["piston-meta.mojang.com", "launchermeta.mojang.com"];
+
+#[derive(Deserialize)]
+struct OfficialManifest {
+    versions: Vec<OfficialManifestVersion>,
+}
+
+#[derive(Deserialize)]
+struct OfficialManifestVersion {
+    id: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct OfficialVersionJson {
+    #[serde(default)]
+    downloads: Option<OfficialDownloads>,
+}
+
+#[derive(Deserialize)]
+struct OfficialDownloads {
+    #[serde(default)]
+    client: Option<OfficialArtifact>,
+}
+
+#[derive(Deserialize)]
+struct OfficialArtifact {
+    url: String,
+    #[serde(default)]
+    sha1: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// Official URLs and checksums for one vanilla Java version.
+#[derive(Debug, Clone, Default)]
+pub struct OfficialVanillaArtifacts {
+    /// Official version JSON URLs, preferred host first.
+    pub json_urls: Vec<String>,
+    /// Official `client.jar` URL.
+    pub client_url: Option<String>,
+    pub client_sha1: Option<String>,
+    pub client_size: Option<u64>,
+}
+
+/// Map an official artifact URL onto the CDN hostnames that actually serve
+/// that path (`/v1/objects` vs `/v1/packages`).
+pub fn official_object_url_variants(url: &str) -> Vec<String> {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return Vec::new();
+    };
+    let Some(host) = parsed.host_str() else {
+        return Vec::new();
+    };
+    let hosts: &[&str] = if parsed.path().starts_with("/v1/packages/") {
+        &OFFICIAL_PACKAGE_HOSTS
+    } else {
+        &OFFICIAL_OBJECT_HOSTS
+    };
+    if !hosts.contains(&host) {
+        return Vec::new();
+    }
+    let mut variants = Vec::new();
+    for candidate in hosts {
+        let mut rewritten = parsed.clone();
+        if rewritten.set_host(Some(candidate)).is_err() {
+            continue;
+        }
+        let value = rewritten.to_string();
+        if !variants.contains(&value) {
+            variants.push(value);
+        }
+    }
+    variants
+}
+
+fn official_artifacts_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, OfficialVanillaArtifacts>> {
+    static CACHE: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, OfficialVanillaArtifacts>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+async fn fetch_official_manifest() -> Option<OfficialManifest> {
+    let mut pending = FuturesUnordered::new();
+    for host in OFFICIAL_MANIFEST_HOSTS {
+        let url = format!("https://{host}{OFFICIAL_MANIFEST_PATH}");
+        pending.push(async move {
+            fetch_json::<OfficialManifest>(&url, Duration::from_secs(20), 1).await
+        });
+    }
+    while let Some(result) = pending.next().await {
+        if let Ok(manifest) = result {
+            return Some(manifest);
+        }
+    }
+    None
+}
+
+/// Resolve Mojang's official `client.jar` / version JSON for a vanilla
+/// version. Returns an empty struct when the official catalogue is
+/// unreachable, so callers can still fall back to BMCLAPI. Results are cached
+/// per version id for the lifetime of the core process.
+pub async fn official_vanilla_artifacts(version_id: &str) -> OfficialVanillaArtifacts {
+    let version_id = version_id.trim();
+    if version_id.is_empty() {
+        return OfficialVanillaArtifacts::default();
+    }
+    if let Ok(cache) = official_artifacts_cache().lock() {
+        if let Some(cached) = cache.get(version_id) {
+            return cached.clone();
+        }
+    }
+
+    let resolved = resolve_official_vanilla_artifacts(version_id).await;
+    if let Ok(mut cache) = official_artifacts_cache().lock() {
+        cache.insert(version_id.to_string(), resolved.clone());
+    }
+    resolved
+}
+
+async fn resolve_official_vanilla_artifacts(version_id: &str) -> OfficialVanillaArtifacts {
+    let Some(manifest) = fetch_official_manifest().await else {
+        return OfficialVanillaArtifacts::default();
+    };
+    let Some(entry) = manifest
+        .versions
+        .iter()
+        .find(|version| version.id == version_id)
+    else {
+        return OfficialVanillaArtifacts::default();
+    };
+
+    let variants = official_object_url_variants(&entry.url);
+    let json_urls = if variants.is_empty() {
+        vec![entry.url.clone()]
+    } else {
+        variants
+    };
+
+    let mut result = OfficialVanillaArtifacts {
+        json_urls: json_urls.clone(),
+        ..Default::default()
+    };
+    for url in &json_urls {
+        let Ok(version) = fetch_json::<OfficialVersionJson>(url, Duration::from_secs(20), 1).await
+        else {
+            continue;
+        };
+        if let Some(client) = version.downloads.and_then(|downloads| downloads.client) {
+            let client_variants = official_object_url_variants(&client.url);
+            result.client_url = Some(
+                client_variants
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| client.url.clone()),
+            );
+            result.client_sha1 = client.sha1;
+            result.client_size = client.size;
+        }
+        break;
+    }
+    result
+}
+
 /// Download a file to `dest`, with automatic mirror fallback if the primary URL fails or returns 404.
 pub async fn download_file_with_mirrors<'a>(
     url: &str,
@@ -505,30 +785,107 @@ pub async fn download_file_with_mirrors<'a>(
     expected_size: Option<u64>,
     threads: usize,
     retry_counter: Option<&AtomicU64>,
-    mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+    on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let candidate_urls = preferred_urls(url);
+    let mut progress = on_progress;
+
+    // 第一轮直接连：系统代理只会把下载流量绕远路。
+    let direct = download_through_sources(
+        direct_client(),
+        crate::download::sources_for(preferred_urls(url)),
+        dest,
+        expected_sha1,
+        expected_size,
+        threads,
+        retry_counter,
+        &mut progress,
+    )
+    .await;
+
+    let direct_error = match direct {
+        Ok(bytes) => return Ok(bytes),
+        Err(err) => err,
+    };
+
+    // 直连被挡（只能走代理的网络、代理软件把直连流量丢进黑洞）时，用系统代理
+    // 把整条镜像链再跑一遍；404、校验不符这类错误换代理也没用，直接返回。
+    if !proxy_retry_worthwhile(&direct_error) {
+        return Err(direct_error);
+    }
+    download_through_sources(
+        client(),
+        crate::download::sources_for(preferred_urls(url)),
+        dest,
+        expected_sha1,
+        expected_size,
+        threads,
+        retry_counter,
+        &mut progress,
+    )
+    .await
+}
+
+/// 按 `NetSource` 顺序逐个尝试一条线上的镜像。
+async fn download_through_sources<'a>(
+    client: &'static reqwest::Client,
+    mut sources: Vec<crate::download::NetSource>,
+    dest: &Path,
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+    threads: usize,
+    retry_counter: Option<&AtomicU64>,
+    on_progress: &mut Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+) -> Result<u64, String> {
+    // PCL2 `NetFile.Sources`: each mirror keeps its own FailCount / IsFailed /
+    // Error, so the failure classification below mirrors `SourceFail` instead
+    // of discarding every error but the last one.
+    let thread_limit = crate::download::thread_limit();
 
     let mut last_error = String::new();
-    for candidate in &candidate_urls {
-        match download_file_multithreaded(
-            candidate,
+    let mut fail_count = 0u32;
+    for index in 0..sources.len() {
+        if sources[index].is_failed {
+            continue;
+        }
+        let candidate = sources[index].url.clone();
+        match download_multithreaded_via(
+            client,
+            &candidate,
             dest,
             expected_sha1,
             expected_size,
             threads,
             retry_counter,
-            on_progress.as_mut().map(|cb| &mut **cb),
+            on_progress,
         )
         .await
         {
             Ok(bytes) => return Ok(bytes),
             Err(err) => {
-                last_error = err;
+                last_error = err.clone();
+                fail_count += 1;
+                let failure = crate::download::classify_source_failure(&err);
+                let disable = crate::download::should_disable_source(
+                    failure,
+                    fail_count,
+                    0,
+                    thread_limit,
+                    crate::download::is_bmclapi(&candidate),
+                    false,
+                );
+                if disable {
+                    sources[index].mark_failed(err);
+                } else {
+                    sources[index].fail_count += 1;
+                    sources[index].error = Some(err);
+                }
             }
         }
     }
 
+    // The error contract is unchanged: callers still receive the last error
+    // string (and `err.contains("HTTP 404")` keeps working). The PCL2-style
+    // per-source report is available via `download::format_download_failure`.
     Err(last_error)
 }
 
@@ -541,6 +898,8 @@ pub async fn download_file_with_mirrors<'a>(
 ///   byte ranges.
 /// - Retries transient network failures with exponential backoff.
 /// - Calls `on_progress(done_bytes, total_bytes, delta_bytes)` as chunks arrive.
+/// - Downloads run on `direct_client()`, i.e. outside the system proxy; only a
+///   connect-level failure escalates to the proxy-equipped `client()`.
 pub async fn download_file_multithreaded<'a>(
     url: &str,
     dest: &Path,
@@ -548,7 +907,47 @@ pub async fn download_file_multithreaded<'a>(
     expected_size: Option<u64>,
     threads: usize,
     retry_counter: Option<&AtomicU64>,
-    mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+    on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+) -> Result<u64, String> {
+    let mut progress = on_progress;
+    match download_multithreaded_via(
+        direct_client(),
+        url,
+        dest,
+        expected_sha1,
+        expected_size,
+        threads,
+        retry_counter,
+        &mut progress,
+    )
+    .await
+    {
+        Err(direct_error) if proxy_retry_worthwhile(&direct_error) => {
+            download_multithreaded_via(
+                client(),
+                url,
+                dest,
+                expected_sha1,
+                expected_size,
+                threads,
+                retry_counter,
+                &mut progress,
+            )
+            .await
+        }
+        result => result,
+    }
+}
+
+async fn download_multithreaded_via<'a>(
+    client: &'static reqwest::Client,
+    url: &str,
+    dest: &Path,
+    expected_sha1: Option<&str>,
+    expected_size: Option<u64>,
+    threads: usize,
+    retry_counter: Option<&AtomicU64>,
+    on_progress: &mut Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -579,6 +978,7 @@ pub async fn download_file_multithreaded<'a>(
             };
 
             let fut = try_segmented_download(
+                client,
                 url,
                 &part,
                 expected_size,
@@ -654,6 +1054,7 @@ pub async fn download_file_multithreaded<'a>(
         }
 
         match download_single_stream(
+            client,
             url,
             &part,
             expected_size,
@@ -699,10 +1100,11 @@ pub struct RangeProbe {
 /// Probes whether the server supports HTTP Range requests and resolves the final URL
 /// (following redirects while preserving byte-range capabilities).
 pub async fn probe_range_support(
+    client: &'static reqwest::Client,
     url: &str,
     expected_size: Option<u64>,
 ) -> Result<Option<RangeProbe>, String> {
-    let probe = client()
+    let probe = client
         .get(url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header(RANGE, "bytes=0-0")
@@ -742,7 +1144,7 @@ pub async fn probe_range_support(
         drop(probe);
 
         if final_url != url {
-            let direct = client()
+            let direct = client
                 .get(&final_url)
                 .header(reqwest::header::ACCEPT_ENCODING, "identity")
                 .header(RANGE, "bytes=0-0")
@@ -780,7 +1182,47 @@ pub async fn download_file_resumable<'a>(
     expected_sha1: Option<&str>,
     threads: usize,
     retry_counter: Option<&AtomicU64>,
-    mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+    on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
+) -> Result<u64, String> {
+    let mut progress = on_progress;
+    match download_resumable_via(
+        direct_client(),
+        url,
+        dest,
+        expected_size,
+        expected_sha1,
+        threads,
+        retry_counter,
+        &mut progress,
+    )
+    .await
+    {
+        Err(direct_error) if proxy_retry_worthwhile(&direct_error) => {
+            download_resumable_via(
+                client(),
+                url,
+                dest,
+                expected_size,
+                expected_sha1,
+                threads,
+                retry_counter,
+                &mut progress,
+            )
+            .await
+        }
+        result => result,
+    }
+}
+
+async fn download_resumable_via<'a>(
+    client: &'static reqwest::Client,
+    url: &str,
+    dest: &Path,
+    expected_size: Option<u64>,
+    expected_sha1: Option<&str>,
+    threads: usize,
+    retry_counter: Option<&AtomicU64>,
+    on_progress: &mut Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -792,7 +1234,7 @@ pub async fn download_file_resumable<'a>(
     let threads = threads.clamp(1, 64);
 
     // 先确认这条线路支不支持 Range，顺便拿到总长度与最终重定向目标
-    let probe_opt = probe_range_support(url, expected_size).await?;
+    let probe_opt = probe_range_support(client, url, expected_size).await?;
     let (total, target_url) = match probe_opt {
         Some(probe) => (probe.total, probe.final_url),
         None => (0, url.to_string()),
@@ -806,7 +1248,8 @@ pub async fn download_file_resumable<'a>(
 
     if segments.len() <= 1 {
         discard_partial(&part).await;
-        return download_file_multithreaded(
+        return download_multithreaded_via(
+            client,
             url,
             dest,
             expected_sha1,
@@ -881,7 +1324,7 @@ pub async fn download_file_resumable<'a>(
             let done_tx = done_tx.clone();
             let (index, start, end) = (*index, *start, *end);
             tasks.spawn(async move {
-                fetch_range_into(&worker_url, &part, start, end, &downloaded, &tx)
+                fetch_range_into(client, &worker_url, &part, start, end, &downloaded, &tx)
                     .await
                     .map(|attempts| {
                         let _ = done_tx.send((index, end - start + 1));
@@ -973,7 +1416,8 @@ pub async fn download_file_resumable<'a>(
                 // 一边补这一片，一边把分片里的进度报出去：慢线路上单连接可能
                 // 要拉几分钟，不能等到整片结束才有动静。
                 let attempts = {
-                    let fetch = fetch_range_into(&target_url, &part, start, end, &downloaded, &tx);
+                    let fetch =
+                        fetch_range_into(client, &target_url, &part, start, end, &downloaded, &tx);
                     tokio::pin!(fetch);
                     loop {
                         tokio::select! {
@@ -1015,12 +1459,16 @@ pub async fn download_file_resumable<'a>(
 }
 
 async fn download_single_stream<'a>(
+    client: &'static reqwest::Client,
     url: &str,
     part: &Path,
     expected_size: Option<u64>,
     mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let response = client()
+    // PCL2 `NetTaskThreadCount` + `ConnectAverage` bookkeeping.
+    let _thread = crate::download::try_acquire_thread();
+    let started = Instant::now();
+    let response = client
         .get(url)
         // Binary payloads must stay byte-exact for checksum verification, so
         // never let transparent decompression touch them.
@@ -1053,10 +1501,13 @@ async fn download_single_stream<'a>(
         })?
     {
         let chunk = chunk.map_err(|e| format!("下载中断 ({url}): {e}"))?;
+        let delta = chunk.len() as u64;
+        // PCL2 `NetTaskSpeedLimitHigh` token bucket: wait for these bytes
+        // before accepting them, so all streams share one global cap.
+        crate::download::consume(delta).await;
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
-        let delta = chunk.len() as u64;
         downloaded += delta;
         if let Some(cb) = on_progress.as_mut() {
             cb(downloaded, total, delta);
@@ -1067,6 +1518,7 @@ async fn download_single_stream<'a>(
         .await
         .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
     drop(file);
+    crate::download::record_connect(started.elapsed().as_millis() as u64);
     Ok(downloaded)
 }
 
@@ -1145,6 +1597,7 @@ async fn discard_partial(part: &Path) {
 /// 下载一个字节区间并写进 `.part` 的对应偏移，失败时按 `MAX_RETRIES`
 /// 重试；重试前把自己这次写入的字节从总进度里扣回去。
 async fn fetch_range_into(
+    client: &'static reqwest::Client,
     url: &str,
     part: &Path,
     start: u64,
@@ -1152,6 +1605,8 @@ async fn fetch_range_into(
     downloaded: &AtomicU64,
     tx: &tokio::sync::mpsc::UnboundedSender<(u64, u64)>,
 ) -> Result<u32, String> {
+    // PCL2 `NetTaskThreadCount`: every Range worker counts towards the global cap.
+    let _thread = crate::download::try_acquire_thread();
     let expected_len = end - start + 1;
     let mut last_err = String::new();
     for attempt in 0..MAX_RETRIES {
@@ -1160,7 +1615,7 @@ async fn fetch_range_into(
         }
         let mut written_this_attempt: u64 = 0;
         let res: Result<(), String> = async {
-            let response = client()
+            let response = client
                 .get(url)
                 .header(reqwest::header::ACCEPT_ENCODING, "identity")
                 .header(RANGE, format!("bytes={start}-{end}"))
@@ -1174,7 +1629,7 @@ async fn fetch_range_into(
             let response = if response.status() == reqwest::StatusCode::OK && redirected_url != url
             {
                 drop(response);
-                client()
+                client
                     .get(&redirected_url)
                     .header(reqwest::header::ACCEPT_ENCODING, "identity")
                     .header(RANGE, format!("bytes={start}-{end}"))
@@ -1219,6 +1674,9 @@ async fn fetch_range_into(
                 if written_this_attempt + len > expected_len {
                     return Err("分片返回字节超出范围".to_string());
                 }
+                // PCL2 global token bucket: segmented and single-stream
+                // transfers share the same `NetTaskSpeedLimitLeft` budget.
+                crate::download::consume(len).await;
                 file.write_all(&chunk)
                     .await
                     .map_err(|e| format!("分片写入失败 {}: {e}", part.display()))?;
@@ -1260,6 +1718,7 @@ async fn fetch_range_into(
 /// Probes whether the server supports HTTP Range requests and, if so, downloads the file
 /// in parallel byte segments. Returns `Ok(None)` if Range is not supported.
 async fn try_segmented_download<'a>(
+    client: &'static reqwest::Client,
     url: &str,
     part: &Path,
     expected_size: Option<u64>,
@@ -1267,7 +1726,7 @@ async fn try_segmented_download<'a>(
     retry_counter: Option<&AtomicU64>,
     mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<Option<u64>, String> {
-    let Some(probe) = probe_range_support(url, expected_size).await? else {
+    let Some(probe) = probe_range_support(client, url, expected_size).await? else {
         return Ok(None);
     };
 
@@ -1303,7 +1762,9 @@ async fn try_segmented_download<'a>(
             let part = part.to_path_buf();
             let downloaded = downloaded.clone();
             let tx = tx.clone();
-            async move { fetch_range_into(&worker_url, &part, start, end, &downloaded, &tx).await }
+            async move {
+                fetch_range_into(client, &worker_url, &part, start, end, &downloaded, &tx).await
+            }
         })
         .collect();
 
@@ -1360,22 +1821,13 @@ async fn verify_and_commit(
     expected_size: Option<u64>,
     expected_sha1: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(expected) = expected_size {
-        if expected > 0 && downloaded != expected {
-            return Err(format!(
-                "文件大小不符 {}: 期望 {expected} 字节，实际 {downloaded} 字节",
-                dest.display()
-            ));
-        }
-    }
-
-    if let Some(expected) = expected_sha1 {
-        if !expected.is_empty() {
-            let actual = sha1_file(part).await?;
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err(format!("文件校验失败 {}: SHA-1 不匹配", dest.display()));
-            }
-        }
+    // PCL2 `FileChecker{MinSize, ActualSize, Hash, IsJson}`. `check_size` and
+    // `check_hash` emit byte-identical error strings to the original verifier.
+    let checker = crate::download::FileChecker::from_download(expected_size, expected_sha1);
+    checker.check_size(downloaded, dest)?;
+    if checker.sha1.is_some() {
+        let actual = sha1_file(part).await?;
+        checker.check_hash(dest, &actual)?;
     }
 
     if fs::try_exists(dest).await.unwrap_or(false) {
@@ -1604,6 +2056,102 @@ mod tests {
 
         set_download_preference("official_ap", "", None);
         assert_eq!(preferred_urls(url).first().map(String::as_str), Some(url));
+    }
+
+    #[test]
+    fn official_game_body_has_working_mirror_fallbacks() {
+        let url = "https://piston-data.mojang.com/v1/objects/abc123/client.jar";
+        let mirrors = get_mirror_urls(url);
+        // Other Mojang hosts answer 404 for `/v1/objects`; they must not be added.
+        assert!(!mirrors.iter().any(|c| c.contains("piston-meta.mojang.com")));
+        assert!(
+            !mirrors
+                .iter()
+                .any(|c| c.contains("launchermeta.mojang.com"))
+        );
+        assert!(
+            mirrors
+                .iter()
+                .any(|c| c.starts_with("https://bmclapi.bangbang93.com/v1/objects/"))
+        );
+        assert!(
+            mirrors
+                .iter()
+                .any(|c| c.starts_with("https://bmclapi2.bangbang93.com/v1/objects/"))
+        );
+
+        set_download_preference("official_ap", "", None);
+        let ordered = preferred_urls(url);
+        assert_eq!(ordered.first().map(String::as_str), Some(url));
+        let mirror_index = ordered.iter().position(|c| is_bmclapi(c)).unwrap();
+        assert!(mirror_index > 0);
+    }
+
+    #[test]
+    fn official_version_json_has_package_host_fallbacks() {
+        let mirrors =
+            get_mirror_urls("https://piston-meta.mojang.com/v1/packages/abc123/1.20.1.json");
+        assert!(
+            mirrors
+                .iter()
+                .any(|c| c.starts_with("https://launchermeta.mojang.com/v1/packages/"))
+        );
+        assert!(
+            mirrors
+                .iter()
+                .any(|c| c.starts_with("https://bmclapi2.bangbang93.com/v1/packages/"))
+        );
+    }
+
+    #[test]
+    fn bmclapi_version_endpoint_is_not_rewritten_to_an_invalid_official_path() {
+        for suffix in ["client", "json"] {
+            let mirrors = get_mirror_urls(&format!(
+                "https://bmclapi2.bangbang93.com/version/1.20.1/{suffix}"
+            ));
+            assert!(!mirrors.iter().any(|c| c.contains("mojang.com/version/")));
+        }
+    }
+
+    #[test]
+    fn official_artifact_url_variants_follow_path_specific_hosts() {
+        let packages = official_object_url_variants(
+            "https://piston-meta.mojang.com/v1/packages/abc123/1.20.1.json",
+        );
+        assert_eq!(packages.len(), OFFICIAL_PACKAGE_HOSTS.len());
+        assert!(packages[0].starts_with("https://piston-meta.mojang.com/"));
+        assert!(
+            packages
+                .iter()
+                .any(|v| v.starts_with("https://launchermeta.mojang.com/"))
+        );
+
+        let objects = official_object_url_variants(
+            "https://piston-data.mojang.com/v1/objects/abc123/client.jar",
+        );
+        assert_eq!(objects.len(), OFFICIAL_OBJECT_HOSTS.len());
+        assert_eq!(
+            objects[0],
+            "https://piston-data.mojang.com/v1/objects/abc123/client.jar"
+        );
+        assert!(
+            official_object_url_variants("https://bmclapi2.bangbang93.com/version/1.20.1/client")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn version_manifest_has_an_official_hostname_fallback() {
+        let urls =
+            preferred_urls("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+        assert!(
+            urls.iter()
+                .any(|u| u == "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
+        );
+        assert!(
+            urls.iter()
+                .any(|u| u == "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json")
+        );
     }
 
     #[test]

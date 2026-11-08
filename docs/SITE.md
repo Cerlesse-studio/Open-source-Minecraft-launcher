@@ -1,6 +1,6 @@
 # 官网维护说明
 
-`docs/` 同时是项目官网的根目录，入口为 `index.html`。可以直接用 GitHub Pages 的「Deploy from a branch → main / docs」发布，仓库里已经包含 `.nojekyll`。当前官网与文档对应 **0.1.4**。
+`docs/` 同时是项目官网的根目录，入口为 `index.html`。可以直接用 GitHub Pages 的「Deploy from a branch → main / docs」发布，仓库里已经包含 `.nojekyll`。当前官网与文档对应 **0.1.7**。
 
 ## 页面
 

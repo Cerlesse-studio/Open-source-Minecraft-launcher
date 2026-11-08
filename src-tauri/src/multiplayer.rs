@@ -1181,6 +1181,43 @@ fn recv_bps_limit(config: &MultiplayerConfig) -> Option<u64> {
     config.recv_bps_limit.filter(|limit| *limit > 0)
 }
 
+/// 公共交汇节点。
+///
+/// EasyTier 没有房间目录：两个客户端只有在「至少连上同一个节点」时才会在
+/// 握手中互相发现。房主和访客各自选择不同的公益/自建节点时，即使
+/// `--network-name` / `--network-secret` 完全一致，也会停留在两张互不相连的
+/// 孤岛网络上（房间号相同却看不到对方）。这里固定追加官方节点作为交汇点，
+/// 只用于发现，实际数据链路仍由 EasyTier 按延迟优先选择直连或最优中继。
+const BRIDGE_RELAY: &str = "tcp://public.easytier.cn:11010";
+
+/// 判断一个节点是否属于官方交汇节点（按域名，忽略协议与端口差异）。
+fn is_bridge_relay(peer: &str) -> bool {
+    let lower = peer.to_ascii_lowercase();
+    lower.contains("easytier.cn")
+}
+
+/// 中继模式的对等节点表：去重后保证至少包含一个公共交汇节点。
+///
+/// 旧配置、手改的 `localStorage` 或某个社区节点单独可用时，`peers` 可能只有
+/// 一个孤立节点；此时跨中继的两个客户端没有任何交集，永远发现不了彼此。
+fn relay_peers(peers: &[String]) -> Vec<String> {
+    let mut list: Vec<String> = Vec::new();
+    for peer in peers {
+        let peer = peer.trim();
+        if peer.is_empty() {
+            continue;
+        }
+        if list.iter().any(|existing| existing.eq_ignore_ascii_case(peer)) {
+            continue;
+        }
+        list.push(peer.to_string());
+    }
+    if list.is_empty() || !list.iter().any(|peer| is_bridge_relay(peer)) {
+        list.push(BRIDGE_RELAY.to_string());
+    }
+    list
+}
+
 /// 内核命令行。单独抽出来是为了能测：房主/访客哪些设置会真的落到 EasyTier 上。
 fn core_args(
     config: &MultiplayerConfig,
@@ -1335,9 +1372,6 @@ pub async fn start_multiplayer(
         .filter(|peer| !peer.trim().is_empty())
         .map(|peer| normalize_peer(peer))
         .collect::<Result<Vec<_>, _>>()?;
-    if peers.is_empty() && !config.p2p_only {
-        peers.push("tcp://public.easytier.cn:11010".to_string());
-    }
     if config.p2p_only {
         // 纯 P2P 只能出现显式 IPv6 入口。旧配置、手改的 localStorage 或
         // 误粘贴的共享节点都在这里拒绝，避免“无中继”实际连上了第三方。
@@ -1349,6 +1383,11 @@ pub async fn start_multiplayer(
                 "纯 P2P 只接受 IPv6 直连入口，不能使用共享节点：{peer}"
             ));
         }
+    } else {
+        // 中继模式：去重并保证公共交汇节点存在。前端已经会带上房主声明的
+        // 节点清单，这里再兜一次底——旧配置只剩一个孤立节点时，不同中继下
+        // 的两个客户端本来没有任何交集，永远进不了同一个房间。
+        peers = relay_peers(&peers);
     }
 
     let mut listeners = format!("tcp://0.0.0.0:{listen_port},udp://0.0.0.0:{listen_port}");
@@ -3027,11 +3066,8 @@ pub async fn add_multiplayer_peer(
     state: State<'_, MultiplayerState>,
 ) -> Result<String, String> {
     let normalized = normalize_peer(&peer)?;
-    if !normalized.starts_with("udp://[") && !normalized.starts_with("tcp://[") {
-        return Err("纯 P2P 只接受访客的 IPv6 入口".to_string());
-    }
     let root_path = PathBuf::from(&root);
-    let (running, rpc_port) = {
+    let (running, rpc_port, relay) = {
         let runtime = state
             .runtime
             .lock()
@@ -3043,8 +3079,13 @@ pub async fn add_multiplayer_peer(
                 .lock()
                 .map(|child| child.is_some())
                 .unwrap_or(false);
-        (running, runtime.rpc_port)
+        (running, runtime.rpc_port, runtime.relay)
     };
+    // 纯 P2P 只接受 IPv6 直连入口；中继房间允许运行时补一个引导节点，
+    // 这样访客落在另一个中继上时不用重启内核、也不用踢掉已有成员。
+    if !relay && !normalized.starts_with("udp://[") && !normalized.starts_with("tcp://[") {
+        return Err("纯 P2P 只接受访客的 IPv6 入口".to_string());
+    }
     if !running {
         return Err("联机网络还没启动，先创建或加入房间".to_string());
     }
@@ -4581,6 +4622,29 @@ mod tests {
             normalize_peer("[240e:3b5::20]:11010").unwrap(),
             "udp://[240e:3b5::20]:11010"
         );
+    }
+
+    /// 不同中继下的客户端只有共享同一个引导节点才能互相发现：房主/访客
+    /// 各选一个不同的自建节点时，两边都必须补上官方交汇节点。
+    #[test]
+    fn relay_peers_always_share_a_bridge_node() {
+        let host = relay_peers(&["tcp://host-relay.example.com:11010".to_string()]);
+        let guest = relay_peers(&["udp://guest-relay.example.net:11010".to_string()]);
+        assert_eq!(host[0], "tcp://host-relay.example.com:11010");
+        assert_eq!(guest[0], "udp://guest-relay.example.net:11010");
+        assert!(host.iter().any(|peer| is_bridge_relay(peer)));
+        let shared = host.iter().filter(|peer| guest.contains(peer)).count();
+        assert!(shared > 0, "跨中继的两个客户端必须有共同入口");
+
+        // 空列表不能退化成“谁都不连”。
+        assert!(!relay_peers(&[]).is_empty());
+
+        // 同一个节点的大小写变体只保留一份，避免内核重复握手。
+        let deduped = relay_peers(&[
+            "tcp://public.easytier.cn:11010".to_string(),
+            "TCP://PUBLIC.EASYTIER.CN:11010".to_string(),
+        ]);
+        assert_eq!(deduped.len(), 1);
     }
 
     /// 安装包自带的内核能直接展开到游戏目录，不靠网络下载。
