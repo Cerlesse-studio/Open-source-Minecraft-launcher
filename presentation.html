@@ -1,0 +1,2060 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Open-source-Minecraft-launcher v0.1.7 版本发布介绍</title>
+  <style>
+    /* --------------------------------------------------
+       CSS Reset & Minecraft Palette
+    -------------------------------------------------- */
+    :root {
+      /* Base & Surface (Deepslate & Obsidian Theme) */
+      --bg-base: #0a0d14;
+      --bg-deepslate: #14171f;
+      --bg-bedrock: #0d1017;
+      --bg-card: rgba(22, 27, 38, 0.82);
+      --bg-card-hover: rgba(30, 38, 54, 0.95);
+      
+      --border-stone: #2c3345;
+      --border-highlight: #4ade80;
+
+      /* Minecraft Ore & Accent Colors */
+      --mc-grass: #55aa33;
+      --mc-dirt: #866043;
+      --mc-diamond: #4deeea;
+      --mc-emerald: #55ff55;
+      --mc-gold: #ffaa00;
+      --mc-redstone: #ff3333;
+      --mc-lapis: #2e62ff;
+      --mc-amethyst: #c084fc;
+      --mc-netherite: #463b43;
+      --mc-exp: #80ff20;
+
+      /* Text Colors */
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+
+      /* Fonts */
+      --font-mc: "Minecraft", "Unifont", "Press Start 2P", system-ui, monospace;
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+      --transition-speed: 0.4s;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Canvas for floating Nether/Ender/EXP particles */
+    #particleCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Deepslate Minecraft Grid Texture Background */
+    .mc-ambient-bg {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background: 
+        radial-gradient(circle at 10% 10%, rgba(85, 255, 85, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 90% 15%, rgba(77, 238, 234, 0.09) 0%, transparent 45%),
+        radial-gradient(circle at 50% 90%, rgba(192, 132, 252, 0.08) 0%, transparent 50%),
+        linear-gradient(180deg, #07090e 0%, #0d121c 100%);
+    }
+
+    .mc-pixel-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 2px, transparent 2px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 2px, transparent 2px);
+      background-size: 32px 32px;
+      pointer-events: none;
+    }
+
+    /* 16:9 Presentation Stage */
+    .deck-viewport {
+      position: relative;
+      z-index: 10;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slide-stage {
+      position: relative;
+      width: min(96vw, calc(96vh * (16 / 9)));
+      height: min(96vh, calc(96vw * (9 / 16)));
+      aspect-ratio: 16 / 9;
+      background: radial-gradient(circle at center, rgba(19, 25, 38, 0.9) 0%, rgba(11, 15, 24, 0.98) 100%);
+      border: 3px solid #2a3449;
+      border-radius: 16px;
+      box-shadow: 
+        0 0 0 2px #0a0e17,
+        0 25px 60px -10px rgba(0, 0, 0, 0.9),
+        0 0 40px rgba(85, 255, 85, 0.06);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* --------------------------------------------------
+       Minecraft Experience (EXP) Bar (Stage Top)
+    -------------------------------------------------- */
+    .mc-exp-bar-wrap {
+      position: relative;
+      width: 100%;
+      height: 10px;
+      background: #11141c;
+      border-bottom: 2px solid #000;
+      z-index: 30;
+      overflow: visible;
+    }
+
+    .mc-exp-bar-fill {
+      height: 100%;
+      width: 10%;
+      background: repeating-linear-gradient(
+        90deg,
+        #55ff55,
+        #55ff55 14px,
+        #2a882a 14px,
+        #2a882a 16px
+      );
+      box-shadow: 0 0 10px rgba(85, 255, 85, 0.7);
+      transition: width 0.35s cubic-bezier(0.2, 0.9, 0.3, 1);
+    }
+
+    .mc-exp-level-badge {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mc);
+      font-size: 0.9rem;
+      font-weight: 900;
+      color: #80ff20;
+      text-shadow: 
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000,
+         0 2px 4px rgba(0,0,0,0.9);
+      letter-spacing: 1px;
+      z-index: 40;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* --------------------------------------------------
+       Minecraft Advancement Toast (成就弹窗)
+    -------------------------------------------------- */
+    .mc-advancement-toast {
+      position: absolute;
+      top: 24px;
+      right: 32px;
+      z-index: 99;
+      background: #1c1d22;
+      border: 3px solid #e0c868;
+      box-shadow: 
+        0 0 0 2px #3e3212,
+        4px 6px 16px rgba(0, 0, 0, 0.7);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-radius: 4px;
+      transform: translateY(-120%);
+      opacity: 0;
+      transition: all 0.45s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+      pointer-events: none;
+    }
+
+    .mc-advancement-toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .mc-toast-icon-box {
+      width: 36px;
+      height: 36px;
+      background: #0f1014;
+      border: 2px solid #555;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      border-radius: 4px;
+    }
+
+    .mc-toast-texts {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mc-toast-title {
+      font-family: var(--font-mc);
+      font-size: 0.78rem;
+      color: #fce074;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .mc-toast-desc {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #ffffff;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    /* --------------------------------------------------
+       Slide Container & Animations
+    -------------------------------------------------- */
+    .slides-wrapper {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      height: 100%;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      padding: 40px 60px 32px;
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      transform: translateY(16px) scale(0.985);
+      pointer-events: none;
+      transition: opacity var(--transition-speed) ease,
+                  transform var(--transition-speed) ease;
+    }
+
+    .slide.active {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+      z-index: 2;
+    }
+
+    /* Slide Header */
+    .slide-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 24px;
+      border-bottom: 2px dashed #2b3346;
+      padding-bottom: 14px;
+    }
+
+    .mc-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      background: rgba(85, 255, 85, 0.12);
+      border: 2px solid #55ff55;
+      border-radius: 4px;
+      color: #55ff55;
+      font-family: var(--font-mc);
+      font-size: 0.8rem;
+      text-shadow: 1px 1px 0 #000;
+      margin-bottom: 8px;
+    }
+
+    .mc-badge.gold {
+      background: rgba(255, 170, 0, 0.12);
+      border-color: #ffaa00;
+      color: #ffaa00;
+    }
+
+    .mc-badge.diamond {
+      background: rgba(77, 238, 234, 0.12);
+      border-color: #4deeea;
+      color: #4deeea;
+    }
+
+    .mc-badge.redstone {
+      background: rgba(255, 68, 68, 0.12);
+      border-color: #ff4444;
+      color: #ff6666;
+    }
+
+    .mc-badge.amethyst {
+      background: rgba(192, 132, 252, 0.12);
+      border-color: #c084fc;
+      color: #c084fc;
+    }
+
+    .slide-title {
+      font-size: 2.15rem;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      color: #ffffff;
+      line-height: 1.2;
+      text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.6);
+    }
+
+    .slide-title .highlight-emerald {
+      color: #55ff55;
+      text-shadow: 0 0 12px rgba(85, 255, 85, 0.4), 2px 2px 0 #000;
+    }
+
+    .slide-title .highlight-diamond {
+      color: #4deeea;
+      text-shadow: 0 0 12px rgba(77, 238, 234, 0.4), 2px 2px 0 #000;
+    }
+
+    .slide-title .highlight-gold {
+      color: #ffaa00;
+      text-shadow: 0 0 12px rgba(255, 170, 0, 0.4), 2px 2px 0 #000;
+    }
+
+    .slide-title .highlight-red {
+      color: #ff5555;
+      text-shadow: 0 0 12px rgba(255, 85, 85, 0.4), 2px 2px 0 #000;
+    }
+
+    .slide-subtitle {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .slide-version-tag {
+      font-family: var(--font-mc);
+      font-size: 0.82rem;
+      color: #a0aec0;
+      background: #1a202c;
+      padding: 6px 12px;
+      border: 2px solid #334155;
+      border-radius: 4px;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    /* Slide Body */
+    .slide-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 20px;
+    }
+
+    /* --------------------------------------------------
+       Minecraft Cards & Enchantment Glint
+    -------------------------------------------------- */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      height: 100%;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      height: 100%;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      height: 100%;
+    }
+
+    .mc-card {
+      background: var(--bg-card);
+      border: 2px solid #2d3748;
+      border-radius: 8px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+      transition: all 0.25s ease;
+      overflow: hidden;
+    }
+
+    .mc-card:hover {
+      border-color: #55ff55;
+      transform: translateY(-4px);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.6), 0 0 16px rgba(85, 255, 85, 0.15);
+    }
+
+    /* Enchantment Glint Animation (附魔紫光流光) */
+    .mc-card.enchanted::before {
+      content: "";
+      position: absolute;
+      inset: -100%;
+      background: linear-gradient(
+        115deg,
+        transparent 35%,
+        rgba(192, 132, 252, 0.15) 45%,
+        rgba(255, 85, 255, 0.2) 50%,
+        rgba(85, 255, 255, 0.15) 55%,
+        transparent 65%
+      );
+      transform: rotate(20deg);
+      animation: mcGlint 6s infinite linear;
+      pointer-events: none;
+    }
+
+    @keyframes mcGlint {
+      0% { transform: translateY(-100%) rotate(20deg); }
+      100% { transform: translateY(100%) rotate(20deg); }
+    }
+
+    .mc-item-icon-box {
+      width: 44px;
+      height: 44px;
+      background: #11151f;
+      border: 2px solid #334155;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+      flex-shrink: 0;
+    }
+
+    .mc-item-icon-box.emerald {
+      border-color: #55ff55;
+      background: rgba(85, 255, 85, 0.1);
+    }
+
+    .mc-item-icon-box.diamond {
+      border-color: #4deeea;
+      background: rgba(77, 238, 234, 0.1);
+    }
+
+    .mc-item-icon-box.gold {
+      border-color: #ffaa00;
+      background: rgba(255, 170, 0, 0.1);
+    }
+
+    .mc-item-icon-box.redstone {
+      border-color: #ff3333;
+      background: rgba(255, 51, 51, 0.1);
+    }
+
+    .mc-item-icon-box.amethyst {
+      border-color: #c084fc;
+      background: rgba(192, 132, 252, 0.1);
+    }
+
+    .mc-card h3 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mc-card p {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      flex: 1;
+    }
+
+    .mc-potion-buff {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid #444;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-family: var(--font-mc);
+      color: #f1f5f9;
+      margin-top: 12px;
+      width: fit-content;
+    }
+
+    .mc-card-footer {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px dashed rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      font-family: var(--font-mono);
+      color: var(--text-dim);
+    }
+
+    .mc-card-footer .val {
+      color: #55ff55;
+      font-weight: bold;
+    }
+
+    /* --------------------------------------------------
+       Cover Slide (Minecraft Hero Style)
+    -------------------------------------------------- */
+    .cover-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      height: 100%;
+      position: relative;
+    }
+
+    .cover-logo-box {
+      position: relative;
+      margin-bottom: 20px;
+    }
+
+    .cover-logo {
+      width: 108px;
+      height: 108px;
+      border-radius: 18px;
+      box-shadow: 0 0 35px rgba(85, 255, 85, 0.4), 0 0 0 3px #55ff55;
+      animation: mcBob 3.5s ease-in-out infinite;
+    }
+
+    @keyframes mcBob {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-8px); }
+    }
+
+    .cover-grass-accent {
+      font-family: var(--font-mc);
+      font-size: 1.05rem;
+      color: #55ff55;
+      letter-spacing: 0.15em;
+      text-shadow: 2px 2px 0 #000;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .cover-main-title {
+      font-size: 3.5rem;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      margin-bottom: 14px;
+      color: #ffffff;
+      text-shadow: 3px 3px 0 #000, 0 0 20px rgba(85, 255, 85, 0.2);
+    }
+
+    .cover-desc {
+      font-size: 1.25rem;
+      color: #cbd5e1;
+      max-width: 820px;
+      line-height: 1.6;
+      margin-bottom: 28px;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .mc-pill-group {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .mc-pill {
+      background: #171b26;
+      border: 2px solid #2e3b52;
+      padding: 6px 16px;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #e2e8f0;
+      box-shadow: 2px 2px 0 #000;
+    }
+
+    .mc-pill-dot {
+      width: 8px;
+      height: 8px;
+      background: #55ff55;
+      box-shadow: 0 0 8px #55ff55;
+    }
+
+    /* --------------------------------------------------
+       Bug Fix Before/After (Redstone vs Lamp / Anvil)
+    -------------------------------------------------- */
+    .compare-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      height: 100%;
+    }
+
+    .compare-box {
+      border-radius: 8px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+    }
+
+    .compare-box.bad {
+      background: rgba(239, 68, 68, 0.08);
+      border: 2px solid #ef4444;
+      box-shadow: inset 0 0 20px rgba(239, 68, 68, 0.05);
+    }
+
+    .compare-box.good {
+      background: rgba(85, 255, 85, 0.08);
+      border: 2px solid #55ff55;
+      box-shadow: inset 0 0 20px rgba(85, 255, 85, 0.05);
+    }
+
+    .compare-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mc);
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+      width: fit-content;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .compare-box.bad .compare-badge {
+      background: #7f1d1d;
+      color: #fca5a5;
+      border: 1px solid #ef4444;
+    }
+
+    .compare-box.good .compare-badge {
+      background: #14532d;
+      color: #86efac;
+      border: 1px solid #55ff55;
+    }
+
+    .compare-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .compare-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.94rem;
+      line-height: 1.5;
+      color: #e2e8f0;
+    }
+
+    /* Split layout with Screenshot */
+    .pane-layout {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 28px;
+      height: 100%;
+      align-items: center;
+    }
+
+    .pane-text {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .pane-text h3 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .pane-text p {
+      font-size: 1rem;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    .pane-graphic {
+      width: 100%;
+      height: 100%;
+      max-height: 370px;
+      border: 2px solid #334155;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+      background: #0f141f;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.7);
+    }
+
+    .pane-graphic img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top;
+      transition: transform 0.4s ease;
+    }
+
+    .pane-graphic:hover img {
+      transform: scale(1.02);
+    }
+
+    /* Redstone Repeater Pipeline */
+    .pipeline-step-flow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .pipeline-step {
+      flex: 1;
+      background: #131722;
+      border: 2px solid #2d3748;
+      border-radius: 6px;
+      padding: 10px 12px;
+      text-align: center;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+    }
+
+    .pipeline-step.active {
+      border-color: #55ff55;
+      background: rgba(85, 255, 85, 0.08);
+      box-shadow: 0 0 12px rgba(85, 255, 85, 0.2);
+    }
+
+    .pipeline-step .step-num {
+      font-family: var(--font-mc);
+      font-size: 0.72rem;
+      color: #55ff55;
+      margin-bottom: 2px;
+    }
+
+    .pipeline-step .step-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .code-block {
+      background: #090c13;
+      border: 2px solid #263043;
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      color: #4deeea;
+      line-height: 1.55;
+      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.8);
+    }
+
+    /* --------------------------------------------------
+       Minecraft Hotbar Footer & Buttons
+    -------------------------------------------------- */
+    .stage-footer {
+      height: 60px;
+      background: #11151f;
+      border-top: 2px solid #242c3c;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 20;
+    }
+
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .mc-hearts {
+      display: flex;
+      gap: 3px;
+    }
+
+    .mc-heart {
+      width: 14px;
+      height: 14px;
+      display: inline-block;
+    }
+
+    .footer-title-box {
+      font-size: 0.85rem;
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+
+    /* Minecraft 10-Slot Hotbar Center Controller */
+    .mc-hotbar {
+      display: flex;
+      align-items: center;
+      background: #181d29;
+      border: 2px solid #2f384a;
+      border-radius: 6px;
+      padding: 3px;
+      gap: 3px;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.8);
+    }
+
+    .mc-hotbar-slot {
+      width: 32px;
+      height: 32px;
+      background: #10141e;
+      border: 2px solid #283042;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mc);
+      font-size: 0.75rem;
+      color: #64748b;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.15s ease;
+    }
+
+    .mc-hotbar-slot:hover {
+      border-color: #94a3b8;
+      color: #ffffff;
+    }
+
+    /* Selected Hotbar Slot (White 3D Bevel Box) */
+    .mc-hotbar-slot.active {
+      border: 2px solid #ffffff;
+      background: rgba(85, 255, 85, 0.2);
+      color: #55ff55;
+      font-weight: 900;
+      box-shadow: 0 0 10px rgba(85, 255, 85, 0.5), inset 0 0 6px rgba(255,255,255,0.4);
+      transform: scale(1.08);
+      z-index: 5;
+    }
+
+    /* Minecraft Button (3D Gray Stone Bevel) */
+    .btn-mc {
+      background: #3c424d;
+      border-top: 2px solid #586070;
+      border-left: 2px solid #586070;
+      border-right: 2px solid #1c2027;
+      border-bottom: 2px solid #1c2027;
+      color: #e2e8f0;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      text-shadow: 1px 1px 0 #000;
+      border-radius: 3px;
+      transition: filter 0.1s;
+    }
+
+    .btn-mc:hover {
+      background: #4b5360;
+      color: #ffffff;
+    }
+
+    .btn-mc:active {
+      border-top: 2px solid #1c2027;
+      border-left: 2px solid #1c2027;
+      border-right: 2px solid #586070;
+      border-bottom: 2px solid #586070;
+      transform: translateY(1px);
+    }
+
+    .btn-mc.active {
+      background: #14532d;
+      border-color: #55ff55;
+      color: #55ff55;
+      box-shadow: 0 0 8px rgba(85, 255, 85, 0.4);
+    }
+
+    .kbd-tag {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid #555;
+      padding: 1px 4px;
+      border-radius: 2px;
+      color: #94a3b8;
+    }
+
+    /* --------------------------------------------------
+       Teleprompter (Presenter Notes)
+    -------------------------------------------------- */
+    .teleprompter-modal {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 440px;
+      background: rgba(14, 18, 28, 0.96);
+      backdrop-filter: blur(16px);
+      border: 3px solid #ffaa00;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.9), 0 0 20px rgba(255, 170, 0, 0.2);
+      border-radius: 8px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(130%);
+      transition: transform 0.35s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+      overflow: hidden;
+    }
+
+    .teleprompter-modal.open {
+      transform: translateY(0);
+    }
+
+    .teleprompter-head {
+      padding: 10px 16px;
+      background: #1f2738;
+      border-bottom: 2px solid #2e3b52;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .teleprompter-head h4 {
+      font-size: 0.88rem;
+      font-family: var(--font-mc);
+      color: #ffaa00;
+      text-shadow: 1px 1px 0 #000;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .teleprompter-body {
+      padding: 16px;
+      font-size: 0.96rem;
+      line-height: 1.7;
+      color: #e2e8f0;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    .teleprompter-body strong {
+      color: #55ff55;
+      text-shadow: 0 0 6px rgba(85,255,85,0.3);
+    }
+
+    /* TOC Modal */
+    .toc-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 2000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .toc-modal.open {
+      display: flex;
+    }
+
+    .toc-box {
+      width: min(840px, 92vw);
+      max-height: 82vh;
+      background: #131724;
+      border: 3px solid #55ff55;
+      border-radius: 12px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(85, 255, 85, 0.2);
+    }
+
+    .toc-box h3 {
+      font-size: 1.35rem;
+      font-family: var(--font-mc);
+      color: #55ff55;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .toc-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      overflow-y: auto;
+    }
+
+    .toc-item {
+      padding: 12px 14px;
+      background: #181f2f;
+      border: 2px solid #2e3a50;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: all 0.2s ease;
+    }
+
+    .toc-item:hover, .toc-item.current {
+      background: rgba(85, 255, 85, 0.15);
+      border-color: #55ff55;
+      transform: translateX(4px);
+    }
+
+    .toc-item-num {
+      font-family: var(--font-mc);
+      font-size: 0.8rem;
+      color: #55ff55;
+    }
+
+    .toc-item-title {
+      font-size: 0.9rem;
+      color: #fff;
+    }
+
+    /* Video Safe Zone Overlay */
+    .safe-zone-overlay {
+      position: absolute;
+      inset: 5%;
+      border: 2px dashed rgba(255, 170, 0, 0.35);
+      pointer-events: none;
+      display: none;
+      border-radius: 10px;
+      z-index: 999;
+    }
+
+    .safe-zone-overlay::after {
+      content: "16:9 录制安全区 (90% Action Safe)";
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      font-family: var(--font-mc);
+      font-size: 0.72rem;
+      color: #ffaa00;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 2px 8px;
+      border: 1px solid #ffaa00;
+    }
+
+    body.show-safe-zone .safe-zone-overlay {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Minecraft Ambient Glow & Pixel Grid -->
+  <div class="mc-ambient-bg"></div>
+  <div class="mc-pixel-grid"></div>
+
+  <!-- Canvas for Floating Minecraft Ender / EXP Particles -->
+  <canvas id="particleCanvas"></canvas>
+
+  <!-- Viewport -->
+  <div class="deck-viewport">
+    <div class="slide-stage" id="slideStage">
+      
+      <!-- Video 90% Safe Zone -->
+      <div class="safe-zone-overlay"></div>
+
+      <!-- Minecraft Experience (EXP) Bar -->
+      <div class="mc-exp-bar-wrap">
+        <div class="mc-exp-bar-fill" id="expBarFill"></div>
+        <div class="mc-exp-level-badge">
+          <span>⚔️ LV.</span><span id="expLevelNum">1</span>
+        </div>
+      </div>
+
+      <!-- Minecraft Advancement Toast (成就弹窗) -->
+      <div class="mc-advancement-toast" id="advToast">
+        <div class="mc-toast-icon-box" id="toastIcon">🏆</div>
+        <div class="mc-toast-texts">
+          <span class="mc-toast-title" id="toastType">进度达成！</span>
+          <span class="mc-toast-desc" id="toastDesc">全新篇章：v0.1.7 正式发布</span>
+        </div>
+      </div>
+
+      <!-- Slides Stack -->
+      <div class="slides-wrapper">
+
+        <!-- SLIDE 1: 封面 -->
+        <div class="slide active" data-title="发布会封面" data-adv-icon="🌟" data-adv-type="进度达成！" data-adv-desc="全新篇章：v0.1.7 正式发布">
+          <div class="cover-container">
+            <div class="cover-logo-box">
+              <img src="docs/images/logo.png" onerror="if(!this.dataset.retry){this.dataset.retry=1;this.src='images/logo.png';}else{this.src='https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/logo.png';}" alt="Logo" class="cover-logo" />
+            </div>
+            <div class="cover-grass-accent">
+              <span>⛏️ OPEN-SOURCE MINECRAFT LAUNCHER</span>
+            </div>
+            <h1 class="cover-main-title">
+              全新 <span class="highlight-emerald">v0.1.7</span> 版本正式发布
+            </h1>
+            <p class="cover-desc">
+              对齐 PCL2 语义下载调度 · 完整断点续传 · 令牌桶全局限速<br />
+              LittleSkin 外置登录 · 联机生态与 CJK 字体排版大修
+            </p>
+            <div class="mc-pill-group">
+              <div class="mc-pill"><span class="mc-pill-dot"></span> ⚡ PCL2 语义 Worker 线程池</div>
+              <div class="mc-pill"><span class="mc-pill-dot" style="background:#4deeea;box-shadow:0 0 8px #4deeea"></span> 📦 .part.meta 续传引擎</div>
+              <div class="mc-pill"><span class="mc-pill-dot" style="background:#ffaa00;box-shadow:0 0 8px #ffaa00"></span> 🛡️ 根治代理减速 80%</div>
+              <div class="mc-pill"><span class="mc-pill-dot" style="background:#c084fc;box-shadow:0 0 8px #c084fc"></span> 👤 LittleSkin 外置登录</div>
+            </div>
+          </div>
+          <template class="note-content">
+            各位矿工、冒险家们好！欢迎收看 Open-source-Minecraft-launcher 的最新版本发布介绍。今天我们迎来了重磅的 <strong>v0.1.7</strong> 版本更新！这一版彻底重构了底层下载引擎，加入了呼声极高的断点续传与全局限速，并彻底修复了代理减速和部分中文字体无法显示等痛点 Bug。接下来让我们一起看看核心亮点！
+          </template>
+        </div>
+
+        <!-- SLIDE 2: 更新总览纲要 -->
+        <div class="slide" data-title="更新概览与全景" data-adv-icon="🗺️" data-adv-type="目标达成！" data-adv-desc="全副武装：四大维度核心升级">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge">OVERVIEW · 0.1.6 → 0.1.7</span>
+              <h2 class="slide-title">版本演进 · <span class="highlight-emerald">核心特性总览</span></h2>
+              <div class="slide-subtitle">从基础版本启动迈向高性能、工业级可靠的多平台启动器</div>
+            </div>
+            <div class="slide-version-tag">CHANGELOG SUMMARY</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-4">
+              <div class="mc-card enchanted">
+                <div class="mc-item-icon-box emerald">⚡</div>
+                <h3>下载引擎全面重构</h3>
+                <p>全面对齐 PCL2 下载语义。全局多线程限制、令牌桶精准限速与 30 秒分片看门狗。</p>
+                <div class="mc-potion-buff">✨ 效果: 急迫 II (Haste II)</div>
+                <div class="mc-card-footer">调度引擎 <span class="val">Rust + Tokio</span></div>
+              </div>
+
+              <div class="mc-card enchanted">
+                <div class="mc-item-icon-box diamond">🔄</div>
+                <h3>真正的断点续传</h3>
+                <p>引入 <code>.part.meta</code> 分片元数据持久化。网络波动或重启，只拉取未完成分片。</p>
+                <div class="mc-potion-buff">✨ 效果: 不死图腾 (Totem)</div>
+                <div class="mc-card-footer">增量校验 <span class="val">SHA-1 分块比对</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box amethyst">🔑</div>
+                <h3>外置登录与资产市场</h3>
+                <p>新增 LittleSkin 第三方外置登录（Yggdrasil），重做账户中心，模组/光影统一检索。</p>
+                <div class="mc-potion-buff">✨ 效果: 村民交易 (Trading)</div>
+                <div class="mc-card-footer">支持协议 <span class="val">微软 / 外置 / 离线</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box redstone">🛠️</div>
+                <h3>痛点 Bug 深度清扫</h3>
+                <p>解决系统代理下速度缩水至 1/5 的缺陷；补齐中文字体回退，修复空白与布局截断。</p>
+                <div class="mc-potion-buff">✨ 效果: 破除诅咒 (Curse Lift)</div>
+                <div class="mc-card-footer">体验提升 <span class="val">速率 & 观感翻倍</span></div>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            在进入细节前，我们先看整体更新全景。0.1.6 和 0.1.7 连续迭代，集中攻坚了四大方向：第一是下载引擎对齐经典工业标准；第二是引入断点续传机制；第三是账户与生态完善，补全了 LittleSkin 外置登录与统一检索；第四是修复了代理下载失速、中文字体空白等关键问题。
+          </template>
+        </div>
+
+        <!-- SLIDE 3: 重点一：下载引擎重塑 -->
+        <div class="slide" data-title="核心特性：下载引擎重塑" data-adv-icon="⚡" data-adv-type="挑战完成！" data-adv-desc="急迫 II：下载引擎对齐 PCL2">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge">CORE UPGRADE · 0.1.7</span>
+              <h2 class="slide-title">下载引擎重做 · <span class="highlight-emerald">对齐 PCL2 语义</span></h2>
+              <div class="slide-subtitle">客户端、依赖库、Assets 资源、加载器与安装器共用统一调度中心</div>
+            </div>
+            <div class="slide-version-tag">ENGINE ARCHITECTURE</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-3">
+              <div class="mc-card">
+                <div class="mc-item-icon-box emerald">🌐</div>
+                <h3>统一 Worker 线程池</h3>
+                <p>客户端 jar、Libraries 依赖库、资源文件 assets、Forge/Fabric 安装器全部纳入全局并发池管控，杜绝连接数爆炸引发系统假死与路由器崩溃。</p>
+                <div class="mc-potion-buff">⚡ 并发防护</div>
+                <div class="mc-card-footer">并发控制 <span class="val">全局线程上限保护</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box gold">⏱️</div>
+                <h3>令牌桶 (Token Bucket) 限速</h3>
+                <p>内置精准的全局速率控制器。支持在设置中输入任意 MB/s 上限（0 为无限制）。下游戏的同时，看直播、打联机两不误，告别网络抢占。</p>
+                <div class="mc-potion-buff">⚡ 令牌流控</div>
+                <div class="mc-card-footer">算法模型 <span class="val">字节级平滑限流</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box diamond">🐕</div>
+                <h3>分片停滞看门狗 (Watchdog)</h3>
+                <p>针对弱网卡顿痛点：若某个分片连接连续 30 秒无任何字节流入，看门狗自动中止挂死连接，并无缝重试或换源，绝不再死等 600 秒全局超时！</p>
+                <div class="mc-potion-buff">⚡ 智能切源</div>
+                <div class="mc-card-footer">停滞阈值 <span class="val">30s 智能救活</span></div>
+              </div>
+            </div>
+
+            <!-- Redstone Circuit Pipeline -->
+            <div class="pipeline-step-flow">
+              <div class="pipeline-step active">
+                <div class="step-num">STEP 01</div>
+                <div class="step-name">版本清单解析</div>
+              </div>
+              <div style="color:#ff3333;font-size:1.1rem;">➔</div>
+              <div class="pipeline-step active">
+                <div class="step-num">STEP 02</div>
+                <div class="step-name">分片计算 & 令牌配额</div>
+              </div>
+              <div style="color:#ff3333;font-size:1.1rem;">➔</div>
+              <div class="pipeline-step active">
+                <div class="step-num">STEP 03</div>
+                <div class="step-name">并发拉取 + 看门狗监控</div>
+              </div>
+              <div style="color:#ff3333;font-size:1.1rem;">➔</div>
+              <div class="pipeline-step active">
+                <div class="step-num">STEP 04</div>
+                <div class="step-name">SHA-1 校验与无缝合并</div>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            接下来是本次 0.1.7 最核心的技术升级——重做下载引擎。以前很多玩家反馈，下载大型整合包或者客户端时，容易把宽带占满导致网页都打不开，或者某个小文件卡住就一直干等。现在我们全面对齐了 PCL2 的下载语义：引入全局统一线程池、令牌桶精准限速算法，以及 30 秒分片看门狗。一旦发现连接停滞立刻换源重试，下载体验丝滑顺畅！
+          </template>
+        </div>
+
+        <!-- SLIDE 4: 重点二：断点续传机制 -->
+        <div class="slide" data-title="核心特性：断点续传引擎" data-adv-icon="🛡️" data-adv-type="目标达成！" data-adv-desc="不死图腾：断点持久化，免从头来">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge diamond">RESUME ENGINE</span>
+              <h2 class="slide-title">全新断点续传 · <span class="highlight-diamond">告别从头重来</span></h2>
+              <div class="slide-subtitle"><code>.part.meta</code> 分片元数据持久化，从容应对断网、关机与切源</div>
+            </div>
+            <div class="slide-version-tag">ROBUST & PERSISTENT</div>
+          </div>
+          <div class="slide-body">
+            <div class="pane-layout">
+              <div class="pane-text">
+                <h3>GB 级大包下载，从容应对网络中断</h3>
+                <p>以往在下载游戏主版本或数百兆的 Modpack 时，如果中途断网、关机或者切换镜像源，进度往往清零重来。0.1.7 带来了专业级断点持久化支持：</p>
+                <div class="code-block">
+                  <span style="color:#64748b">// 启动器会自动在目标文件旁生成 .part.meta</span><br />
+                  {<br />
+                  &nbsp;&nbsp;<span style="color:#55ff55">"total_size"</span>: <span style="color:#ffaa00">734003200</span>, <span style="color:#64748b">// 700MB 大型整合包</span><br />
+                  &nbsp;&nbsp;<span style="color:#55ff55">"chunk_size"</span>: <span style="color:#ffaa00">4194304</span>,   <span style="color:#64748b">// 4MB 高性能分片</span><br />
+                  &nbsp;&nbsp;<span style="color:#55ff55">"completed_chunks"</span>: [<span style="color:#ffaa00">0, 1, 2, 3, ... 142</span>],<br />
+                  &nbsp;&nbsp;<span style="color:#55ff55">"sha1"</span>: <span style="color:#4deeea">"d7a8fbb2c4998bc..."</span><br />
+                  }
+                </div>
+                <p style="font-size: 0.95rem;">哪怕切换了加速镜像，也会根据 SHA-1 校验只补充尚未拉取的分片，真正做到省时省流！</p>
+              </div>
+
+              <div class="pane-graphic">
+                <img src="docs/images/download.png" onerror="if(!this.dataset.retry){this.dataset.retry=1;this.src='images/download.png';}else{this.src='https://cdn.jsdelivr.net/gh/Cerlesse-studio/Open-source-Minecraft-launcher@main/docs/images/download.png';}" alt="下载界面截图" />
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            不知道大家有没有遇到过这样的情况：好不容易下了 80% 的大整合包，网络突然波动一下，或者不小心关掉了软件，结果重新打开又要从零开始。0.1.7 彻底解决了这个问题！我们引入了 .part.meta 分片持久化机制，每一个分片下载完成就会实时记录。无论软件崩溃、关机还是中途切换镜像源，重新启动时都会自动识别并只补全剩余分片，大包下载再无后顾之忧。
+          </template>
+        </div>
+
+        <!-- SLIDE 5: 重点三：下载源优先级与全局限速 -->
+        <div class="slide" data-title="核心特性：源编排与全局限速" data-adv-icon="🧭" data-adv-type="进度达成！" data-adv-desc="红石大师：官方CDN优先与令牌限速">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge gold">NETWORKING</span>
+              <h2 class="slide-title">下载源智能编排 & <span class="highlight-gold">全局下载限速</span></h2>
+              <div class="slide-subtitle">官方 CDN 优先 + 镜像链智能回退，在设置页随心掌控网络占用</div>
+            </div>
+            <div class="slide-version-tag">NETWORK ARCHITECTURE</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-2">
+              <div class="mc-card">
+                <div class="mc-item-icon-box gold">⚡</div>
+                <h3>官方 CDN 优先 + 镜像链回退</h3>
+                <p>全面梳理了资源获取的优先级链路：</p>
+                <ul class="compare-list" style="margin-top: 14px;">
+                  <li>
+                    <span style="color:#55ff55;font-weight:bold;">1.</span>
+                    <span><strong>Mojang 官方 CDN 首选</strong>：Java 官方清单与客户端本体默认走高速直连，确保第一手更新秒级同步；</span>
+                  </li>
+                  <li>
+                    <span style="color:#4deeea;font-weight:bold;">2.</span>
+                    <span><strong>BMCLAPI 智能回退</strong>：当官方节点不可达或波动时，毫秒级无感降级到国内高性能镜像；</span>
+                  </li>
+                  <li>
+                    <span style="color:#c084fc;font-weight:bold;">3.</span>
+                    <span><strong>源说明直观展示</strong>：在设置里可直接查看各个镜像源的延迟探测与状态。</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box diamond">🎛️</div>
+                <h3>设置页新增全局限速</h3>
+                <p>许多玩家在边玩游戏或语音开黑时同步下载资产，极易出现丢包高延迟：</p>
+                <div style="background:#0c1017;padding:14px;border-radius:6px;border:2px solid #283347;margin: 12px 0;">
+                  <div style="display:flex;justify-content:space-between;font-size:0.85rem;color:#94a3b8;margin-bottom:6px;">
+                    <span>下载限速 (MB/s)</span>
+                    <span style="color:#55ff55;font-weight:700;">10 MB/s (限流配置中)</span>
+                  </div>
+                  <div style="height:8px;background:#1a2332;border-radius:4px;overflow:hidden;border:1px solid #334155;">
+                    <div style="width:40%;height:100%;background:#55ff55;box-shadow:0 0 8px #55ff55;"></div>
+                  </div>
+                </div>
+                <p style="font-size:0.88rem;">设为 <code>0</code> 为全速不限速；设为固定值则统一限制所有并发流的总带宽，无论下载模组还是客户端，均严格遵守限流约定。</p>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            在网络管理方面，我们做到了“智能与自主”。智能体现在源的编排上：优先直连 Mojang 官方 CDN 获取最新的版本清单与原版 jar，一旦检测到网络不畅自动回退至 BMCLAPI 镜像链；自主则体现在全新的限速功能上，大家可以在设置页面设置全局下载限速（单位 MB/s），输入 0 则是全速狂飙，输入具体数值即可在打游戏时留足带宽，避免游戏延迟暴涨。
+          </template>
+        </div>
+
+        <!-- SLIDE 6: 账户与联机 (0.1.6 承前启后) -->
+        <div class="slide" data-title="生态升级：外置登录与联机" data-adv-icon="👤" data-adv-type="目标达成！" data-adv-desc="村民交易：LittleSkin 统一账户与资产">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge amethyst">ACCOUNT & MULTIPLAYER</span>
+              <h2 class="slide-title">LittleSkin 外置登录 · <span class="highlight-diamond">统一账户与联机</span></h2>
+              <div class="slide-subtitle">0.1.6 完善三位一体登录体系，0.1.7 进一步升级 P2P 健康心跳</div>
+            </div>
+            <div class="slide-version-tag">ECOSYSTEM</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-3">
+              <div class="mc-card">
+                <div class="mc-item-icon-box amethyst">👤</div>
+                <h3>LittleSkin 外置登录</h3>
+                <p>完整支持标准 Yggdrasil 协议。微软正版账户、LittleSkin 外置账户与离线账户并列展示，多角色、自定义皮肤即时切换。</p>
+                <div class="mc-potion-buff">✨ 皮肤与角色</div>
+                <div class="mc-card-footer">认证协议 <span class="val">Yggdrasil API</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box emerald">🌐</div>
+                <h3>P2P 健康检查 & 公共发现</h3>
+                <p>纯 IPv6 P2P 直连与公益节点模式双轨运行。0.1.7 加入了节点心跳探活与公共发现机制，切换中继节点后房间依然稳定互通！</p>
+                <div class="mc-potion-buff">✨ 房间自愈</div>
+                <div class="mc-card-footer">联机体验 <span class="val">断线自愈重连</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box diamond">🔍</div>
+                <h3>内容市场统一检索</h3>
+                <p>模组（Mod）、整合包（Modpack）、数据包、光影、资源包与地图收拢到统一检索后端，支持多维分类、排序与依赖解析。</p>
+                <div class="mc-potion-buff">✨ 6 大资产类型</div>
+                <div class="mc-card-footer">资产涵盖 <span class="val">Mod / 光影 / 材质</span></div>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            除了下载引擎，启动器的生态体系也有重大升级。从 0.1.6 开始，我们加入了对国内知名皮肤站 LittleSkin 的原生外置登录支持，并且重做了账户中心，登录方式与皮肤管理一目了然；而在 0.1.7 中，联机模块增加了 P2P 连接的健康检查与公共节点发现，切换中继时房间不再失联；内容市场也完成了模组、光影、数据包等 6 大类资源的检索统一。
+          </template>
+        </div>
+
+        <!-- SLIDE 7: 重大 Bug 修复 ①：代理限速根除 -->
+        <div class="slide" data-title="核心 Bug 修复：系统代理下载失速" data-adv-icon="⚔️" data-adv-type="挑战完成！" data-adv-desc="破除诅咒：彻底根除代理减速 80%">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge redstone">CRITICAL BUG FIX</span>
+              <h2 class="slide-title">修复：开启系统代理后 <span class="highlight-red">下载速度暴降 80%</span></h2>
+              <div class="slide-subtitle">独立直连客户端架构，彻底根除下载流量走代理导致的严重限速</div>
+            </div>
+            <div class="slide-version-tag">NETWORK FIX</div>
+          </div>
+          <div class="slide-body">
+            <div class="compare-container">
+              <div class="compare-box bad">
+                <div class="compare-badge">❌ 修复前 (0.1.6 以前)</div>
+                <ul class="compare-list">
+                  <li>
+                    <span style="color:#ef4444;">●</span>
+                    <span><strong>流量误走全局系统代理</strong>：用户电脑开启科学上网或系统代理时，所有大流量下载无差别涌入本地代理端口。</span>
+                  </li>
+                  <li>
+                    <span style="color:#ef4444;">●</span>
+                    <span><strong>下载速度缩水至五分之一</strong>：国内直连 CDN 被迫经由代理服务器绕路中转，百兆宽带下载时仅剩 2~3 MB/s，甚至耗尽代理流量。</span>
+                  </li>
+                  <li>
+                    <span style="color:#ef4444;">●</span>
+                    <span><strong>频繁引发代理软件崩溃</strong>：成百上千个并发分片击穿了本地代理端口的连接数限制。</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="compare-box good">
+                <div class="compare-badge">✅ 修复后 (0.1.7 优化)</div>
+                <ul class="compare-list">
+                  <li>
+                    <span style="color:#55ff55;">●</span>
+                    <span><strong>独立直连客户端优先</strong>：下载模块构建专门的直连网络引擎，默认绕过系统代理，直接与官方 CDN 及镜像源握手。</span>
+                  </li>
+                  <li>
+                    <span style="color:#55ff55;">●</span>
+                    <span><strong>跑满真实物理带宽</strong>：速度瞬间拉满，千兆宽带实测可达 90+ MB/s，不再受代理服务带宽和延迟制约。</span>
+                  </li>
+                  <li>
+                    <span style="color:#55ff55;">●</span>
+                    <span><strong>智能安全兜底</strong>：仅当直连连接层发生物理不通（如 DNS 阻断）时，才按需回退代理通道重试。</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            接下来必须着重提一个很多小伙伴吐槽过的严重 Bug：在修复前，只要电脑开着加速软件或系统代理，启动器的下载速度就会骤降到只有平时五分之一，不仅慢，还白白消耗梯子流量。0.1.7 彻底重构了网络层，下载流量默认走独立的直连客户端，直接与高速 CDN 握手，瞬间跑满物理带宽！只有在直连遇到不可抗力失败时才会智能回退代理，彻底治好了这个顽疾。
+          </template>
+        </div>
+
+        <!-- SLIDE 8: 视觉与排版 Bug 修复 -->
+        <div class="slide" data-title="视觉与排版修复：字体与UI大扫除" data-adv-icon="👁️" data-adv-type="目标达成！" data-adv-desc="夜视药水：中文字体与界面隐形大修复">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge redstone">UI & STABILITY FIX</span>
+              <h2 class="slide-title">界面排版大扫除 · <span class="highlight-emerald">中文字体与布局修复</span></h2>
+              <div class="slide-subtitle">告别文字整段空白、换行破损与旧渲染器色块遮挡</div>
+            </div>
+            <div class="slide-version-tag">VISUAL POLISH</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-2">
+              <div class="mc-card">
+                <div class="mc-item-icon-box emerald">🔤</div>
+                <h3>补齐中文字体回退链</h3>
+                <p>此前 <code>font-mono</code> 与 <code>font-pixel</code> 字体栈缺失中文字体回退，导致版本号、徽标和像素标题中的中文直接“隐形空白”。0.1.7 补全了完善的 CJK 中文字体后备链，全界面字体渲染清晰统一！</p>
+                <div class="mc-card-footer">文字显示 <span class="val">100% 正常显示</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box gold">🎨</div>
+                <h3>旧渲染器 Chromium 108 显色修复</h3>
+                <p>在较旧的 Chromium 环境下，Tailwind 的 <code>bg-gold/10</code> 透明度语法会被降级成“实心金色”，导致金字与金底同色完全看不见。现在全面使用显式 <code>rgba()</code> 回退，杜绝遮挡！</p>
+                <div class="mc-card-footer">兼容方案 <span class="val">显式 rgba 优雅回退</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box diamond">📐</div>
+                <h3>侧栏与统计信息布局自适应</h3>
+                <p>修复了侧栏底部「空闲」字样被压缩成一字一行竖排、版本号断裂成两行的尴尬现象；右栏底部 Java/基岩统计在窄窗口下现已支持智能换行。</p>
+                <div class="mc-card-footer">自适应优化 <span class="val">Flex & Grid 弹性自适应</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box amethyst">📰</div>
+                <h3>新闻卡版本号断词优化</h3>
+                <p>此前版本号如果在连字符处遇到换行，会出现像 <code>26.4-snapsho</code> 换行 <code>p-7</code> 这样的断词破损。已加入 <code>break-keep</code> 与不间断规则，格式工整美观。</p>
+                <div class="mc-card-footer">文本断行 <span class="val">格式严整不截断</span></div>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            除了下载外，本次更新还修复了一连串影响观感的界面 Bug：首先，之前很多用户反馈像素标题或者徽标里的中文会整段空白，这是因为字体栈缺少中文字体回退，现在已全部补齐；其次，修复了旧渲染器把半透明金色认成实心金色导致字迹被吞的问题；侧栏的“空闲”变成竖排、版本号断行、以及窄窗口下统计数据被裁切的布局问题也全部得到了彻底根治！
+          </template>
+        </div>
+
+        <!-- SLIDE 9: 细节体验升级与 0.1.6 修复点 -->
+        <div class="slide" data-title="稳定性细节提升" data-adv-icon="🔨" data-adv-type="目标达成！" data-adv-desc="铁砧附魔：EMA 速率平滑与体验打磨">
+          <div class="slide-header">
+            <div>
+              <span class="mc-badge">POLISH & STABILITY</span>
+              <h2 class="slide-title">更多体验细节 · <span class="highlight-emerald">润物细无声</span></h2>
+              <div class="slide-subtitle">每一个算法与流程的打磨，都是为了更省心的使用体验</div>
+            </div>
+            <div class="slide-version-tag">UNDER THE HOOD</div>
+          </div>
+          <div class="slide-body">
+            <div class="grid-3">
+              <div class="mc-card">
+                <div class="mc-item-icon-box emerald">📈</div>
+                <h3>EMA 指数移动平均平滑速率</h3>
+                <p>以前瞬时丢包会导致测速显示在短时间内暴跌或狂跳。新版采用 EMA 平滑算法，仪表盘上的速度曲线平顺优雅，更真实反映当前网络质量。</p>
+                <div class="mc-potion-buff">✨ 平滑阻尼</div>
+                <div class="mc-card-footer">速率计算 <span class="val">指数平滑算法 (EMA)</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box diamond">🧩</div>
+                <h3>Quilt 加载器镜像链补齐</h3>
+                <p>修复 0.1.6 之前 Quilt 官方源无任何国内镜像兜底的问题，现已无缝接入 BMCLAPI，Quilt 玩家下载依赖库同样享受飞速体验。</p>
+                <div class="mc-potion-buff">✨ 镜像兜底</div>
+                <div class="mc-card-footer">依赖加速 <span class="val">BMCLAPI 智能兜底</span></div>
+              </div>
+
+              <div class="mc-card">
+                <div class="mc-item-icon-box amethyst">📦</div>
+                <h3>联机房间一键补齐资源</h3>
+                <p>加入好友的局域网或 P2P 房间时，访客可直接对比房主所装的模组、光影与材质包，一键自动下载补全，告别“进得去但进不了世界”。</p>
+                <div class="mc-potion-buff">✨ 资源克隆</div>
+                <div class="mc-card-footer">联机便利 <span class="val">模组光影一键同步</span></div>
+              </div>
+            </div>
+          </div>
+          <template class="note-content">
+            在细节方面，我们对下载速率的计算改用了 EMA 指数移动平均算法，数值显示更加平滑，不会因为一次网络抖动就疯狂跳动；Quilt 加载器补齐了国内镜像链；同时在联机房间中，访客可以一键对比并补齐房主使用的光影、材质和模组，真正做到“一人配好，全服无忧”。
+          </template>
+        </div>
+
+        <!-- SLIDE 10: 结语与体验呼吁 -->
+        <div class="slide" data-title="总结与下载体验" data-adv-icon="🏆" data-adv-type="终极挑战！" data-adv-desc="终末之诗：立即下载，一键三连！">
+          <div class="cover-container">
+            <div class="mc-badge" style="margin-bottom:14px;">READY FOR ADVENTURE</div>
+            <h1 class="cover-main-title" style="font-size:3.2rem;margin-bottom:12px;">
+              立即开启你的 <span class="highlight-emerald">Minecraft 冒险</span>
+            </h1>
+            <p class="cover-desc" style="max-width:720px;margin-bottom:24px;">
+              轻量、现代、纯粹开源。<br />
+              支持 Windows 10/11 · macOS (Java版) · Linux (Java+BDS)
+            </p>
+
+            <div style="display:flex;gap:20px;margin-bottom:28px;">
+              <div style="background:#131824;border:2px solid #2d3748;border-radius:8px;padding:14px 24px;text-align:left;box-shadow:inset 0 2px 4px rgba(0,0,0,0.5);">
+                <div style="font-size:0.75rem;color:#94a3b8;font-family:var(--font-mc)">GITHUB REPOSITORY</div>
+                <div style="font-size:1.02rem;font-weight:700;color:#55ff55;margin-top:4px;">Cerlesse-studio/Open-source-Minecraft-launcher</div>
+              </div>
+
+              <div style="background:#131824;border:2px solid #2d3748;border-radius:8px;padding:14px 24px;text-align:left;box-shadow:inset 0 2px 4px rgba(0,0,0,0.5);">
+                <div style="font-size:0.75rem;color:#94a3b8;font-family:var(--font-mc)">LICENSE</div>
+                <div style="font-size:1.02rem;font-weight:700;color:#ffffff;margin-top:4px;">GPL-3.0 / MIT 开源协议</div>
+              </div>
+            </div>
+
+            <div class="mc-pill-group">
+              <div class="mc-pill" style="border-color:#55ff55"><span class="mc-pill-dot"></span> 欢迎在 Releases 下载安装</div>
+              <div class="mc-pill" style="border-color:#ffaa00"><span class="mc-pill-dot" style="background:#ffaa00;box-shadow:0 0 8px #ffaa00"></span> 欢迎 Star 🌟 支持项目开源</div>
+              <div class="mc-pill" style="border-color:#4deeea"><span class="mc-pill-dot" style="background:#4deeea;box-shadow:0 0 8px #4deeea"></span> 一键三连，获取更多动态</div>
+            </div>
+          </div>
+          <template class="note-content">
+            好啦！以上就是关于 Open-source-Minecraft-launcher v0.1.7 的全部更新内容与修复详情。如果大家喜欢这款干净、现代又高效的开源启动器，欢迎前往 GitHub 项目主页下载体验并给一个 Star 支持！如果视频对你有帮助，千万别忘了点赞、投币、收藏一键三连，我们下期视频再见！
+          </template>
+        </div>
+
+      </div>
+
+      <!-- Minecraft Hotbar Footer & Audio Controls -->
+      <footer class="stage-footer">
+        <div class="footer-left">
+          <!-- Minecraft Hearts & EXP Level -->
+          <div class="mc-hearts" title="Player Health">
+            <span class="mc-heart">❤️</span>
+            <span class="mc-heart">❤️</span>
+            <span class="mc-heart">❤️</span>
+            <span class="mc-heart">❤️</span>
+            <span class="mc-heart">❤️</span>
+          </div>
+          <div class="footer-title-box">
+            <span id="footerSlideTitle">版本发布封面</span>
+          </div>
+        </div>
+
+        <!-- Minecraft 10-Slot Hotbar -->
+        <div class="mc-hotbar" id="mcHotbar">
+          <!-- 10 slots populated by JS -->
+        </div>
+
+        <!-- Right Utilities for Video Recording -->
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="btn-mc active" id="audioToggleBtn" title="开关 Minecraft 像素音效">
+            <span id="audioIcon">🔊</span> 音效
+          </button>
+          <button class="btn-mc" id="noteToggleBtn" title="开关演讲台词提词器 (N)">
+            🎙️ 提词 <span class="kbd-tag">N</span>
+          </button>
+          <button class="btn-mc" id="tocToggleBtn" title="打开全篇目录 (M)">
+            📑 目录 <span class="kbd-tag">M</span>
+          </button>
+          <button class="btn-mc" id="safeZoneBtn" title="开关16:9录制辅助框 (S)">
+            📐 框线 <span class="kbd-tag">S</span>
+          </button>
+          <button class="btn-mc" id="autoPlayBtn" title="自动切页演示 (A)">
+            ⏱️ 轮播 <span class="kbd-tag">A</span>
+          </button>
+          <button class="btn-mc" id="fullscreenBtn" title="进入全屏演讲 (F)">
+            ⛶ 全屏 <span class="kbd-tag">F</span>
+          </button>
+        </div>
+      </footer>
+
+    </div>
+  </div>
+
+  <!-- Teleprompter / Notes Drawer (提词器浮窗) -->
+  <div class="teleprompter-modal" id="teleprompter">
+    <div class="teleprompter-head">
+      <h4>🎙️ 视频解说口播台词 (Voiceover Notes)</h4>
+      <button id="closeNoteBtn" class="btn-mc" style="padding:2px 8px;">&times;</button>
+    </div>
+    <div class="teleprompter-body" id="noteText">
+      <!-- Injected dynamically -->
+    </div>
+  </div>
+
+  <!-- Table of Contents Modal (目录速查) -->
+  <div class="toc-modal" id="tocModal">
+    <div class="toc-box">
+      <h3>
+        <span>📑 幻灯片导航目录 (Minecraft Map)</span>
+        <button id="closeTocBtn" class="btn-mc" style="padding:4px 10px;">&times; 关闭</button>
+      </h3>
+      <div class="toc-list" id="tocList">
+        <!-- Injected dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript Controller with Minecraft Audio & Particle System -->
+  <script>
+    (function () {
+      const slides = Array.from(document.querySelectorAll('.slide'));
+      const expBarFill = document.getElementById('expBarFill');
+      const expLevelNum = document.getElementById('expLevelNum');
+      const footerSlideTitle = document.getElementById('footerSlideTitle');
+      const mcHotbar = document.getElementById('mcHotbar');
+
+      const advToast = document.getElementById('advToast');
+      const toastIcon = document.getElementById('toastIcon');
+      const toastType = document.getElementById('toastType');
+      const toastDesc = document.getElementById('toastDesc');
+
+      const fullscreenBtn = document.getElementById('fullscreenBtn');
+      const noteToggleBtn = document.getElementById('noteToggleBtn');
+      const closeNoteBtn = document.getElementById('closeNoteBtn');
+      const teleprompter = document.getElementById('teleprompter');
+      const noteText = document.getElementById('noteText');
+
+      const tocToggleBtn = document.getElementById('tocToggleBtn');
+      const closeTocBtn = document.getElementById('closeTocBtn');
+      const tocModal = document.getElementById('tocModal');
+      const tocList = document.getElementById('tocList');
+
+      const safeZoneBtn = document.getElementById('safeZoneBtn');
+      const autoPlayBtn = document.getElementById('autoPlayBtn');
+      const audioToggleBtn = document.getElementById('audioToggleBtn');
+      const audioIcon = document.getElementById('audioIcon');
+
+      let currentIndex = 0;
+      let autoPlayTimer = null;
+      let toastTimer = null;
+      let isAudioEnabled = true;
+
+      // ----------------------------------------------------
+      // Web Audio API Synthesizer (Realistic Minecraft SFX)
+      // ----------------------------------------------------
+      let audioCtx = null;
+      function initAudio() {
+        if (!audioCtx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (AudioContext) audioCtx = new AudioContext();
+        }
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+      }
+
+      // Minecraft Wood Click Sound
+      function playMcClick() {
+        if (!isAudioEnabled) return;
+        try {
+          initAudio();
+          if (!audioCtx) return;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(320, audioCtx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(140, audioCtx.currentTime + 0.04);
+          gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.04);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.04);
+        } catch(e){}
+      }
+
+      // Minecraft Experience Orb "Ding" (Level Up chime)
+      function playMcExpDing() {
+        if (!isAudioEnabled) return;
+        try {
+          initAudio();
+          if (!audioCtx) return;
+          const notes = [587.33, 880]; // D5 -> A5
+          notes.forEach((freq, idx) => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            const startTime = audioCtx.currentTime + idx * 0.07;
+            osc.frequency.setValueAtTime(freq, startTime);
+            gain.gain.setValueAtTime(0.2, startTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(startTime);
+            osc.stop(startTime + 0.25);
+          });
+        } catch(e){}
+      }
+
+      // ----------------------------------------------------
+      // Build 10 Hotbar Slots & TOC
+      // ----------------------------------------------------
+      slides.forEach((slide, idx) => {
+        const title = slide.getAttribute('data-title') || `第 ${idx + 1} 页`;
+
+        // 1. Hotbar Slot
+        const slot = document.createElement('div');
+        slot.className = 'mc-hotbar-slot' + (idx === 0 ? ' active' : '');
+        slot.title = `P${idx + 1}: ${title}`;
+        slot.textContent = idx + 1;
+        slot.addEventListener('click', () => {
+          playMcClick();
+          goToSlide(idx);
+        });
+        mcHotbar.appendChild(slot);
+
+        // 2. TOC Item
+        const tocItem = document.createElement('div');
+        tocItem.className = 'toc-item' + (idx === 0 ? ' current' : '');
+        tocItem.innerHTML = `
+          <span class="toc-item-num">P${String(idx + 1).padStart(2, '0')}</span>
+          <span class="toc-item-title">${title}</span>
+        `;
+        tocItem.addEventListener('click', () => {
+          playMcClick();
+          goToSlide(idx);
+          tocModal.classList.remove('open');
+        });
+        tocList.appendChild(tocItem);
+      });
+
+      // ----------------------------------------------------
+      // Show Minecraft Advancement Toast
+      // ----------------------------------------------------
+      function triggerAdvancementToast(slide) {
+        const icon = slide.getAttribute('data-adv-icon') || '🏆';
+        const type = slide.getAttribute('data-adv-type') || '进度达成！';
+        const desc = slide.getAttribute('data-adv-desc') || slide.getAttribute('data-title');
+
+        toastIcon.textContent = icon;
+        toastType.textContent = type;
+        toastDesc.textContent = desc;
+
+        advToast.classList.add('show');
+        playMcExpDing();
+
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          advToast.classList.remove('show');
+        }, 3200);
+      }
+
+      // ----------------------------------------------------
+      // Slide Switching Logic
+      // ----------------------------------------------------
+      function updateSlide(index) {
+        slides.forEach((slide, i) => {
+          slide.classList.toggle('active', i === index);
+        });
+
+        currentIndex = index;
+        const currentSlide = slides[index];
+        const title = currentSlide.getAttribute('data-title') || `第 ${index + 1} 页`;
+        footerSlideTitle.textContent = title;
+
+        // Update EXP Bar & Level
+        const percent = ((index + 1) / slides.length) * 100;
+        expBarFill.style.width = percent + '%';
+        expLevelNum.textContent = index + 1;
+
+        // Update Hotbar
+        Array.from(mcHotbar.children).forEach((slot, i) => {
+          slot.classList.toggle('active', i === index);
+        });
+
+        // Update TOC
+        Array.from(tocList.children).forEach((item, i) => {
+          item.classList.toggle('current', i === index);
+        });
+
+        // Update Notes
+        const noteEl = currentSlide.querySelector('.note-content');
+        if (noteEl) {
+          noteText.innerHTML = noteEl.innerHTML.trim();
+        } else {
+          noteText.innerHTML = '<em>当前页面暂无特定解说台词。</em>';
+        }
+
+        // Trigger Advancement Toast
+        triggerAdvancementToast(currentSlide);
+      }
+
+      function nextSlide() {
+        if (currentIndex < slides.length - 1) {
+          playMcClick();
+          goToSlide(currentIndex + 1);
+        } else if (autoPlayTimer) {
+          goToSlide(0);
+        }
+      }
+
+      function prevSlide() {
+        if (currentIndex > 0) {
+          playMcClick();
+          goToSlide(currentIndex - 1);
+        }
+      }
+
+      function goToSlide(index) {
+        if (index >= 0 && index < slides.length) {
+          updateSlide(index);
+        }
+      }
+
+      // Keyboard Controls
+      window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+        switch (e.key) {
+          case 'ArrowRight':
+          case 'ArrowDown':
+          case ' ':
+          case 'PageDown':
+            e.preventDefault();
+            nextSlide();
+            break;
+          case 'ArrowLeft':
+          case 'ArrowUp':
+          case 'PageUp':
+          case 'Backspace':
+            e.preventDefault();
+            prevSlide();
+            break;
+          case 'Home':
+            e.preventDefault();
+            playMcClick();
+            goToSlide(0);
+            break;
+          case 'End':
+            e.preventDefault();
+            playMcClick();
+            goToSlide(slides.length - 1);
+            break;
+          case 'f':
+          case 'F':
+            e.preventDefault();
+            toggleFullscreen();
+            break;
+          case 'n':
+          case 'N':
+            e.preventDefault();
+            toggleTeleprompter();
+            break;
+          case 'm':
+          case 'M':
+            e.preventDefault();
+            toggleToc();
+            break;
+          case 's':
+          case 'S':
+            e.preventDefault();
+            toggleSafeZone();
+            break;
+          case 'a':
+          case 'A':
+            e.preventDefault();
+            toggleAutoPlay();
+            break;
+          case 'Escape':
+            tocModal.classList.remove('open');
+            teleprompter.classList.remove('open');
+            break;
+        }
+      });
+
+      // Audio Toggle
+      audioToggleBtn.addEventListener('click', () => {
+        isAudioEnabled = !isAudioEnabled;
+        audioToggleBtn.classList.toggle('active', isAudioEnabled);
+        audioIcon.textContent = isAudioEnabled ? '🔊' : '🔇';
+        if (isAudioEnabled) playMcClick();
+      });
+
+      // Fullscreen Toggle
+      function toggleFullscreen() {
+        playMcClick();
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          if (document.exitFullscreen) document.exitFullscreen();
+        }
+      }
+      fullscreenBtn.addEventListener('click', toggleFullscreen);
+
+      // Teleprompter Toggle
+      function toggleTeleprompter() {
+        playMcClick();
+        teleprompter.classList.toggle('open');
+        noteToggleBtn.classList.toggle('active', teleprompter.classList.contains('open'));
+      }
+      noteToggleBtn.addEventListener('click', toggleTeleprompter);
+      closeNoteBtn.addEventListener('click', () => {
+        playMcClick();
+        teleprompter.classList.remove('open');
+        noteToggleBtn.classList.remove('active');
+      });
+
+      // TOC Toggle
+      function toggleToc() {
+        playMcClick();
+        tocModal.classList.toggle('open');
+      }
+      tocToggleBtn.addEventListener('click', toggleToc);
+      closeTocBtn.addEventListener('click', () => {
+        playMcClick();
+        tocModal.classList.remove('open');
+      });
+      tocModal.addEventListener('click', (e) => {
+        if (e.target === tocModal) tocModal.classList.remove('open');
+      });
+
+      // Safe Zone Toggle
+      function toggleSafeZone() {
+        playMcClick();
+        document.body.classList.toggle('show-safe-zone');
+        safeZoneBtn.classList.toggle('active', document.body.classList.contains('show-safe-zone'));
+      }
+      safeZoneBtn.addEventListener('click', toggleSafeZone);
+
+      // Auto Play Toggle
+      function toggleAutoPlay() {
+        playMcClick();
+        if (autoPlayTimer) {
+          clearInterval(autoPlayTimer);
+          autoPlayTimer = null;
+          autoPlayBtn.classList.remove('active');
+          autoPlayBtn.innerHTML = '⏱️ 轮播 <span class="kbd-tag">A</span>';
+        } else {
+          autoPlayTimer = setInterval(nextSlide, 8000);
+          autoPlayBtn.classList.add('active');
+          autoPlayBtn.innerHTML = '⏸️ 暂停 <span class="kbd-tag">A</span>';
+        }
+      }
+      autoPlayBtn.addEventListener('click', toggleAutoPlay);
+
+      // Stage edge clicks
+      const stage = document.getElementById('slideStage');
+      stage.addEventListener('click', (e) => {
+        if (e.target.closest('footer') || e.target.closest('.teleprompter-modal') || e.target.closest('.toc-modal')) return;
+        const rect = stage.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        if (clickX > rect.width * 0.78) {
+          nextSlide();
+        } else if (clickX < rect.width * 0.22) {
+          prevSlide();
+        }
+      });
+
+      // ----------------------------------------------------
+      // Canvas Minecraft Particle System (Ender / EXP / Nether)
+      // ----------------------------------------------------
+      const canvas = document.getElementById('particleCanvas');
+      const ctx = canvas.getContext('2d');
+      let particles = [];
+
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+      window.addEventListener('resize', resizeCanvas);
+      resizeCanvas();
+
+      class McParticle {
+        constructor() {
+          this.reset();
+        }
+        reset() {
+          this.x = Math.random() * canvas.width;
+          this.y = canvas.height + Math.random() * 50;
+          this.size = Math.floor(Math.random() * 4 + 3); // 3-7px square pixels
+          this.speedY = Math.random() * 0.8 + 0.4;
+          this.speedX = (Math.random() - 0.5) * 0.5;
+          this.opacity = Math.random() * 0.6 + 0.2;
+          // Colors: Minecraft Emerald Green, Nether Purple, Diamond Cyan
+          const colorTypes = ['#55ff55', '#c084fc', '#4deeea', '#ffaa00'];
+          this.color = colorTypes[Math.floor(Math.random() * colorTypes.length)];
+        }
+        update() {
+          this.y -= this.speedY;
+          this.x += this.speedX;
+          if (this.y < -10) this.reset();
+        }
+        draw() {
+          ctx.fillStyle = this.color;
+          ctx.globalAlpha = this.opacity;
+          ctx.fillRect(this.x, this.y, this.size, this.size); // Minecraft square pixels
+          ctx.globalAlpha = 1.0;
+        }
+      }
+
+      for (let i = 0; i < 45; i++) {
+        particles.push(new McParticle());
+      }
+
+      function animateParticles() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        particles.forEach(p => {
+          p.update();
+          p.draw();
+        });
+        requestAnimationFrame(animateParticles);
+      }
+      animateParticles();
+
+      // Init first slide
+      updateSlide(0);
+
+    })();
+  </script>
+</body>
+</html>

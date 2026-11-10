@@ -634,6 +634,8 @@ export interface LauncherSettings {
   launcherVisibility: LauncherVisibility;
   processPriority: ProcessPriority;
   windowSize: WindowSizeMode;
+  /** Automatically select a detected installed version; a new detection wins. */
+  autoSelectVersion: boolean;
   /** Accent color as `#rrggbb`; `DEFAULT_ACCENT` is used when empty. */
   customThemeColor: string;
   themeMode: ThemeMode;

@@ -175,6 +175,7 @@ import {
   saveVersionSettings,
   type VersionLaunchSettings,
 } from "./lib/versionSettings";
+import { isBedrockVersionId, pickAutoVersion } from "./lib/autoVersion";
 import type {
   AccountKind,
   BackgroundDownloadTask,
@@ -389,6 +390,14 @@ export default function App() {
   const peakSpeedRef = useRef(0);
   const latestProgressRef = useRef<InstallProgress | null>(null);
   const lastRoot = useRef(settings.gameRoot);
+  const detectedVersionsRef = useRef<Set<string>>(new Set());
+  const hasScannedVersionsRef = useRef(false);
+  const viewRef = useRef<ViewId>(view);
+  const downloadNavigationRef = useRef<{
+    view: ViewId;
+    cancelled: boolean;
+    tasks: Set<string>;
+  } | null>(null);
   const contentRef = useRef<HTMLElement>(null);
   const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
 
@@ -840,6 +849,8 @@ export default function App() {
       setInstalled([]);
       setManifest(null);
       setSelectedVersion("");
+      detectedVersionsRef.current = new Set();
+      hasScannedVersionsRef.current = false;
       setJavaInstalls([]);
       void detectJavaForRoot(settings.gameRoot);
     }
@@ -847,15 +858,94 @@ export default function App() {
     void refreshInstalled(settings.gameRoot);
   }, [settings.gameRoot, refreshInstalled, refreshManifest, detectJavaForRoot]);
 
-  // Pick a sensible default instance once data arrives.
+  // Automatically select a detected instance. A manual pick is kept until the
+  // scan finds a new version; with the setting off the launcher only fills in
+  // an empty or stale selection so launching never gets stuck.
   useEffect(() => {
-    if (selectedVersion) return;
-    if (installed.length > 0) {
-      setSelectedVersion(installed[0].id);
-    } else if (manifest) {
-      setSelectedVersion(manifest.latest.release);
+    const ids = new Set(installed.map((version) => version.id));
+    const previous = detectedVersionsRef.current;
+    const firstScan = !hasScannedVersionsRef.current;
+    const newlyDetected = installed
+      .filter((version) => !previous.has(version.id))
+      .map((version) => version.id);
+
+    if (installed.length === 0) {
+      if (selectedVersion && isBedrockVersionId(selectedVersion)) return;
+      if (!selectedVersion && manifest) {
+        setSelectedVersion(manifest.latest.release);
+      }
+      return;
     }
-  }, [installed, manifest, selectedVersion]);
+
+    detectedVersionsRef.current = ids;
+    hasScannedVersionsRef.current = true;
+
+    // A Bedrock pick is not a Java instance; leave it alone.
+    if (selectedVersion && isBedrockVersionId(selectedVersion)) return;
+
+    const selectionValid = Boolean(selectedVersion) && ids.has(selectedVersion);
+    if (!settings.autoSelectVersion) {
+      if (!selectionValid) setSelectedVersion(installed[0].id);
+      return;
+    }
+
+    const target = pickAutoVersion(installed, manifest, { prefer: newlyDetected });
+    if (!target || target === selectedVersion) return;
+    // With auto-selection on, only a fresh detection replaces a valid manual
+    // pick; an invalid selection is always repaired.
+    if (selectionValid && newlyDetected.length === 0) return;
+    setSelectedVersion(target);
+    if (!firstScan && newlyDetected.length > 0) {
+      pushToast("info", "已自动选择版本", `检测到 ${target}，已设为当前实例。`);
+    }
+  }, [installed, manifest, selectedVersion, settings.autoSelectVersion, pushToast]);
+
+  // Download-page navigation: starting a download opens the download manager,
+  // and finishing it returns to the page the user came from. Switching pages
+  // by hand during the download cancels that return trip.
+  useEffect(() => {
+    viewRef.current = view;
+    const navigation = downloadNavigationRef.current;
+    if (navigation && !navigation.cancelled && view !== "download-progress") {
+      navigation.cancelled = true;
+    }
+  }, [view]);
+
+  const beginDownloadNavigation = useCallback((taskId: string) => {
+    const current = downloadNavigationRef.current;
+    if (current && !current.cancelled) {
+      current.tasks.add(taskId);
+      if (viewRef.current !== "download-progress") setView("download-progress");
+      return;
+    }
+    // Already on the download manager: there is no previous page to return to.
+    if (viewRef.current === "download-progress") {
+      downloadNavigationRef.current = null;
+      return;
+    }
+    downloadNavigationRef.current = {
+      view: viewRef.current,
+      cancelled: false,
+      tasks: new Set([taskId]),
+    };
+    setView("download-progress");
+  }, []);
+
+  const endDownloadNavigation = useCallback((taskId: string) => {
+    const navigation = downloadNavigationRef.current;
+    if (!navigation) return;
+    navigation.tasks.delete(taskId);
+    if (navigation.tasks.size > 0) return;
+    // A queued install continues on the download manager; return once the
+    // queue has drained instead of bouncing between pages.
+    if (installQueueRef.current.length > 0) return;
+    downloadNavigationRef.current = null;
+    if (!navigation.cancelled) setView(navigation.view);
+  }, []);
+
+  const abortDownloadNavigation = useCallback(() => {
+    downloadNavigationRef.current = null;
+  }, []);
 
   // Wire up backend events once.
   useEffect(() => {
@@ -1025,6 +1115,11 @@ export default function App() {
     track(
       subscribe("content:progress", (payload) => {
         applyContentProgress(payload);
+        if (payload.stage === "downloading") {
+          beginDownloadNavigation(`content:${payload.id}`);
+        } else {
+          endDownloadNavigation(`content:${payload.id}`);
+        }
       }),
     );
 
@@ -1032,7 +1127,14 @@ export default function App() {
       disposed = true;
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [applyBackgroundTask, pushLog, pushToast, refreshInstalled]);
+  }, [
+    applyBackgroundTask,
+    beginDownloadNavigation,
+    endDownloadNavigation,
+    pushLog,
+    pushToast,
+    refreshInstalled,
+  ]);
 
   const bestJava = useMemo(() => {
     if (settings.javaPath) {
@@ -1129,6 +1231,8 @@ export default function App() {
         return;
       }
       const targetId = selection?.instanceName?.trim() || versionId;
+      const downloadToken = `version:${targetId}`;
+      beginDownloadNavigation(downloadToken);
       const threads = settingsRef.current.downloadThreads;
       const startedAt = Date.now();
       peakSpeedRef.current = 0;
@@ -1185,8 +1289,10 @@ export default function App() {
           `${res.versionId} 已安装`,
           count ? "游戏文件与附加工具安装完成，可以开始游戏。" : "可以开始游戏。",
         );
+        endDownloadNavigation(downloadToken);
       } catch (error) {
         if (isPausedByUserRef.current || isCancelledByUserRef.current) {
+          abortDownloadNavigation();
           return;
         }
         const record: DownloadHistoryRecord = {
@@ -1204,6 +1310,7 @@ export default function App() {
         setDownloadHistory((prev) => [record, ...prev].slice(0, 40));
         pushToast("error", `安装 ${targetId} 失败`, String(error));
         pushLog("cobble", `安装 ${targetId} 失败: ${String(error)}`);
+        endDownloadNavigation(downloadToken);
       } finally {
         activeInstallParamsRef.current = null;
         isPausedByUserRef.current = false;
@@ -1212,7 +1319,16 @@ export default function App() {
         setInstallProgress(null);
       }
     },
-    [installingVersion, installQueue.length, pushLog, pushToast, refreshInstalled],
+    [
+      installingVersion,
+      installQueue.length,
+      beginDownloadNavigation,
+      endDownloadNavigation,
+      abortDownloadNavigation,
+      pushLog,
+      pushToast,
+      refreshInstalled,
+    ],
   );
 
   const handleInstallBedrock = useCallback(
@@ -1227,6 +1343,8 @@ export default function App() {
         return;
       }
       const root = settingsRef.current.gameRoot;
+      const downloadToken = `bedrock:${ver.id}`;
+      beginDownloadNavigation(downloadToken);
       const threads = settingsRef.current.downloadThreads;
       const startedAt = Date.now();
       peakSpeedRef.current = 0;
@@ -1295,8 +1413,10 @@ export default function App() {
         } catch {}
         pushToast("success", `${targetLabel} 安装完成`, res);
         pushLog("cobble", `${targetLabel} 安装成功: ${res}`);
+        endDownloadNavigation(downloadToken);
       } catch (error) {
         if (isPausedByUserRef.current || isCancelledByUserRef.current) {
+          abortDownloadNavigation();
           return;
         }
         const record: DownloadHistoryRecord = {
@@ -1314,6 +1434,7 @@ export default function App() {
         setDownloadHistory((prev) => [record, ...prev].slice(0, 40));
         pushToast("error", `安装 ${targetLabel} 失败`, String(error));
         pushLog("cobble", `安装 ${targetLabel} 失败: ${String(error)}`);
+        endDownloadNavigation(downloadToken);
       } finally {
         activeInstallParamsRef.current = null;
         isPausedByUserRef.current = false;
@@ -1322,12 +1443,20 @@ export default function App() {
         setInstallProgress(null);
       }
     },
-    [installingVersion, pushLog, pushToast],
+    [
+      installingVersion,
+      beginDownloadNavigation,
+      endDownloadNavigation,
+      abortDownloadNavigation,
+      pushLog,
+      pushToast,
+    ],
   );
 
   const handlePauseInstall = useCallback(async () => {
     const currentTask = activeInstallParamsRef.current;
     if (!currentTask) return;
+    abortDownloadNavigation();
     isPausedByUserRef.current = true;
     await cancelInstall();
     const snap = latestProgressRef.current;
@@ -1364,11 +1493,12 @@ export default function App() {
       `已保存 ${targetName} 当前分片下载进度，可随时点击【继续下载】恢复。`,
     );
     pushLog("cobble", `已暂停 ${targetName} 下载。`);
-  }, [pushLog, pushToast]);
+  }, [abortDownloadNavigation, pushLog, pushToast]);
 
   const handleCancelInstall = useCallback(async () => {
     const currentTask = activeInstallParamsRef.current;
     if (!currentTask) return;
+    abortDownloadNavigation();
     isCancelledByUserRef.current = true;
     await cancelInstall();
     const targetName =
@@ -1379,7 +1509,7 @@ export default function App() {
     setInstallProgress(null);
     pushToast("info", "下载已取消", `已取消 ${targetName} 的下载任务。`);
     pushLog("cobble", `已取消 ${targetName} 下载。`);
-  }, [pushLog, pushToast]);
+  }, [abortDownloadNavigation, pushLog, pushToast]);
 
   const handleResumeInstall = useCallback(
     async (record: DownloadHistoryRecord) => {
@@ -1432,6 +1562,8 @@ export default function App() {
         pushToast("error", "游戏目录为空", "请先在设置中选择游戏目录。");
         return;
       }
+      const downloadToken = `repair:${versionId}`;
+      beginDownloadNavigation(downloadToken);
       pushToast(
         "info",
         `开始补全 ${versionId}`,
@@ -1457,9 +1589,11 @@ export default function App() {
       } catch (error) {
         pushToast("error", `补全 ${versionId} 失败`, String(error));
         pushLog("cobble", `补全 ${versionId} 失败: ${String(error)}`);
+      } finally {
+        endDownloadNavigation(downloadToken);
       }
     },
-    [pushLog, pushToast, refreshInstalled],
+    [beginDownloadNavigation, endDownloadNavigation, pushLog, pushToast, refreshInstalled],
   );
 
   const handleLaunch = useCallback(

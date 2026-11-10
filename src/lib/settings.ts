@@ -68,6 +68,7 @@ export const defaultSettings: LauncherSettings = {
   launcherVisibility: "keep",
   processPriority: "above_normal",
   windowSize: "default",
+  autoSelectVersion: true,
   customThemeColor: "#9bdd6b",
   themeMode: "dark",
   backgroundType: "default",
@@ -174,6 +175,9 @@ export function loadSettings(): LauncherSettings {
         parsed.windowSize === "fullscreen" || parsed.windowSize === "custom"
           ? parsed.windowSize
           : "default",
+      // Older configs predate the switch and auto-selection was the behaviour
+      // they got, so a missing value stays enabled.
+      autoSelectVersion: parsed.autoSelectVersion !== false,
       customThemeColor: resolveAccentColor(parsed as Record<string, unknown>),
       themeMode:
         parsed.themeMode === "light" || parsed.themeMode === "system"

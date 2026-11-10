@@ -1194,6 +1194,24 @@ export function SettingsView({
                     />
                   </Field>
 
+                  <Field label="自动选择版本">
+                    <div className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/15 px-2.5">
+                      <Label
+                        htmlFor="auto-select-version"
+                        className="text-[11px] font-normal text-muted-foreground"
+                      >
+                        检测到游戏版本时自动选中
+                      </Label>
+                      <Switch
+                        id="auto-select-version"
+                        checked={settings.autoSelectVersion !== false}
+                        onCheckedChange={(checked) =>
+                          onChange({ autoSelectVersion: checked })
+                        }
+                      />
+                    </div>
+                  </Field>
+
                   <Field label="游戏窗口标题">
                     <Input
                       placeholder="默认"
