@@ -3039,6 +3039,7 @@ pub fn ensure_gaming_services_running(app: Option<&crate::bridge::AppHandle>) {
     });
 }
 
+#[cfg(target_os = "windows")]
 fn ensure_gaming_services_running_internal(app: Option<&crate::bridge::AppHandle>) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
