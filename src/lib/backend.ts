@@ -337,9 +337,9 @@ export async function installVersion(
   });
 }
 
-export async function cancelInstall(): Promise<boolean> {
+export async function cancelInstall(cleanupCache = false): Promise<boolean> {
   if (!isDesktop) return true;
-  return invoke<boolean>("cancel_install");
+  return invoke<boolean>("cancel_install", { cleanupCache });
 }
 
 export async function deleteVersion(

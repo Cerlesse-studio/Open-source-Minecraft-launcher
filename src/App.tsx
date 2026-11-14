@@ -1614,16 +1614,19 @@ export default function App() {
     if (!currentTask) return;
     abortDownloadNavigation();
     isCancelledByUserRef.current = true;
-    await cancelInstall();
+    await cancelInstall(true);
     const targetName =
       currentTask.edition === "bedrock"
         ? currentTask.versionId
         : currentTask.selection?.instanceName?.trim() || currentTask.versionId;
+    if (currentTask.edition !== "bedrock") {
+      void refreshInstalled(settingsRef.current.gameRoot);
+    }
     setInstallingVersion(null);
     setInstallProgress(null);
-    pushToast("info", "下载已取消", `已取消 ${targetName} 的下载任务。`);
-    pushLog("cobble", `已取消 ${targetName} 下载。`);
-  }, [abortDownloadNavigation, pushLog, pushToast]);
+    pushToast("info", "下载已取消", `已取消 ${targetName} 的下载任务并清理下载缓存。`);
+    pushLog("cobble", `已取消 ${targetName} 下载并清理下载缓存。`);
+  }, [abortDownloadNavigation, pushLog, pushToast, refreshInstalled]);
 
   const handleResumeInstall = useCallback(
     async (record: DownloadHistoryRecord) => {

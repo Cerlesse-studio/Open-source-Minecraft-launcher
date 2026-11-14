@@ -199,9 +199,14 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             )
             .await?,
         ),
-        "cancel_install" => {
-            to_value(crate::cancel_install(app.clone(), app.state::<InstallState>()).await?)
-        }
+        "cancel_install" => to_value(
+            crate::cancel_install(
+                app.clone(),
+                app.state::<InstallState>(),
+                argument(&args, "cleanupCache")?,
+            )
+            .await?,
+        ),
         "install_bedrock_pack" => to_value(
             crate::install_bedrock_pack(
                 app.clone(),

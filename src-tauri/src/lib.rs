@@ -94,10 +94,27 @@ fn game_window_visible(_pid: u32) -> bool {
     false
 }
 
+#[derive(Clone, Debug)]
+enum ActiveInstallTarget {
+    Java {
+        root: PathBuf,
+        instance_id: String,
+        was_already_installed: bool,
+    },
+    Bedrock {
+        root: PathBuf,
+        version_id: String,
+        dest_dir_existed: bool,
+    },
+}
+
 #[derive(Default)]
 pub struct InstallState {
     running: Mutex<Option<String>>,
     abort_handle: Mutex<Option<tokio::task::AbortHandle>>,
+    target: Mutex<Option<ActiveInstallTarget>>,
+    cleanup_on_cancel: Mutex<bool>,
+    done_notify: Arc<tokio::sync::Notify>,
 }
 
 pub struct GameState {
@@ -489,6 +506,23 @@ async fn install_version(
         .unwrap_or(&request.version_id)
         .to_string();
 
+    let clean_version_id = request
+        .version_id
+        .strip_prefix("betacraft:")
+        .unwrap_or(&request.version_id);
+    let instance_id = request
+        .selection
+        .as_ref()
+        .and_then(|s| s.instance_name.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(clean_version_id)
+        .to_string();
+    let abs_root = net::absolute_path(&PathBuf::from(&request.root));
+    let was_already_installed = minecraft::list_installed(&abs_root)
+        .map(|list| list.iter().any(|v| v.id == instance_id))
+        .unwrap_or(false);
+
     {
         let mut running = state
             .running
@@ -498,6 +532,16 @@ async fn install_version(
             return Err(format!("正在安装 {active}，请等待当前任务完成"));
         }
         *running = Some(target_label);
+    }
+    if let Ok(mut flag) = state.cleanup_on_cancel.lock() {
+        *flag = false;
+    }
+    if let Ok(mut target) = state.target.lock() {
+        *target = Some(ActiveInstallTarget::Java {
+            root: abs_root,
+            instance_id,
+            was_already_installed,
+        });
     }
 
     let app_handle = app.clone();
@@ -522,13 +566,8 @@ async fn install_version(
     }
 
     let join_res = task.await;
-
-    if let Ok(mut running) = state.running.lock() {
-        *running = None;
-    }
-    if let Ok(mut guard) = state.abort_handle.lock() {
-        *guard = None;
-    }
+    let cancelled = matches!(&join_res, Err(e) if e.is_cancelled());
+    finish_install_task(&state, cancelled).await;
 
     match join_res {
         Ok(res) => res,
@@ -1437,6 +1476,12 @@ async fn install_bedrock_version(
         None => default_root(&app)?,
     };
 
+    let abs_root = net::absolute_path(&p);
+    let dest_dir_existed = abs_root
+        .join("bedrock")
+        .join("versions")
+        .join(&version_id)
+        .exists();
     let target_label = format!("bedrock:{version_id}");
     {
         let mut running = state
@@ -1447,6 +1492,16 @@ async fn install_bedrock_version(
             return Err(format!("正在安装 {active}，请等待当前任务完成"));
         }
         *running = Some(target_label);
+    }
+    if let Ok(mut flag) = state.cleanup_on_cancel.lock() {
+        *flag = false;
+    }
+    if let Ok(mut target) = state.target.lock() {
+        *target = Some(ActiveInstallTarget::Bedrock {
+            root: abs_root,
+            version_id: version_id.clone(),
+            dest_dir_existed,
+        });
     }
 
     let app_handle = app.clone();
@@ -1464,13 +1519,8 @@ async fn install_bedrock_version(
     }
 
     let join_res = task.await;
-
-    if let Ok(mut running) = state.running.lock() {
-        *running = None;
-    }
-    if let Ok(mut guard) = state.abort_handle.lock() {
-        *guard = None;
-    }
+    let cancelled = matches!(&join_res, Err(e) if e.is_cancelled());
+    finish_install_task(&state, cancelled).await;
 
     match join_res {
         Ok(res) => res,
@@ -1479,7 +1529,147 @@ async fn install_bedrock_version(
     }
 }
 
-async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Result<bool, String> {
+fn is_download_cache_file(name: &str) -> bool {
+    name.ends_with(".part") || name.ends_with(".part.meta") || name.ends_with(".meta.tmp")
+}
+
+fn remove_file_with_retry(path: &std::path::Path) {
+    for attempt in 0..3 {
+        match std::fs::remove_file(path) {
+            Ok(()) => return,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 2 => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return,
+        }
+    }
+}
+
+fn remove_dir_all_with_retry(path: &std::path::Path) {
+    for attempt in 0..3 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 2 => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return,
+        }
+    }
+}
+
+fn cleanup_partial_files(dir: &std::path::Path, prune_empty_subdirs: bool) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            cleanup_partial_files(&path, prune_empty_subdirs);
+            if prune_empty_subdirs {
+                // `remove_dir` only succeeds when the directory is empty.
+                let _ = std::fs::remove_dir(&path);
+            }
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(is_download_cache_file)
+            .unwrap_or(false)
+        {
+            remove_file_with_retry(&path);
+        }
+    }
+}
+
+fn cleanup_install_cache_sync(target: ActiveInstallTarget) {
+    match target {
+        ActiveInstallTarget::Java {
+            root,
+            instance_id,
+            was_already_installed,
+        } => {
+            let instance_dir = root.join("versions").join(&instance_id);
+            if instance_dir.exists() {
+                if !was_already_installed {
+                    remove_dir_all_with_retry(&instance_dir);
+                } else {
+                    cleanup_partial_files(&instance_dir, false);
+                }
+            }
+            cleanup_partial_files(&root.join("libraries"), true);
+            cleanup_partial_files(&root.join("assets"), true);
+            cleanup_partial_files(&root.join("meta").join("installers"), true);
+        }
+        ActiveInstallTarget::Bedrock {
+            root,
+            version_id,
+            dest_dir_existed,
+        } => {
+            let cache_dir = root.join("bedrock").join("cache");
+            let prefix = format!("{version_id}.");
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|name| name.starts_with(&prefix))
+                            .unwrap_or(false)
+                    {
+                        remove_file_with_retry(&path);
+                    }
+                }
+            }
+            let dest_dir = root.join("bedrock").join("versions").join(&version_id);
+            if dest_dir.exists() {
+                if !dest_dir_existed {
+                    remove_dir_all_with_retry(&dest_dir);
+                } else {
+                    cleanup_partial_files(&dest_dir, false);
+                }
+            }
+        }
+    }
+}
+
+async fn cleanup_install_cache(target: ActiveInstallTarget) {
+    let _ = tokio::task::spawn_blocking(move || cleanup_install_cache_sync(target)).await;
+}
+
+async fn finish_install_task(state: &InstallState, cancelled: bool) {
+    let should_cleanup = cancelled
+        && state
+            .cleanup_on_cancel
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(false);
+    let target = state.target.lock().ok().and_then(|mut g| g.take());
+    if let Ok(mut flag) = state.cleanup_on_cancel.lock() {
+        *flag = false;
+    }
+    if should_cleanup {
+        if let Some(target) = target {
+            cleanup_install_cache(target).await;
+        }
+    }
+    if let Ok(mut running) = state.running.lock() {
+        *running = None;
+    }
+    if let Ok(mut guard) = state.abort_handle.lock() {
+        *guard = None;
+    }
+    state.done_notify.notify_waiters();
+}
+
+async fn cancel_install(
+    app: AppHandle,
+    state: State<'_, InstallState>,
+    cleanup_cache: Option<bool>,
+) -> Result<bool, String> {
+    let cleanup = cleanup_cache.unwrap_or(false);
+    if let Ok(mut flag) = state.cleanup_on_cancel.lock() {
+        *flag = cleanup;
+    }
+
     let mut aborted = false;
     if let Ok(mut guard) = state.abort_handle.lock() {
         if let Some(handle) = guard.take() {
@@ -1487,11 +1677,41 @@ async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Resul
             aborted = true;
         }
     }
-    let version_name = if let Ok(mut running) = state.running.lock() {
-        running.take()
+
+    let version_name = state
+        .running
+        .lock()
+        .ok()
+        .and_then(|running| running.clone());
+
+    if aborted {
+        // Wait for the aborted install task to drop file handles and finish cache cleanup.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let notified = state.done_notify.notified();
+            let still_running = state
+                .running
+                .lock()
+                .map(|g| g.is_some())
+                .unwrap_or(false);
+            if !still_running {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                break;
+            }
+        }
     } else {
-        None
-    };
+        if let Ok(mut running) = state.running.lock() {
+            *running = None;
+        }
+        let target = state.target.lock().ok().and_then(|mut g| g.take());
+        if cleanup {
+            if let Some(target) = target {
+                cleanup_install_cache(target).await;
+            }
+        }
+    }
 
     if let Some(name) = version_name {
         let _ = app.emit(
@@ -1501,7 +1721,11 @@ async fn cancel_install(app: AppHandle, state: State<'_, InstallState>) -> Resul
                 stage: "cancelled".to_string(),
                 done: 0,
                 total: 1,
-                detail: "下载已取消/已暂停".to_string(),
+                detail: if cleanup {
+                    "下载已取消，缓存已清理".to_string()
+                } else {
+                    "下载已暂停".to_string()
+                },
                 downloaded_bytes: 0,
                 total_bytes: 0,
                 speed_bps: 0,
@@ -2312,4 +2536,109 @@ pub async fn execute_extension_rust(
     root: Option<String>,
 ) -> Result<serde_json::Value, String> {
     extension::execute_extension_rust(&app, &id, &fn_name, payload, root.as_deref())
+}
+
+#[cfg(test)]
+mod cancel_cleanup_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_test_root(name: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!(
+                "osml-cancel-cache-test-{}-{}",
+                name,
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn cleanup_java_fresh_install_removes_version_dir_and_part_files() {
+        let root = temp_test_root("java-fresh");
+        let version_dir = root.join("versions").join("26.3");
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(version_dir.join("26.3.json"), "{}").unwrap();
+        fs::write(version_dir.join("26.3.jar.part"), "partial").unwrap();
+
+        let lib_dir = root.join("libraries").join("com").join("example");
+        fs::create_dir_all(&lib_dir).unwrap();
+        fs::write(lib_dir.join("lib.jar.part"), "partial").unwrap();
+        fs::write(lib_dir.join("lib.jar.part.meta"), "{}").unwrap();
+        fs::write(lib_dir.join("lib.jar.part.meta.tmp"), "{}").unwrap();
+
+        let existing_lib_dir = root.join("libraries").join("com").join("keep");
+        fs::create_dir_all(&existing_lib_dir).unwrap();
+        fs::write(existing_lib_dir.join("keep.jar"), "ok").unwrap();
+
+        let asset_dir = root.join("assets").join("objects").join("ab");
+        fs::create_dir_all(&asset_dir).unwrap();
+        fs::write(asset_dir.join("abcdef.part"), "partial").unwrap();
+
+        cleanup_install_cache_sync(ActiveInstallTarget::Java {
+            root: root.clone(),
+            instance_id: "26.3".to_string(),
+            was_already_installed: false,
+        });
+
+        assert!(!version_dir.exists());
+        assert!(!lib_dir.exists());
+        assert!(existing_lib_dir.join("keep.jar").exists());
+        assert!(!asset_dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_java_repair_preserves_existing_instance_and_removes_part_files() {
+        let root = temp_test_root("java-repair");
+        let version_dir = root.join("versions").join("26.3");
+        let saves_dir = version_dir.join("saves").join("world");
+        fs::create_dir_all(&saves_dir).unwrap();
+        fs::write(version_dir.join("26.3.json"), "{}").unwrap();
+        fs::write(version_dir.join("26.3.jar"), "jar").unwrap();
+        fs::write(version_dir.join("26.3.jar.part"), "partial").unwrap();
+        fs::write(saves_dir.join("level.dat"), "save").unwrap();
+
+        cleanup_install_cache_sync(ActiveInstallTarget::Java {
+            root: root.clone(),
+            instance_id: "26.3".to_string(),
+            was_already_installed: true,
+        });
+
+        assert!(version_dir.join("26.3.jar").exists());
+        assert!(saves_dir.join("level.dat").exists());
+        assert!(!version_dir.join("26.3.jar.part").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_bedrock_removes_version_cache_and_incomplete_dest() {
+        let root = temp_test_root("bedrock");
+        let cache_dir = root.join("bedrock").join("cache");
+        let dest_dir = root.join("bedrock").join("versions").join("1.21.50");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::create_dir_all(&dest_dir).unwrap();
+        fs::write(cache_dir.join("1.21.50.msixvc.part"), "partial").unwrap();
+        fs::write(cache_dir.join("1.21.50.msixvc.part.meta"), "{}").unwrap();
+        fs::write(cache_dir.join("1.20.0.msixvc"), "other").unwrap();
+
+        cleanup_install_cache_sync(ActiveInstallTarget::Bedrock {
+            root: root.clone(),
+            version_id: "1.21.50".to_string(),
+            dest_dir_existed: false,
+        });
+
+        assert!(!cache_dir.join("1.21.50.msixvc.part").exists());
+        assert!(!cache_dir.join("1.21.50.msixvc.part.meta").exists());
+        assert!(cache_dir.join("1.20.0.msixvc").exists());
+        assert!(!dest_dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
