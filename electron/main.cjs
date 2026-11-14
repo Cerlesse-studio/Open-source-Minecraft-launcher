@@ -137,6 +137,9 @@ const DISABLED_CHROMIUM_SWITCHES = [
   'disable-sync',
   // 普通用户非管理员模式下避免 GPU 进程沙盒令牌初始化失败 (error_code=18)
   'disable-gpu-sandbox',
+  // AppImage/便携版下 chrome-sandbox 无法获得 root+4755 SUID 位，不做 Sputnik
+  // 检测，直接关闭 Sandbox 共享层
+  'no-sandbox',
 ];
 
 app.commandLine.appendSwitch('disable-features', DISABLED_CHROMIUM_FEATURES.join(','));
@@ -150,7 +153,10 @@ for (const sw of DISABLED_CHROMIUM_SWITCHES) {
 const SECURE_WEB_PREFERENCES = Object.freeze({
   contextIsolation: true,
   nodeIntegration: false,
-  sandbox: true,
+  // 不在沙盒模式下运行：AppImage/便携版下 `chrome-sandbox` 不可能获得
+  // root 所有 + 4755 SUID 位，Chromium 的 SUID sandbox 检查会直接 abort
+  // 整个应用。Linux 桌面应用无需沙盒也能通过 preload+contextIsolation 隔离。
+  sandbox: false,
   webSecurity: true,
   spellcheck: false,
   allowRunningInsecureContent: false,
@@ -761,7 +767,8 @@ function openBackendConsoleWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      // AppImage/便携版下 `chrome-sandbox` 无 SUID 位，沙盒模式会导致进程 abort
+      sandbox: false,
       devTools: devToolsEnabled,
       preload: path.join(__dirname, 'backend-console-preload.cjs'),
     },
