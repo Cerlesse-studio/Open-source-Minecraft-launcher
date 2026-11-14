@@ -564,8 +564,14 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
                 std::fs::File::create(&out).map_err(|e| format!("写入 Java 文件失败: {e}"))?;
             std::io::copy(&mut entry, &mut writer)
                 .map_err(|e| format!("解压 Java 运行时失败: {e}"))?;
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode & 0o777));
+            }
         }
     }
+    ensure_unix_java_permissions(dest);
     Ok(())
 }
 
@@ -573,10 +579,42 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("无法打开 Java 压缩包: {e}"))?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(decoder);
+    tar.set_preserve_permissions(true);
     tar.unpack(dest)
         .map_err(|e| format!("解压 Java 运行时失败: {e}"))?;
+    ensure_unix_java_permissions(dest);
     Ok(())
 }
+
+#[cfg(unix)]
+fn ensure_unix_java_permissions(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let in_bin_dir = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n == "bin")
+        .unwrap_or(false);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            ensure_unix_java_permissions(&path);
+        } else if in_bin_dir
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "jspawnhelper")
+                .unwrap_or(false)
+        {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_unix_java_permissions(_dir: &Path) {}
 
 /// Whether `runtime` can run a version whose metadata asks for `required`.
 ///

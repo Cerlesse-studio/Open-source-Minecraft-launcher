@@ -250,6 +250,7 @@ exports.default = async function afterPack(context) {
 
   // 2. 核心组件与开源许可证校验
   verifyCoreAndLicenses(appOutDir, electronPlatformName);
+  ensureUnixCorePermissions(appOutDir, electronPlatformName);
   console.log('[Chromium 完整性校验] V8 快照、ICU 国际化数据、图形后端与 Chromium 许可证声明均完整保留');
 
   // 3. L2 翻转 Electron Fuses（必须在代码签名前完成）
@@ -275,6 +276,26 @@ exports.default = async function afterPack(context) {
     }
   }
 };
+
+function ensureUnixCorePermissions(appOutDir, platformName) {
+  if (platformName !== 'linux' && platformName !== 'darwin') {
+    return;
+  }
+  const candidates = [path.join(appOutDir, 'resources', 'core', 'open-source-minecraft-launcher')];
+  if (platformName === 'darwin') {
+    const appBundles = fs.readdirSync(appOutDir).filter((name) => name.endsWith('.app'));
+    for (const bundle of appBundles) {
+      candidates.push(
+        path.join(appOutDir, bundle, 'Contents', 'Resources', 'core', 'open-source-minecraft-launcher')
+      );
+    }
+  }
+  for (const corePath of candidates) {
+    if (fs.existsSync(corePath) && fs.statSync(corePath).isFile()) {
+      fs.chmodSync(corePath, 0o755);
+    }
+  }
+}
 
 module.exports.pruneLocales = pruneLocales;
 module.exports.pruneUnusedRuntimeFiles = pruneUnusedRuntimeFiles;

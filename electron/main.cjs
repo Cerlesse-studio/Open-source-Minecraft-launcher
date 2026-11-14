@@ -416,6 +416,11 @@ function startCore() {
   appendBackendLog('system', `核心配置目录: ${config}`);
   appendBackendLog('system', `默认游戏目录: ${launcherGameDir}`);
   try {
+    if (process.platform !== 'win32') {
+      try {
+        fs.chmodSync(binaryPath, 0o755);
+      } catch {}
+    }
     core = spawn(binaryPath, [], {
       cwd: launcherDir,
       stdio: ['pipe', 'pipe', 'pipe'],

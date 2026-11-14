@@ -1409,6 +1409,11 @@ pub async fn start_multiplayer(
         format!("启动 EasyTier（{EASYTIER_VERSION}）组网内核…"),
     );
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&core, std::fs::Permissions::from_mode(0o755));
+    }
     let mut command = Command::new(&core);
     command
         .current_dir(easytier_dir(&root_path))
@@ -3013,6 +3018,11 @@ pub async fn get_multiplayer_peers(
         return Err("当前内核没有附带 easytier-cli，请重新下载内核".to_string());
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755));
+    }
     let mut command = Command::new(&cli);
     command
         .current_dir(easytier_dir(&root_path))
@@ -3100,6 +3110,11 @@ pub async fn add_multiplayer_peer(
         return Err("当前内核没有附带 easytier-cli，请重新下载内核".to_string());
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755));
+    }
     let mut command = Command::new(&cli);
     command
         .current_dir(easytier_dir(&root_path))
