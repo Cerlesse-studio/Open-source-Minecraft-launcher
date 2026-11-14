@@ -52,7 +52,7 @@ pub use source::{
     set_download_preference, sources_for, DownloadSourceProbe, NetSource,
 };
 pub use speed::SpeedSmoother;
-pub use task::{format_download_failure, LoadState, LoaderTaskView, NetFile, NetState};
+pub use task::{active_task_views, format_download_failure, LoadState, LoaderTaskView, NetFile, NetState};
 pub use types::{DownloadRequest, MAX_RETRIES, MIN_MULTITHREAD_SIZE, MIN_SEGMENT_SIZE, SEGMENT_IDLE_TIMEOUT,
     SEGMENT_MIN_RATE_BYTES, SEGMENT_SLOW_GRACE, SEGMENT_WATCHDOG_INTERVAL};
 pub use verify::{looks_complete, sha1_file, FileChecker};

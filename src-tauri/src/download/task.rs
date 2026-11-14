@@ -4,7 +4,13 @@
 //! 保持一致），用 `LoadState` 描述整个 `LoaderTask` 的生死。引擎在阶段 4
 //! 接入这套状态机：每次下载持有一个 `NetFile`，真实驱动状态转移与字节记账。
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
 
 /// PCL2 `NetState`, with the original discriminants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +27,8 @@ pub enum NetState {
 }
 
 /// PCL2 `LoadState` (the `LoaderTask` state machine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum LoadState {
     #[default]
     Waiting,
@@ -117,7 +124,8 @@ impl NetFile {
 }
 
 /// PCL2 `LoaderTask` output shape exposed to the UI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoaderTaskView {
     pub name: String,
     pub state: LoadState,
@@ -157,6 +165,131 @@ pub fn format_download_failure(local_path: &Path, sources: &[super::source::NetS
         "文件下载失败：{}\r\n各下载源的错误如下：\r\n{detail}",
         local_path.display()
     )
+}
+
+// ---------------------------------------------------------------------------
+// 引擎任务注册表（阶段 4 激活）：引擎为每次下载持有 NetFile 并真实驱动
+// NetState 状态转移；`get_download_stats` 由此提供活跃任务视图。
+// PCL2 的 0.1 s 统计刷新节奏在这里同样适用：进度记账按 100 ms 节流。
+// ---------------------------------------------------------------------------
+
+/// 注册表中的一个活跃下载任务。
+#[derive(Debug)]
+pub struct DownloadTask {
+    /// 注册表自增 id。
+    pub id: u64,
+    /// PCL2 `NetFile`：状态机 + 字节记账。
+    file: Mutex<NetFile>,
+    /// 多源全部失败时记录的 PCL2 风格逐源报告（Display 输出仍返回 last_error）。
+    error_report: Mutex<Option<String>>,
+    /// 进度记账节流。
+    last_tick: Mutex<Instant>,
+}
+
+impl DownloadTask {
+    /// 状态转移（仅前进；详见 `NetState` 的阶段语义）。
+    pub fn set_state(&self, state: NetState) {
+        self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).state = state;
+    }
+
+    /// 字节记账，按 100 ms 节流（与 PCL2 `NetManagerClass` 的统计刷新一致）。
+    /// 返回 true 表示这次更新真正写入了（调用方可据此推进其他展示）。
+    pub fn record_progress(&self, done: u64, file_size: Option<i64>) -> bool {
+        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        let mut last = self.last_tick.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if now.duration_since(*last) < Duration::from_millis(100) {
+            return false;
+        }
+        *last = now;
+        file.download_done = done;
+        if let Some(size) = file_size {
+            file.file_size = size;
+        }
+        true
+    }
+
+    pub fn record_error_report(&self, report: String) {
+        *self.error_report.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report);
+    }
+
+    /// PCL2 `LoaderTask` 视图快照。
+    pub fn view(&self) -> LoaderTaskView {
+        let file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = if file.state == NetState::Finished {
+            LoadState::Finished
+        } else if file.state == NetState::Canceled {
+            LoadState::Canceled
+        } else if self
+            .error_report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+        {
+            LoadState::Failed
+        } else {
+            LoadState::Loading
+        };
+        // 错误报告只属于 Failed 视图：直连轮失败但代理轮成功的任务
+        // 不应携带误导性的错误文案。
+        let error = if state == LoadState::Failed {
+            self.error_report
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        } else {
+            None
+        };
+        LoaderTaskView {
+            name: file.local_name.clone(),
+            state,
+            progress: file.progress(),
+            error,
+            active_threads: super::limit::active_threads(),
+            speed_limit_bps: super::limit::speed_limit(),
+        }
+    }
+}
+
+static REGISTRY: OnceLock<RwLock<BTreeMap<u64, Arc<DownloadTask>>>> = OnceLock::new();
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+
+fn registry() -> &'static RwLock<BTreeMap<u64, Arc<DownloadTask>>> {
+    REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// 引擎创建下载时登记任务，返回共享句柄。
+pub fn register(file: NetFile) -> Arc<DownloadTask> {
+    let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    let task = Arc::new(DownloadTask {
+        id,
+        file: Mutex::new(file),
+        error_report: Mutex::new(None),
+        last_tick: Mutex::new(Instant::now() - Duration::from_secs(1)),
+    });
+    registry()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(id, task.clone());
+    task
+}
+
+/// 任务结束（成功或失败）后从注册表移除。
+pub fn unregister(id: u64) {
+    registry()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&id);
+}
+
+/// 当前活跃任务的视图快照（按注册顺序）。
+pub fn active_task_views() -> Vec<LoaderTaskView> {
+    registry()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .map(|task| task.view())
+        .collect()
 }
 
 #[cfg(test)]
@@ -231,5 +364,41 @@ mod tests {
         assert!(message.contains("HTTP 404（https://a）"));
         assert!(message.contains("超时（https://b）"));
         assert!(message.contains("各下载源的错误如下"));
+    }
+
+    #[test]
+    fn task_registry_tracks_state_and_cleans_up() {
+        let file = NetFile::new(
+            "mods/sodium.jar",
+            vec!["https://a".into()],
+            super::super::verify::FileChecker::default(),
+        );
+        let task = register(file);
+        assert!(active_task_views().iter().any(|view| view.name == "sodium.jar"));
+
+        // 状态机推进：WaitingToCheck → Downloading，进度按 100ms 节流。
+        task.set_state(NetState::Downloading);
+        assert!(task.record_progress(500, Some(1000)));
+        let view = active_task_views()
+            .into_iter()
+            .find(|view| view.name == "sodium.jar")
+            .expect("任务应在注册表中");
+        assert_eq!(view.state, LoadState::Loading);
+        assert!(view.progress > 0.0);
+
+        // 节流窗口内的第二次记账不写入。
+        assert!(!task.record_progress(900, Some(1000)));
+
+        // 失败报告 → 视图进入 Failed。
+        task.record_error_report("文件下载失败：mods/sodium.jar".into());
+        let view = active_task_views()
+            .into_iter()
+            .find(|view| view.name == "sodium.jar")
+            .expect("任务应在注册表中");
+        assert_eq!(view.state, LoadState::Failed);
+        assert_eq!(view.error.as_deref(), Some("文件下载失败：mods/sodium.jar"));
+
+        unregister(task.id);
+        assert!(!active_task_views().iter().any(|view| view.name == "sodium.jar"));
     }
 }

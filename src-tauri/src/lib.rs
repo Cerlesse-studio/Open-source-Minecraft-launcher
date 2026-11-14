@@ -242,6 +242,8 @@ pub struct DownloadStats {
     pub active_threads: u32,
     pub thread_limit: u32,
     pub speed_limit_low_bps: u64,
+    /// 引擎任务注册表中的活跃下载（PCL2 `NetFile` 状态机视图，阶段 4 激活）。
+    pub active_tasks: Vec<download::LoaderTaskView>,
 }
 
 fn get_download_stats() -> DownloadStats {
@@ -250,6 +252,7 @@ fn get_download_stats() -> DownloadStats {
         active_threads: download::active_threads(),
         thread_limit: download::thread_limit(),
         speed_limit_low_bps: download::NET_TASK_SPEED_LIMIT_LOW,
+        active_tasks: download::active_task_views(),
     }
 }
 

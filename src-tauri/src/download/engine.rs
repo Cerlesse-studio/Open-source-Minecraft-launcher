@@ -31,13 +31,25 @@ use super::limit::{consume, record_connect, thread_limit, try_acquire_thread};
 use super::resume::{discard_partial, read_resume_meta, resume_meta_path, write_resume_meta, ResumeMeta};
 use super::segments::{compute_segments, fetch_range_into, probe_range_support, RangeProbe};
 use super::source::{is_bmclapi, per_file_threads, preferred_urls, sources_for, NetSource};
+use super::task::{self, format_download_failure, DownloadTask, NetFile, NetState};
 use super::types::{
     MAX_RETRIES, MIN_MULTITHREAD_SIZE, SEGMENT_IDLE_TIMEOUT, SEGMENT_MIN_RATE_BYTES,
     SEGMENT_SLOW_GRACE, SEGMENT_WATCHDOG_INTERVAL,
 };
-use super::verify::{part_path, verify_and_commit};
+use super::verify::{part_path, verify_and_commit, FileChecker};
 use super::DownloadRequest;
 use crate::net::{client, direct_client};
+
+/// RAII 注销：任务结束（成功或失败）后从注册表移除，避免泄漏视图。
+struct TaskGuard {
+    id: u64,
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        task::unregister(self.id);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 进度上报：单调钳制（所有旧入口共用的包装语义）
@@ -45,8 +57,10 @@ use crate::net::{client, direct_client};
 
 /// 包装调用方的进度回调：total 只增不减、done 单调递增、delta 非负。
 /// 与旧入口逐字节相同的钳制语义，引擎内部只需"每收到一块就上报"。
+/// 同时把字节记账与 `Downloading` 状态写入任务状态机（按 100 ms 节流）。
 struct Monotonic<'a> {
     inner: Option<&'a mut (dyn FnMut(u64, u64, u64) + Send)>,
+    task: Option<Arc<DownloadTask>>,
     max_done: u64,
     max_total: u64,
 }
@@ -55,9 +69,11 @@ impl<'a> Monotonic<'a> {
     fn new(
         inner: Option<&'a mut (dyn FnMut(u64, u64, u64) + Send)>,
         expected_size: Option<u64>,
+        task: Option<Arc<DownloadTask>>,
     ) -> Self {
         Self {
             inner,
+            task,
             max_done: 0,
             max_total: expected_size.unwrap_or(0),
         }
@@ -75,6 +91,11 @@ impl<'a> Monotonic<'a> {
         let monotonic_done = clamped_done.max(self.max_done);
         let monotonic_delta = monotonic_done.saturating_sub(self.max_done);
         self.max_done = monotonic_done;
+        if let Some(task) = self.task.as_ref() {
+            task.set_state(NetState::Downloading);
+            let size = (self.max_total > 0).then_some(self.max_total as i64);
+            task.record_progress(monotonic_done, size);
+        }
         if let Some(cb) = self.inner.as_mut() {
             cb(monotonic_done, self.max_total, monotonic_delta);
         }
@@ -91,23 +112,34 @@ pub async fn download(req: DownloadRequest<'_>) -> Result<u64, DownloadError> {
         .threads
         .unwrap_or_else(|| per_file_threads(req.expected_size))
         .clamp(1, 64);
-    let mut progress = Monotonic::new(req.on_progress, req.expected_size);
+    let chain = req.sources.clone().unwrap_or_else(|| preferred_urls(&req.url));
+
+    // PCL2 `NetFile` 任务状态机（阶段 4 激活）：每次下载在注册表中持有一个
+    // 任务记录，`get_download_stats` 据此暴露活跃任务视图。
+    let checker = FileChecker::from_download(req.expected_size, req.expected_sha1.as_deref());
+    let task = task::register(NetFile::new(&req.dest, chain.clone(), checker));
+    let _guard = TaskGuard { id: task.id };
+    let mut progress = Monotonic::new(req.on_progress, req.expected_size, Some(task.clone()));
 
     // 第一轮直接连：系统代理只会把下载流量绕远路。
     let direct_error = match download_through_sources(
         direct_client(),
-        sources_for(req.sources.clone().unwrap_or_else(|| preferred_urls(&req.url))),
+        sources_for(chain.clone()),
         &req.dest,
         req.expected_sha1.as_deref(),
         req.expected_size,
         threads,
         req.resume,
         req.retry_counter,
+        Some(task.as_ref()),
         &mut progress,
     )
     .await
     {
-        Ok(bytes) => return Ok(bytes),
+        Ok(bytes) => {
+            task.set_state(NetState::Finished);
+            return Ok(bytes);
+        }
         Err(err) => err,
     };
 
@@ -116,18 +148,23 @@ pub async fn download(req: DownloadRequest<'_>) -> Result<u64, DownloadError> {
     if !proxy_retry_worthwhile(&direct_error) {
         return Err(direct_error);
     }
-    download_through_sources(
+    let result = download_through_sources(
         client(),
-        sources_for(req.sources.clone().unwrap_or_else(|| preferred_urls(&req.url))),
+        sources_for(chain),
         &req.dest,
         req.expected_sha1.as_deref(),
         req.expected_size,
         threads,
         req.resume,
         req.retry_counter,
+        Some(task.as_ref()),
         &mut progress,
     )
-    .await
+    .await;
+    if result.is_ok() {
+        task.set_state(NetState::Finished);
+    }
+    result
 }
 
 /// 按 `NetSource` 顺序逐个尝试一条线上的镜像。
@@ -145,6 +182,7 @@ async fn download_through_sources(
     threads: usize,
     resume: bool,
     retry_counter: Option<&AtomicU64>,
+    task: Option<&DownloadTask>,
     progress: &mut Monotonic<'_>,
 ) -> Result<u64, DownloadError> {
     let limit = thread_limit();
@@ -154,6 +192,10 @@ async fn download_through_sources(
     for index in 0..sources.len() {
         if sources[index].is_failed {
             continue;
+        }
+        // PCL2 `NetState::Connecting`：开始尝试下一条镜像。
+        if let Some(task) = task {
+            task.set_state(NetState::Connecting);
         }
         let candidate = sources[index].url.clone();
         match download_from_source(
@@ -165,6 +207,7 @@ async fn download_through_sources(
             threads,
             resume,
             retry_counter,
+            task,
             progress,
         )
         .await
@@ -193,6 +236,11 @@ async fn download_through_sources(
         }
     }
 
+    // 全部源失败：任务记录里存一份 PCL2 `LoaderDownload.OnFail` 风格的逐源
+    // 报告；返回给调用方的仍是最后一个错误（Display 与旧实现逐字节一致）。
+    if let Some(task) = task {
+        task.record_error_report(format_download_failure(dest, &sources));
+    }
     Err(last_error.unwrap_or(DownloadError::NoSource))
 }
 
@@ -207,6 +255,7 @@ async fn download_from_source(
     threads: usize,
     resume: bool,
     retry_counter: Option<&AtomicU64>,
+    task: Option<&DownloadTask>,
     progress: &mut Monotonic<'_>,
 ) -> Result<u64, DownloadError> {
     if let Some(parent) = dest.parent() {
@@ -253,6 +302,10 @@ async fn download_from_source(
     }
 
     if let Some((probe, segments)) = segmented_plan {
+        // PCL2 `NetState::Reading`：已确认这条线路支持 Range，准备并行抓取。
+        if let Some(task) = task {
+            task.set_state(NetState::Reading);
+        }
         if resume {
             // 断点续传：分片布局与完成进度记入 `<dest>.part.meta`，
             // 未完成时保留 `.part`，换一条镜像还能接着补。
@@ -265,6 +318,7 @@ async fn download_from_source(
                 segments,
                 expected_sha1,
                 retry_counter,
+                task,
                 progress,
             )
             .await;
@@ -281,6 +335,9 @@ async fn download_from_source(
         .await
         {
             Ok(Some(downloaded)) => {
+                if let Some(task) = task {
+                    task.set_state(NetState::Merging);
+                }
                 if let Err(err) =
                     verify_and_commit(&part, dest, downloaded, expected_size, expected_sha1, None)
                         .await
@@ -314,6 +371,7 @@ async fn download_from_source(
         expected_sha1,
         expected_size,
         retry_counter,
+        task,
         progress,
     )
     .await
@@ -332,6 +390,7 @@ async fn single_stream_with_retries(
     expected_sha1: Option<&str>,
     expected_size: Option<u64>,
     retry_counter: Option<&AtomicU64>,
+    task: Option<&DownloadTask>,
     progress: &mut Monotonic<'_>,
 ) -> Result<u64, DownloadError> {
     let mut last_error: Option<DownloadError> = None;
@@ -354,6 +413,10 @@ async fn single_stream_with_retries(
         .await
         {
             Ok((downloaded, inline_sha1)) => {
+                // PCL2 `NetState::Merging`：进入校验与原子提交。
+                if let Some(task) = task {
+                    task.set_state(NetState::Merging);
+                }
                 match verify_and_commit(
                     part,
                     dest,
@@ -707,6 +770,7 @@ async fn resumable_fetch(
     segments: Vec<(u64, u64)>,
     expected_sha1: Option<&str>,
     retry_counter: Option<&AtomicU64>,
+    task: Option<&DownloadTask>,
     progress: &mut Monotonic<'_>,
 ) -> Result<u64, DownloadError> {
     // 有旧进度就沿用它（分片布局必须整套照搬，否则已完成的下标对不上），
@@ -902,6 +966,10 @@ async fn resumable_fetch(
         return Err(parallel_error.unwrap_or(DownloadError::Incomplete));
     }
 
+    // PCL2 `NetState::Merging`：分片齐了，进入校验与原子提交。
+    if let Some(task) = task {
+        task.set_state(NetState::Merging);
+    }
     verify_and_commit(part, dest, total, Some(total), expected_sha1, None).await?;
     let _ = fs::remove_file(resume_meta_path(part)).await;
     Ok(total)

@@ -178,12 +178,23 @@ export async function setDownloadSpeedLimit(
   });
 }
 
+/** 引擎任务注册表中单个活跃下载的视图（PCL2 `NetFile` 状态机）。 */
+export interface DownloadTaskView {
+  name: string;
+  state: "waiting" | "loading" | "finished" | "failed" | "canceled";
+  progress: number;
+  error: string | null;
+  activeThreads: number;
+  speedLimitBps: number | null;
+}
+
 /** PCL2 `NetManagerClass` state. */
 export interface DownloadStats {
   speedLimitBps: number | null;
   activeThreads: number;
   threadLimit: number;
   speedLimitLowBps: number;
+  activeTasks: DownloadTaskView[];
 }
 
 export async function getDownloadStats(): Promise<DownloadStats> {
@@ -193,6 +204,7 @@ export async function getDownloadStats(): Promise<DownloadStats> {
       activeThreads: 0,
       threadLimit: 0,
       speedLimitLowBps: 256 * 1024,
+      activeTasks: [],
     };
   }
   return invoke<DownloadStats>("get_download_stats");
