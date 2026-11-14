@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use sha1::{Digest, Sha1};
 use tokio::fs;
 
+use super::error::DownloadError;
+
 /// PCL2 `FileChecker{MinSize, ActualSize, Hash, IsJson}`.
 #[derive(Debug, Clone, Default)]
 pub struct FileChecker {
@@ -88,26 +90,35 @@ pub(super) async fn verify_and_commit(
     expected_size: Option<u64>,
     expected_sha1: Option<&str>,
     precomputed_sha1: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), DownloadError> {
     // PCL2 `FileChecker{MinSize, ActualSize, Hash, IsJson}`. `check_size` and
     // `check_hash` emit byte-identical error strings to the original verifier.
     let checker = FileChecker::from_download(expected_size, expected_sha1);
-    checker.check_size(downloaded, dest)?;
+    checker
+        .check_size(downloaded, dest)
+        .map_err(DownloadError::Verify)?;
     if checker.sha1.is_some() {
         if let Some(actual) = precomputed_sha1 {
-            checker.check_hash(dest, actual)?;
+            checker
+                .check_hash(dest, actual)
+                .map_err(DownloadError::Verify)?;
         } else {
-            let actual = sha1_file(part).await?;
-            checker.check_hash(dest, &actual)?;
+            let actual = sha1_file(part).await.map_err(DownloadError::Verify)?;
+            checker
+                .check_hash(dest, &actual)
+                .map_err(DownloadError::Verify)?;
         }
     }
 
     if fs::try_exists(dest).await.unwrap_or(false) {
         let _ = fs::remove_file(dest).await;
     }
-    fs::rename(part, dest)
-        .await
-        .map_err(|e| format!("无法保存 {}: {e}", dest.display()))?;
+    fs::rename(part, dest).await.map_err(|source| {
+        DownloadError::CommitRename {
+            path: dest.display().to_string(),
+            source,
+        }
+    })?;
     Ok(())
 }
 

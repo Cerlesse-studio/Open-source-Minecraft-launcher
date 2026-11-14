@@ -13,6 +13,7 @@ use reqwest::header::RANGE;
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+use super::error::DownloadError;
 use super::limit::{consume, try_acquire_thread};
 use super::types::{MAX_RETRIES, SEGMENT_IDLE_TIMEOUT, MIN_SEGMENT_SIZE};
 
@@ -29,17 +30,23 @@ pub async fn probe_range_support(
     client: &'static reqwest::Client,
     url: &str,
     expected_size: Option<u64>,
-) -> Result<Option<RangeProbe>, String> {
+) -> Result<Option<RangeProbe>, DownloadError> {
     let probe = client
         .get(url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header(RANGE, "bytes=0-0")
         .send()
         .await
-        .map_err(|e| format!("分片探测失败 ({url}): {e}"))?;
+        .map_err(|source| DownloadError::ProbeTransport {
+            url: url.to_string(),
+            source,
+        })?;
 
     if probe.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("下载失败 ({url}): HTTP 404"));
+        return Err(DownloadError::Http {
+            url: url.to_string(),
+            status: 404,
+        });
     }
 
     let final_url = probe.url().to_string();
@@ -76,7 +83,10 @@ pub async fn probe_range_support(
                 .header(RANGE, "bytes=0-0")
                 .send()
                 .await
-                .map_err(|e| format!("分片重定向探测失败 ({final_url}): {e}"))?;
+                .map_err(|source| DownloadError::ProbeRedirectTransport {
+                    url: final_url.clone(),
+                    source,
+                })?;
 
             let terminal_url = direct.url().to_string();
             if direct.status() == reqwest::StatusCode::PARTIAL_CONTENT {
@@ -157,24 +167,27 @@ pub(super) async fn fetch_range_into(
     end: u64,
     downloaded: &AtomicU64,
     tx: &tokio::sync::mpsc::UnboundedSender<(u64, u64)>,
-) -> Result<u32, String> {
+) -> Result<u32, DownloadError> {
     // PCL2 `NetTaskThreadCount`: every Range worker counts towards the global cap.
     let _thread = try_acquire_thread();
     let expected_len = end - start + 1;
-    let mut last_err = String::new();
+    let mut last_err: Option<DownloadError> = None;
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
         }
         let mut written_this_attempt: u64 = 0;
-        let res: Result<(), String> = async {
+        let res: Result<(), DownloadError> = async {
             let response = client
                 .get(url)
                 .header(reqwest::header::ACCEPT_ENCODING, "identity")
                 .header(RANGE, format!("bytes={start}-{end}"))
                 .send()
                 .await
-                .map_err(|e| format!("分片请求失败 ({url}): {e}"))?;
+                .map_err(|source| DownloadError::SegmentTransport {
+                    url: url.to_string(),
+                    source,
+                })?;
 
             // If a redirect occurred and the target returned 200 (due to Range header being stripped on redirect),
             // reissue the Range request directly to the redirected target.
@@ -188,65 +201,83 @@ pub(super) async fn fetch_range_into(
                     .header(RANGE, format!("bytes={start}-{end}"))
                     .send()
                     .await
-                    .map_err(|e| format!("分片重定向请求失败 ({redirected_url}): {e}"))?
+                    .map_err(|source| DownloadError::SegmentRedirectTransport {
+                        url: redirected_url.clone(),
+                        source,
+                    })?
             } else {
                 response
             };
 
             if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                return Err(format!(
-                    "服务器未返回分片数据 ({url}): HTTP {}",
-                    response.status()
-                ));
+                return Err(DownloadError::SegmentHttp {
+                    url: url.to_string(),
+                    status: response.status().as_u16(),
+                });
             }
 
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .open(part)
                 .await
-                .map_err(|e| format!("无法打开分片文件 {}: {e}", part.display()))?;
+                .map_err(|source| DownloadError::OpenSegmentFile {
+                    path: part.display().to_string(),
+                    source,
+                })?;
             file.seek(SeekFrom::Start(start))
                 .await
-                .map_err(|e| format!("分片定位失败 {}: {e}", part.display()))?;
+                .map_err(|source| DownloadError::SegmentSeek {
+                    path: part.display().to_string(),
+                    source,
+                })?;
 
             let mut stream = response.bytes_stream();
             loop {
                 let next = tokio::time::timeout(SEGMENT_IDLE_TIMEOUT, stream.next())
                     .await
-                    .map_err(|_| {
-                        format!(
-                            "分片 {} 秒没有收到数据 ({url})",
-                            SEGMENT_IDLE_TIMEOUT.as_secs()
-                        )
+                    .map_err(|_| DownloadError::SegmentStalled {
+                        url: url.to_string(),
+                        secs: SEGMENT_IDLE_TIMEOUT.as_secs(),
                     })?;
                 let Some(chunk) = next else {
                     break;
                 };
-                let chunk = chunk.map_err(|e| format!("分片下载中断 ({url}): {e}"))?;
+                let chunk = chunk
+                    .map_err(|source| DownloadError::SegmentStreamInterrupted {
+                        url: url.to_string(),
+                        source,
+                    })?;
                 let len = chunk.len() as u64;
                 if written_this_attempt + len > expected_len {
-                    return Err("分片返回字节超出范围".to_string());
+                    return Err(DownloadError::SegmentOverflow);
                 }
                 // PCL2 global token bucket: segmented and single-stream
                 // transfers share the same `NetTaskSpeedLimitLeft` budget.
                 consume(len).await;
                 file.write_all(&chunk)
                     .await
-                    .map_err(|e| format!("分片写入失败 {}: {e}", part.display()))?;
+                    .map_err(|source| DownloadError::SegmentWrite {
+                        path: part.display().to_string(),
+                        source,
+                    })?;
                 written_this_attempt += len;
                 let current = downloaded.fetch_add(len, Ordering::Relaxed) + len;
                 let _ = tx.send((current, len));
             }
 
             if written_this_attempt != expected_len {
-                return Err(format!(
-                    "分片长度不完整: 期望 {expected_len}, 实际 {written_this_attempt}"
-                ));
+                return Err(DownloadError::SegmentShort {
+                    expected: expected_len,
+                    actual: written_this_attempt,
+                });
             }
 
             file.flush()
                 .await
-                .map_err(|e| format!("分片刷新失败 {}: {e}", part.display()))?;
+                .map_err(|source| DownloadError::SegmentFlush {
+                    path: part.display().to_string(),
+                    source,
+                })?;
             Ok(())
         }
         .await;
@@ -255,17 +286,19 @@ pub(super) async fn fetch_range_into(
             Ok(()) => return Ok(attempt),
             Err(error) => {
                 // 429 / 503：镜像在限速（并发太高时很常见），退避后再试。
-                if error.contains("HTTP 429") || error.contains("HTTP 503") {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                if let DownloadError::SegmentHttp { status, .. } = &error {
+                    if matches!(status, 429 | 503) {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
                 }
-                last_err = error;
+                last_err = Some(error);
                 if written_this_attempt > 0 {
                     downloaded.fetch_sub(written_this_attempt, Ordering::Relaxed);
                 }
             }
         }
     }
-    Err(last_err)
+    Err(last_err.expect("MAX_RETRIES 至少为 1，必然有一次失败记录"))
 }
 
 #[cfg(test)]

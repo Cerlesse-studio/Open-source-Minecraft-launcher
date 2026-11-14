@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::engine::{download_file_multithreaded, download_file_resumable};
+use super::engine::{download, download_file_multithreaded, download_file_resumable};
 use super::resume::{ResumeMeta, resume_meta_path};
 use super::segments::compute_segments;
 use super::verify::{part_path};
@@ -403,4 +403,60 @@ async fn resumable_falls_back_without_range_support() {
     assert_eq!(size, payload.len() as u64);
     assert_eq!(std::fs::read(&dest).unwrap(), *payload);
     assert!(!part_path(&dest).exists());
+}
+
+// ---------------------------------------------------------------------------
+// 统一入口（DownloadRequest）的行为测试
+// ---------------------------------------------------------------------------
+
+use super::DownloadRequest;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+/// 绑定端口后立刻释放，得到一个必然"连接被拒"的死源地址。
+async fn dead_source_url() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}/dead.bin")
+}
+
+/// 显式 sources 列表里第一个源连不上时，自动轮换到下一个镜像完成下载。
+#[tokio::test]
+async fn unified_download_fails_over_to_the_next_source() {
+    let dead = dead_source_url().await;
+    let payload = Arc::new(fixture_bytes(300_000));
+    let server = spawn_range_server(payload.clone(), true, false).await;
+    let dest = clean_fixture("failover.bin");
+
+    let size = download(
+        DownloadRequest::new(server.url.clone(), dest.clone())
+            .size(Some(payload.len() as u64))
+            .sources(vec![dead, server.url.clone()]),
+    )
+    .await
+    .expect("死源应被跳过并落到第二个镜像");
+
+    assert_eq!(size, payload.len() as u64);
+    assert_eq!(std::fs::read(&dest).unwrap(), *payload);
+}
+
+/// 重试计数器：单流重试路径下，直连与代理两轮各记 2 次退避重试。
+#[tokio::test]
+async fn unified_download_accounts_retries_in_the_shared_counter() {
+    let dead = dead_source_url().await;
+    let dest = clean_fixture("retry-counter.bin");
+
+    let counter = AtomicU64::new(0);
+    let result = download(
+        DownloadRequest::new(&dead, &dest)
+            .size(Some(64))
+            .threads(1)
+            .retry_counter(Some(&counter)),
+    )
+    .await;
+
+    assert!(result.is_err(), "死源必然失败");
+    // 单流最多 MAX_RETRIES=3 次：第 1 次不计数，第 2/3 次各 +1；
+    // Transport 类错误直连失败后还会走一轮代理，同样 +2。
+    assert_eq!(counter.load(AtomicOrdering::Relaxed), 4);
 }

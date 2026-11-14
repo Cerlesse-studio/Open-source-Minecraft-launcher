@@ -35,11 +35,9 @@ pub mod verify;
 // 公共门面：外部模块统一从 `crate::download` 取用。
 // ---------------------------------------------------------------------------
 
-pub use engine::{
-    download_file, download_file_with_mirrors, download_file_multithreaded,
-    download_file_resumable,
-};
-pub use error::{classify_source_failure, should_disable_source, SourceFailure};
+/// 统一下载入口（rayburst 式单一引擎 API）。
+pub use engine::download;
+pub use error::{classify_source_failure, classify_source_failure_str, proxy_retry_worthwhile, should_disable_source, DownloadError, SourceFailure};
 pub use limit::{
     active_threads, consume, record_connect, set_speed_limit, set_thread_limit, speed_limit,
     thread_limit, try_acquire_thread, NET_TASK_SPEED_LIMIT_LOW,
@@ -55,8 +53,12 @@ pub use source::{
 };
 pub use speed::SpeedSmoother;
 pub use task::{format_download_failure, LoadState, LoaderTaskView, NetFile, NetState};
-pub use types::{
-    MAX_RETRIES, MIN_MULTITHREAD_SIZE, MIN_SEGMENT_SIZE, SEGMENT_IDLE_TIMEOUT,
-    SEGMENT_MIN_RATE_BYTES, SEGMENT_SLOW_GRACE, SEGMENT_WATCHDOG_INTERVAL,
-};
+pub use types::{DownloadRequest, MAX_RETRIES, MIN_MULTITHREAD_SIZE, MIN_SEGMENT_SIZE, SEGMENT_IDLE_TIMEOUT,
+    SEGMENT_MIN_RATE_BYTES, SEGMENT_SLOW_GRACE, SEGMENT_WATCHDOG_INTERVAL};
 pub use verify::{looks_complete, sha1_file, FileChecker};
+
+// 兼容包装：旧的四条入口（阶段 3 迁移调用点后删除）。
+pub use engine::{
+    download_file, download_file_with_mirrors, download_file_multithreaded,
+    download_file_resumable,
+};

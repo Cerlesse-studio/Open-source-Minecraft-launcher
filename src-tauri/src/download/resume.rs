@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
+use super::error::DownloadError;
+
 /// 断点续传的旁车文件：记下分片布局与已完成的段，和 `.part` 同目录同前缀。
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct ResumeMeta {
@@ -61,16 +63,23 @@ pub(super) async fn read_resume_meta(part: &Path) -> Option<ResumeMeta> {
 }
 
 /// 先写临时文件再改名，避免写一半的 JSON 让续传彻底失效。
-pub(super) async fn write_resume_meta(part: &Path, meta: &ResumeMeta) -> Result<(), String> {
+pub(super) async fn write_resume_meta(part: &Path, meta: &ResumeMeta) -> Result<(), DownloadError> {
     let path = resume_meta_path(part);
     let temp = path.with_extension("meta.tmp");
-    let text = serde_json::to_string(meta).map_err(|e| format!("进度写入失败: {e}"))?;
-    fs::write(&temp, text)
-        .await
-        .map_err(|e| format!("进度写入失败 {}: {e}", temp.display()))?;
-    fs::rename(&temp, &path)
-        .await
-        .map_err(|e| format!("进度写入失败 {}: {e}", path.display()))?;
+    let text =
+        serde_json::to_string(meta).map_err(|err| DownloadError::MetaSerde(err.to_string()))?;
+    fs::write(&temp, text).await.map_err(|source| {
+        DownloadError::MetaWrite {
+            path: temp.display().to_string(),
+            source,
+        }
+    })?;
+    fs::rename(&temp, &path).await.map_err(|source| {
+        DownloadError::MetaWrite {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
     Ok(())
 }
 
