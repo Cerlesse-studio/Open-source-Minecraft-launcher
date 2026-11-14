@@ -1704,11 +1704,6 @@ pub async fn resolve_fe3_soap_update_url(update_id: &str) -> Option<String> {
     // The SOAP round trip to Windows Update routinely takes several seconds and
     // the endpoint is slow from outside the EU/US; a short timeout here silently
     // dropped every UWP package URL.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .ok()?;
-
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1722,13 +1717,25 @@ pub async fn resolve_fe3_soap_update_url(update_id: &str) -> Option<String> {
         r#"<s:Envelope xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Header><a:Action s:mustUnderstand="1">http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService/GetExtendedUpdateInfo2</a:Action><a:MessageID>urn:uuid:5754a03d-d8d5-489f-b24d-efc31b3fd32d</a:MessageID><a:To s:mustUnderstand="1">https://fe3.delivery.mp.microsoft.com/ClientWebService/Client.asmx/secured</a:To><o:Security s:mustUnderstand="1" xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><Timestamp xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><Created>{created}</Created><Expires>{expires}</Expires></Timestamp><wuws:WindowsUpdateTicketsToken wsu:id="ClientMSA" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:wuws="http://schemas.microsoft.com/msus/2014/10/WindowsUpdateAuthorization"><TicketType Name="AAD" Version="1.0" Policy="MBI_SSL"></TicketType></wuws:WindowsUpdateTicketsToken></o:Security></s:Header><s:Body><GetExtendedUpdateInfo2 xmlns="http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService"><updateIDs><UpdateIdentity><UpdateID>{update_id}</UpdateID><RevisionNumber>1</RevisionNumber></UpdateIdentity></updateIDs><infoTypes><XmlUpdateFragmentType>FileUrl</XmlUpdateFragmentType></infoTypes><deviceAttributes>{device_attrs}</deviceAttributes></GetExtendedUpdateInfo2></s:Body></s:Envelope>"#
     );
 
-    let resp = client
-        .post("https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured")
+    let fe3_url = "https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured";
+    let direct_resp = net::direct_client()
+        .post(fe3_url)
+        .timeout(std::time::Duration::from_secs(30))
         .header("Content-Type", "application/soap+xml; charset=utf-8")
-        .body(soap_body)
+        .body(soap_body.clone())
         .send()
-        .await
-        .ok()?;
+        .await;
+    let resp = match direct_resp {
+        Ok(r) => r,
+        Err(_) => net::client()
+            .post(fe3_url)
+            .timeout(std::time::Duration::from_secs(30))
+            .header("Content-Type", "application/soap+xml; charset=utf-8")
+            .body(soap_body)
+            .send()
+            .await
+            .ok()?,
+    };
 
     if !resp.status().is_success() {
         return None;
@@ -1972,6 +1979,7 @@ pub async fn get_bedrock_versions_async(api_source: Option<&str>) -> Vec<Bedrock
     }
 
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_millis(2500))
         .build()
         .unwrap_or_default();
@@ -4700,14 +4708,10 @@ async fn resolve_bedrock_candidate_urls(version_id: &str, download_url: &str) ->
         lower.contains(".msixvc") || lower.contains(".appx") || lower.contains(".msix")
     });
 
-    let client = net::client();
     if !has_client_package {
         for meta_url in meta_endpoints {
-            if let Ok(resp) = client
-                .get(&meta_url)
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await
+            if let Ok(resp) =
+                net::get_prefer_direct(&meta_url, std::time::Duration::from_secs(3)).await
             {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
@@ -4808,17 +4812,20 @@ pub async fn install_bedrock_version(
         ]
     };
 
-    // Emit initial stage: prepare
+    let actual_total_bytes = Arc::new(AtomicU64::new(0));
+    let max_reported_pct = Arc::new(AtomicU64::new(2));
+
+    // Emit initial stage: prepare (2% on continuous 0..100 scale, 0 total_bytes so UI uses done/total smoothly)
     let _ = app.emit(
         "install:progress",
         crate::minecraft::InstallProgress {
             version_id: version_tag.clone(),
             stage: "prepare".to_string(),
-            done: 0,
-            total: 3,
+            done: 2,
+            total: 100,
             detail: "正在通过 BedrockBoot 引擎解析多镜像节点与包元数据...".to_string(),
             downloaded_bytes: 0,
-            total_bytes: 85_983_232,
+            total_bytes: 0,
             speed_bps: 0,
             threads,
             active_threads: 1,
@@ -4829,10 +4836,10 @@ pub async fn install_bedrock_version(
                 name: pkg_filename.clone(),
                 stage: "prepare".to_string(),
                 done_bytes: 0,
-                total_bytes: 85_983_232,
+                total_bytes: 0,
                 segments: 1,
             }],
-            stages: make_stages("active", "pending", "pending", 0, 85_983_232, 0, 1),
+            stages: make_stages("active", "pending", "pending", 0, 0, 0, 1),
             file_logs: Vec::new(),
         },
     );
@@ -4847,16 +4854,21 @@ pub async fn install_bedrock_version(
             let app_clone = app.clone();
             let version_tag_clone = version_tag.clone();
             let pkg_filename_clone = pkg_filename.clone();
+            let actual_total_ref = actual_total_bytes.clone();
+            let max_pct_ref = max_reported_pct.clone();
 
             let mut speed_smoother = net::SpeedSmoother::new();
             let mut on_progress_cb = |done: u64, total: u64, _delta: u64| {
+                if total > 0 {
+                    actual_total_ref.fetch_max(total, Ordering::Relaxed);
+                }
                 let now = Instant::now();
                 let mut guard = match last_emit_instant.lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
                 let elapsed = now.duration_since(*guard);
-                if elapsed.as_millis() >= 120 || done >= total {
+                if elapsed.as_millis() >= 90 || (total > 0 && done >= total) {
                     let prev_bytes = last_emit_bytes.swap(done, Ordering::Relaxed);
                     let delta = done.saturating_sub(prev_bytes);
                     let secs = elapsed.as_secs_f64();
@@ -4869,7 +4881,16 @@ pub async fn install_bedrock_version(
                         speed_smoother.update(instant, elapsed.as_millis() as u64);
                     *guard = now;
 
-                    let pct = if total > 0 { done * 100 / total } else { 0 };
+                    let eff_total = actual_total_ref.load(Ordering::Relaxed).max(total);
+                    let pct = if eff_total > 0 {
+                        (done * 100 / eff_total).min(100)
+                    } else {
+                        0
+                    };
+                    let overall_done = (2 + (pct * 88 / 100))
+                        .max(max_pct_ref.load(Ordering::Relaxed))
+                        .min(90);
+                    max_pct_ref.store(overall_done, Ordering::Relaxed);
                     let worker_count = threads.min(16);
                     let active_tasks: Vec<_> = (0..worker_count)
                         .map(|w| crate::minecraft::ActiveDownloadTask {
@@ -4877,7 +4898,7 @@ pub async fn install_bedrock_version(
                             name: format!("{pkg_filename_clone} (分片 #{})", w + 1),
                             stage: "core".to_string(),
                             done_bytes: done / (worker_count as u64),
-                            total_bytes: total / (worker_count as u64),
+                            total_bytes: eff_total / (worker_count as u64),
                             segments: worker_count as u32,
                         })
                         .collect();
@@ -4887,23 +4908,23 @@ pub async fn install_bedrock_version(
                         crate::minecraft::InstallProgress {
                             version_id: version_tag_clone.clone(),
                             stage: "core".to_string(),
-                            done: 1,
-                            total: 3,
+                            done: overall_done,
+                            total: 100,
                             detail: format!(
                                 "BedrockBoot 多线程加速下载中 ({} MB / {} MB - {}%)",
                                 done / 1_048_576,
-                                total / 1_048_576,
+                                eff_total / 1_048_576,
                                 pct
                             ),
                             downloaded_bytes: done,
-                            total_bytes: total,
+                            total_bytes: eff_total,
                             speed_bps: speed,
                             threads,
                             active_threads: worker_count,
                             skipped_files: 0,
                             retried_files: 0,
                             active_tasks,
-                            stages: make_stages("done", "active", "pending", done, total, 0, 1),
+                            stages: make_stages("done", "active", "pending", done, eff_total, 0, 1),
                             file_logs: Vec::new(),
                         },
                     );
@@ -4921,7 +4942,8 @@ pub async fn install_bedrock_version(
             )
             .await
             {
-                Ok(_) => {
+                Ok(bytes) => {
+                    actual_total_bytes.fetch_max(bytes, Ordering::Relaxed);
                     downloaded = true;
                     break;
                 }
@@ -4938,6 +4960,12 @@ pub async fn install_bedrock_version(
             ));
         }
     }
+
+    let final_pkg_bytes = std::fs::metadata(&pkg_path)
+        .map(|m| m.len())
+        .unwrap_or(0)
+        .max(actual_total_bytes.load(Ordering::Relaxed))
+        .max(1);
 
     // MD5 verification if available
     let expected_md5 = load_cached_versions()
@@ -4988,11 +5016,11 @@ pub async fn install_bedrock_version(
             crate::minecraft::InstallProgress {
                 version_id: version_tag.clone(),
                 stage: "extract".to_string(),
-                done: 2,
-                total: 3,
+                done: 90,
+                total: 100,
                 detail: format!("正在解压并部署基岩版组件 (共 {total_entries} 项)..."),
-                downloaded_bytes: 85_983_232,
-                total_bytes: 85_983_232,
+                downloaded_bytes: final_pkg_bytes,
+                total_bytes: final_pkg_bytes,
                 speed_bps: 0,
                 threads,
                 active_threads: 1,
@@ -5004,8 +5032,8 @@ pub async fn install_bedrock_version(
                     "done",
                     "done",
                     "active",
-                    85_983_232,
-                    85_983_232,
+                    final_pkg_bytes,
+                    final_pkg_bytes,
                     0,
                     total_entries as u64,
                 ),
@@ -5046,16 +5074,18 @@ pub async fn install_bedrock_version(
             }
 
             if i % 25 == 0 || i + 1 == total_entries {
+                let extract_done =
+                    90 + (((i + 1) as u64) * 9 / (total_entries.max(1) as u64)).min(9);
                 let _ = app.emit(
                     "install:progress",
                     crate::minecraft::InstallProgress {
                         version_id: version_tag.clone(),
                         stage: "extract".to_string(),
-                        done: 2,
-                        total: 3,
+                        done: extract_done,
+                        total: 100,
                         detail: format!("正在部署基岩版组件 ({}/{})", i + 1, total_entries),
-                        downloaded_bytes: 85_983_232,
-                        total_bytes: 85_983_232,
+                        downloaded_bytes: final_pkg_bytes,
+                        total_bytes: final_pkg_bytes,
                         speed_bps: 0,
                         threads,
                         active_threads: 1,
@@ -5067,8 +5097,8 @@ pub async fn install_bedrock_version(
                             "done",
                             "done",
                             "active",
-                            85_983_232,
-                            85_983_232,
+                            final_pkg_bytes,
+                            final_pkg_bytes,
                             (i + 1) as u64,
                             total_entries as u64,
                         ),
@@ -5173,18 +5203,18 @@ pub async fn install_bedrock_version(
         crate::minecraft::InstallProgress {
             version_id: version_tag.clone(),
             stage: "done".to_string(),
-            done: 3,
-            total: 3,
+            done: 100,
+            total: 100,
             detail: format!("基岩版 {version_id} 核心已就绪，可以开始游戏"),
-            downloaded_bytes: 85_983_232,
-            total_bytes: 85_983_232,
+            downloaded_bytes: final_pkg_bytes,
+            total_bytes: final_pkg_bytes,
             speed_bps: 0,
             threads,
             active_threads: 0,
             skipped_files: 0,
             retried_files: 0,
             active_tasks: vec![],
-            stages: make_stages("done", "done", "done", 85_983_232, 85_983_232, 1, 1),
+            stages: make_stages("done", "done", "done", final_pkg_bytes, final_pkg_bytes, 1, 1),
             file_logs: Vec::new(),
         },
     );

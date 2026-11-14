@@ -1,5 +1,4 @@
 use futures_util::StreamExt;
-use futures_util::future::try_join_all;
 use futures_util::stream::FuturesUnordered;
 use reqwest::header::RANGE;
 use serde::{Deserialize, Serialize};
@@ -75,14 +74,30 @@ pub fn direct_client() -> &'static reqwest::Client {
 fn build_client(direct: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
-        .pool_max_idle_per_host(64)
+        .pool_max_idle_per_host(128)
+        .pool_idle_timeout(Duration::from_secs(90))
         .tcp_nodelay(true)
-        .connect_timeout(Duration::from_secs(15))
+        .tcp_keepalive(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600));
     if direct {
         builder = builder.no_proxy();
     }
     builder.build().expect("failed to build http client")
+}
+
+/// 优先走直连（绕过系统代理）发起 GET 请求；仅当直连在连接/超时阶段失败时回退到系统代理客户端。
+pub async fn get_prefer_direct(
+    url: &str,
+    timeout: Duration,
+) -> Result<reqwest::Response, reqwest::Error> {
+    match direct_client().get(url).timeout(timeout).send().await {
+        Ok(resp) => Ok(resp),
+        Err(err) if err.is_connect() || err.is_timeout() || err.is_request() => {
+            client().get(url).timeout(timeout).send().await
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// `source` is one of `official_ap` / `bmclapi` / `custom`; `custom_url` is the
@@ -251,12 +266,24 @@ pub async fn probe_download_sources(custom_url: Option<&str>) -> Vec<DownloadSou
 
     let probes = targets.into_iter().map(|(source, url)| async move {
         let started = std::time::Instant::now();
-        let response = client()
+        let direct_resp = direct_client()
             .get(&url)
             .timeout(Duration::from_secs(6))
             .header(RANGE, "bytes=0-1023")
             .send()
             .await;
+        let response = match direct_resp {
+            Ok(resp) => Ok(resp),
+            Err(err) if err.is_connect() || err.is_timeout() || err.is_request() => {
+                client()
+                    .get(&url)
+                    .timeout(Duration::from_secs(6))
+                    .header(RANGE, "bytes=0-1023")
+                    .send()
+                    .await
+            }
+            Err(err) => Err(err),
+        };
         let latency_ms = started.elapsed().as_millis() as u64;
         match response {
             Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 206 => {
@@ -369,7 +396,7 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(
     let mut last_error = String::from("未知错误");
 
     for attempt in 1..=attempts {
-        let response = match client().get(url).timeout(timeout).send().await {
+        let response = match get_prefer_direct(url, timeout).await {
             Ok(response) => response,
             Err(err) => {
                 last_error = describe_error(&err);
@@ -787,7 +814,27 @@ pub async fn download_file_with_mirrors<'a>(
     retry_counter: Option<&AtomicU64>,
     on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let mut progress = on_progress;
+    let mut raw_progress = on_progress;
+    let mut max_done: u64 = 0;
+    let mut max_total: u64 = expected_size.unwrap_or(0);
+    let mut monotonic_cb = |done: u64, total: u64, _delta: u64| {
+        if total > max_total {
+            max_total = total;
+        }
+        let clamped_done = if max_total > 0 {
+            done.min(max_total)
+        } else {
+            done
+        };
+        let monotonic_done = clamped_done.max(max_done);
+        let monotonic_delta = monotonic_done.saturating_sub(max_done);
+        max_done = monotonic_done;
+        if let Some(cb) = raw_progress.as_mut() {
+            cb(monotonic_done, max_total, monotonic_delta);
+        }
+    };
+    let mut progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send)> =
+        Some(&mut monotonic_cb);
 
     // 第一轮直接连：系统代理只会把下载流量绕远路。
     let direct = download_through_sources(
@@ -909,7 +956,27 @@ pub async fn download_file_multithreaded<'a>(
     retry_counter: Option<&AtomicU64>,
     on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let mut progress = on_progress;
+    let mut raw_progress = on_progress;
+    let mut max_done: u64 = 0;
+    let mut max_total: u64 = expected_size.unwrap_or(0);
+    let mut monotonic_cb = |done: u64, total: u64, _delta: u64| {
+        if total > max_total {
+            max_total = total;
+        }
+        let clamped_done = if max_total > 0 {
+            done.min(max_total)
+        } else {
+            done
+        };
+        let monotonic_done = clamped_done.max(max_done);
+        let monotonic_delta = monotonic_done.saturating_sub(max_done);
+        max_done = monotonic_done;
+        if let Some(cb) = raw_progress.as_mut() {
+            cb(monotonic_done, max_total, monotonic_delta);
+        }
+    };
+    let mut progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send)> =
+        Some(&mut monotonic_cb);
     match download_multithreaded_via(
         direct_client(),
         url,
@@ -950,9 +1017,11 @@ async fn download_multithreaded_via<'a>(
     on_progress: &mut Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("无法创建目录 {}: {e}", parent.display()))?;
+        if !parent.is_dir() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("无法创建目录 {}: {e}", parent.display()))?;
+        }
     }
 
     let part = part_path(dest);
@@ -1022,7 +1091,8 @@ async fn download_multithreaded_via<'a>(
         match segmented_result {
             Some(Ok(Some(downloaded))) => {
                 if let Err(err) =
-                    verify_and_commit(&part, dest, downloaded, expected_size, expected_sha1).await
+                    verify_and_commit(&part, dest, downloaded, expected_size, expected_sha1, None)
+                        .await
                 {
                     let _ = fs::remove_file(&part).await;
                     return Err(err);
@@ -1058,12 +1128,21 @@ async fn download_multithreaded_via<'a>(
             url,
             &part,
             expected_size,
+            expected_sha1.is_some(),
             on_progress.as_mut().map(|cb| &mut **cb),
         )
         .await
         {
-            Ok(downloaded) => {
-                match verify_and_commit(&part, dest, downloaded, expected_size, expected_sha1).await
+            Ok((downloaded, inline_sha1)) => {
+                match verify_and_commit(
+                    &part,
+                    dest,
+                    downloaded,
+                    expected_size,
+                    expected_sha1,
+                    inline_sha1.as_deref(),
+                )
+                .await
                 {
                     Ok(()) => return Ok(downloaded),
                     Err(verify_err) => {
@@ -1184,7 +1263,27 @@ pub async fn download_file_resumable<'a>(
     retry_counter: Option<&AtomicU64>,
     on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
-    let mut progress = on_progress;
+    let mut raw_progress = on_progress;
+    let mut max_done: u64 = 0;
+    let mut max_total: u64 = expected_size.unwrap_or(0);
+    let mut monotonic_cb = |done: u64, total: u64, _delta: u64| {
+        if total > max_total {
+            max_total = total;
+        }
+        let clamped_done = if max_total > 0 {
+            done.min(max_total)
+        } else {
+            done
+        };
+        let monotonic_done = clamped_done.max(max_done);
+        let monotonic_delta = monotonic_done.saturating_sub(max_done);
+        max_done = monotonic_done;
+        if let Some(cb) = raw_progress.as_mut() {
+            cb(monotonic_done, max_total, monotonic_delta);
+        }
+    };
+    let mut progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send)> =
+        Some(&mut monotonic_cb);
     match download_resumable_via(
         direct_client(),
         url,
@@ -1225,9 +1324,11 @@ async fn download_resumable_via<'a>(
     on_progress: &mut Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
 ) -> Result<u64, String> {
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("无法创建目录 {}: {e}", parent.display()))?;
+        if !parent.is_dir() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("无法创建目录 {}: {e}", parent.display()))?;
+        }
     }
 
     let part = part_path(dest);
@@ -1453,7 +1554,7 @@ async fn download_resumable_via<'a>(
         return Err(parallel_error.unwrap_or_else(|| "下载未完成，可以继续下载".to_string()));
     }
 
-    verify_and_commit(&part, dest, total, Some(total), expected_sha1).await?;
+    verify_and_commit(&part, dest, total, Some(total), expected_sha1, None).await?;
     let _ = fs::remove_file(resume_meta_path(&part)).await;
     Ok(total)
 }
@@ -1463,8 +1564,9 @@ async fn download_single_stream<'a>(
     url: &str,
     part: &Path,
     expected_size: Option<u64>,
+    compute_sha1: bool,
     mut on_progress: Option<&mut (dyn FnMut(u64, u64, u64) + Send + 'a)>,
-) -> Result<u64, String> {
+) -> Result<(u64, Option<String>), String> {
     // PCL2 `NetTaskThreadCount` + `ConnectAverage` bookkeeping.
     let _thread = crate::download::try_acquire_thread();
     let started = Instant::now();
@@ -1482,9 +1584,24 @@ async fn download_single_stream<'a>(
     }
 
     let total = response.content_length().or(expected_size).unwrap_or(0);
-    let mut file = fs::File::create(part)
-        .await
-        .map_err(|e| format!("无法写入 {}: {e}", part.display()))?;
+    const MAX_IN_MEMORY_BYTES: u64 = 2 * 1024 * 1024;
+    let buffer_in_ram = total > 0 && total <= MAX_IN_MEMORY_BYTES;
+
+    let mut file = if buffer_in_ram {
+        None
+    } else {
+        Some(
+            fs::File::create(part)
+                .await
+                .map_err(|e| format!("无法写入 {}: {e}", part.display()))?,
+        )
+    };
+    let mut mem_buf = if buffer_in_ram {
+        Vec::with_capacity(total as usize)
+    } else {
+        Vec::new()
+    };
+    let mut hasher = compute_sha1.then(Sha1::new);
 
     let mut downloaded: u64 = 0;
     let mut stream = response.bytes_stream();
@@ -1505,21 +1622,49 @@ async fn download_single_stream<'a>(
         // PCL2 `NetTaskSpeedLimitHigh` token bucket: wait for these bytes
         // before accepting them, so all streams share one global cap.
         crate::download::consume(delta).await;
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+        if let Some(ref mut h) = hasher {
+            h.update(&chunk);
+        }
+        if let Some(ref mut f) = file {
+            f.write_all(&chunk)
+                .await
+                .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+        } else if (mem_buf.len() as u64) + delta <= MAX_IN_MEMORY_BYTES {
+            mem_buf.extend_from_slice(&chunk);
+        } else {
+            let mut f = fs::File::create(part)
+                .await
+                .map_err(|e| format!("无法写入 {}: {e}", part.display()))?;
+            if !mem_buf.is_empty() {
+                f.write_all(&mem_buf)
+                    .await
+                    .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+                mem_buf.clear();
+            }
+            f.write_all(&chunk)
+                .await
+                .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+            file = Some(f);
+        }
         downloaded += delta;
         if let Some(cb) = on_progress.as_mut() {
             cb(downloaded, total, delta);
         }
     }
 
-    file.flush()
-        .await
-        .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
-    drop(file);
+    if let Some(mut f) = file {
+        f.flush()
+            .await
+            .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+        drop(f);
+    } else {
+        fs::write(part, &mem_buf)
+            .await
+            .map_err(|e| format!("写入失败 {}: {e}", part.display()))?;
+    }
+    let sha1_hex = hasher.map(|h| format!("{:x}", h.finalize()));
     crate::download::record_connect(started.elapsed().as_millis() as u64);
-    Ok(downloaded)
+    Ok((downloaded, sha1_hex))
 }
 
 /// 断点续传的旁车文件：记下分片布局与已完成的段，和 `.part` 同目录同前缀。
@@ -1763,54 +1908,117 @@ async fn try_segmented_download<'a>(
             let downloaded = downloaded.clone();
             let tx = tx.clone();
             async move {
-                fetch_range_into(client, &worker_url, &part, start, end, &downloaded, &tx).await
+                let res =
+                    fetch_range_into(client, &worker_url, &part, start, end, &downloaded, &tx)
+                        .await;
+                ((start, end), res)
             }
         })
         .collect();
 
     drop(tx);
 
-    let join_fut = try_join_all(segment_futures);
+    let join_fut = futures_util::future::join_all(segment_futures);
     tokio::pin!(join_fut);
 
-    loop {
+    let mut max_reported: u64 = 0;
+    let results = loop {
         tokio::select! {
              biased;
              maybe_msg = rx.recv() => {
-                 if let Some((current, delta)) = maybe_msg {
-                     if let Some(cb) = on_progress.as_mut() {
-                         cb(current.min(total), total, delta);
+                 if let Some((current, _delta)) = maybe_msg {
+                     let clamped = current.min(total);
+                     if clamped > max_reported {
+                         let monotonic_delta = clamped - max_reported;
+                         max_reported = clamped;
+                         if let Some(cb) = on_progress.as_mut() {
+                             cb(max_reported, total, monotonic_delta);
+                         }
                      }
                  } else {
-                     break;
+                     break join_fut.await;
                  }
              }
              res = &mut join_fut => {
-                 let attempts = res?;
-                 if let Some(counter) = retry_counter {
-                     let retries: u64 = attempts.into_iter().map(u64::from).sum();
-                     if retries > 0 {
-                         counter.fetch_add(retries, Ordering::Relaxed);
+                 while let Ok((current, _delta)) = rx.try_recv() {
+                     let clamped = current.min(total);
+                     if clamped > max_reported {
+                         let monotonic_delta = clamped - max_reported;
+                         max_reported = clamped;
+                         if let Some(cb) = on_progress.as_mut() {
+                             cb(max_reported, total, monotonic_delta);
+                         }
                      }
                  }
-                 // Drain any remaining progress notifications.
-                 while let Ok((current, delta)) = rx.try_recv() {
-                     if let Some(cb) = on_progress.as_mut() {
-                         cb(current.min(total), total, delta);
-                     }
-                 }
-                 return Ok(Some(total));
+                 break res;
              }
+        }
+    };
+
+    let mut total_retries: u64 = 0;
+    let mut failed_ranges: Vec<(u64, u64, String)> = Vec::new();
+    let mut succeeded_count: usize = 0;
+
+    for ((start, end), res) in results {
+        match res {
+            Ok(attempts) => {
+                succeeded_count += 1;
+                total_retries += u64::from(attempts);
+            }
+            Err(err) => {
+                failed_ranges.push((start, end, err));
+            }
         }
     }
 
-    let attempts = join_fut.await?;
-    if let Some(counter) = retry_counter {
-        let retries: u64 = attempts.into_iter().map(u64::from).sum();
-        if retries > 0 {
-            counter.fetch_add(retries, Ordering::Relaxed);
+    if total_retries > 0 {
+        if let Some(counter) = retry_counter {
+            counter.fetch_add(total_retries, Ordering::Relaxed);
         }
     }
+
+    // 若部分分片因 CDN 并发限流（429/503/瞬断）失败，但已有分片成功落盘，
+    // 绝不丢弃已下载的 `.part` 从 0 重来，而是以低并发把剩余失败分片逐一补完！
+    if !failed_ranges.is_empty() {
+        if succeeded_count == 0 {
+            return Err(failed_ranges.remove(0).2);
+        }
+        for (start, end, _first_err) in failed_ranges {
+            let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, u64)>();
+            let fetch_fut =
+                fetch_range_into(client, &final_url, part, start, end, &downloaded, &retry_tx);
+            tokio::pin!(fetch_fut);
+            let attempts = loop {
+                tokio::select! {
+                    biased;
+                    maybe_msg = retry_rx.recv() => {
+                        if let Some((current, _delta)) = maybe_msg {
+                            let clamped = current.min(total);
+                            if clamped > max_reported {
+                                let monotonic_delta = clamped - max_reported;
+                                max_reported = clamped;
+                                if let Some(cb) = on_progress.as_mut() {
+                                    cb(max_reported, total, monotonic_delta);
+                                }
+                            }
+                        }
+                    }
+                    res = &mut fetch_fut => break res?,
+                }
+            };
+            if let Some(counter) = retry_counter {
+                counter.fetch_add(u64::from(attempts) + 1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    if max_reported < total {
+        let delta = total - max_reported;
+        if let Some(cb) = on_progress.as_mut() {
+            cb(total, total, delta);
+        }
+    }
+
     Ok(Some(total))
 }
 
@@ -1820,14 +2028,19 @@ async fn verify_and_commit(
     downloaded: u64,
     expected_size: Option<u64>,
     expected_sha1: Option<&str>,
+    precomputed_sha1: Option<&str>,
 ) -> Result<(), String> {
     // PCL2 `FileChecker{MinSize, ActualSize, Hash, IsJson}`. `check_size` and
     // `check_hash` emit byte-identical error strings to the original verifier.
     let checker = crate::download::FileChecker::from_download(expected_size, expected_sha1);
     checker.check_size(downloaded, dest)?;
     if checker.sha1.is_some() {
-        let actual = sha1_file(part).await?;
-        checker.check_hash(dest, &actual)?;
+        if let Some(actual) = precomputed_sha1 {
+            checker.check_hash(dest, actual)?;
+        } else {
+            let actual = sha1_file(part).await?;
+            checker.check_hash(dest, &actual)?;
+        }
     }
 
     if fs::try_exists(dest).await.unwrap_or(false) {

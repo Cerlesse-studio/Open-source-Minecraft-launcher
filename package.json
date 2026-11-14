@@ -70,7 +70,6 @@
       "electron/backend-console-preload.cjs",
       "electron/updater.cjs",
       "electron/fuses.cjs",
-      "electron/after-pack.cjs",
       "electron/measure-baseline.cjs",
       "electron/chromium/args.gn",
       "package.json",

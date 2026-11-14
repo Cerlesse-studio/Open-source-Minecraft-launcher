@@ -13,6 +13,17 @@ const { flipElectronFuses, RECOMMENDED_FUSE_CONFIG } = require('./fuses.cjs');
 const ALLOWED_LOCALES = new Set(['en-US', 'zh-CN']);
 const ALLOWED_MAC_LPROJ = new Set(['en.lproj', 'en_US.lproj', 'zh_CN.lproj', 'Base.lproj']);
 
+// 仅移除非必需的 Vulkan 桥接库；保留 d3dcompiler_47.dll 与 vk_swiftshader.dll，
+// 确保 ANGLE D3D11 与无硬件 GPU 环境下的软件渲染回退均可正常启动桌面窗口。
+const PRUNABLE_RUNTIME_FILES = {
+  win32: [
+    'vulkan-1.dll',
+  ],
+  linux: [
+    'libvulkan.so.1',
+  ],
+};
+
 // 第 2 节 & 第 3.3 节：严禁删除的核心文件清单
 const REQUIRED_CORE_FILES_WIN_LINUX = [
   'icudtl.dat',
@@ -63,6 +74,31 @@ function pruneLocales(appOutDir, platformName) {
     }
   }
 
+  return { removedCount, savedBytes };
+}
+
+/**
+ * 裁剪冗余的软件渲染 / Vulkan 图形回退组件（仅在 Windows / Linux 上执行）
+ * @param {string} appOutDir
+ * @param {string} platformName
+ */
+function pruneUnusedRuntimeFiles(appOutDir, platformName) {
+  const candidates = PRUNABLE_RUNTIME_FILES[platformName];
+  if (!candidates || candidates.length === 0) {
+    return { removedCount: 0, savedBytes: 0 };
+  }
+  let removedCount = 0;
+  let savedBytes = 0;
+  for (const name of candidates) {
+    const fullPath = path.join(appOutDir, name);
+    if (!fs.existsSync(fullPath)) continue;
+    const stat = fs.statSync(fullPath);
+    if (stat.isFile()) {
+      savedBytes += stat.size;
+      fs.unlinkSync(fullPath);
+      removedCount += 1;
+    }
+  }
   return { removedCount, savedBytes };
 }
 
@@ -132,12 +168,20 @@ exports.default = async function afterPack(context) {
   const { appOutDir, electronPlatformName, packager } = context;
   const productFilename = packager.appInfo.productFilename;
 
-  // 1. L1 语言包裁剪
+  // 1. L1 语言包与冗余图形运行时组件裁剪
   const { removedCount, savedBytes } = pruneLocales(appOutDir, electronPlatformName);
   const savedMb = (savedBytes / (1024 * 1024)).toFixed(2);
   console.log(
     `[Chromium L1 裁剪] 已清理多余语言包 ${removedCount} 个，仅保留 [${Array.from(ALLOWED_LOCALES).join(', ')}]，节省 ${savedMb} MB`
   );
+
+  const runtimePruned = pruneUnusedRuntimeFiles(appOutDir, electronPlatformName);
+  if (runtimePruned.removedCount > 0) {
+    const runtimeSavedMb = (runtimePruned.savedBytes / (1024 * 1024)).toFixed(2);
+    console.log(
+      `[Chromium L1 裁剪] 已清理冗余图形回退组件 ${runtimePruned.removedCount} 个，节省 ${runtimeSavedMb} MB`
+    );
+  }
 
   // 2. 核心组件与开源许可证校验
   verifyCoreAndLicenses(appOutDir, electronPlatformName);
@@ -157,5 +201,6 @@ exports.default = async function afterPack(context) {
 };
 
 module.exports.pruneLocales = pruneLocales;
+module.exports.pruneUnusedRuntimeFiles = pruneUnusedRuntimeFiles;
 module.exports.verifyCoreAndLicenses = verifyCoreAndLicenses;
 module.exports.ALLOWED_LOCALES = ALLOWED_LOCALES;

@@ -70,6 +70,24 @@ const launcherDir = storage.root;
 const launcherDataDir = storage.data;
 const launcherGameDir = storage.game;
 
+function appendStartupError(label, error) {
+  const detail = error && error.stack ? error.stack : String(error);
+  console.error(`[startup] ${label}:`, detail);
+  try {
+    fs.appendFileSync(
+      path.join(launcherDataDir, 'startup.log'),
+      `[${new Date().toISOString()}] ${label}：${detail}\n`,
+    );
+  } catch {}
+}
+
+process.on('uncaughtException', (error) => {
+  appendStartupError('未捕获主进程异常', error);
+});
+process.on('unhandledRejection', (reason) => {
+  appendStartupError('未处理的 Promise 拒绝', reason);
+});
+
 // 将 Electron 应用配置与缓存重定向至选定目录下的独立 web 子目录中。
 // 注意：严禁重定向 appData 与 sessionData！
 // 1. appData 必须保留为操作系统的 Roaming AppData，否则 Chromium 内部沙盒与系统集成会产生路径错乱。
@@ -202,6 +220,26 @@ let core;
 let nextId = 0;
 const pending = new Map();
 
+function resolveDevServerUrl() {
+  const raw = process.env.OSML_DEV_URL;
+  if (raw) {
+    try {
+      const parsed = new URL(raw);
+      if (
+        parsed.protocol === 'http:' &&
+        (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')
+      ) {
+        return `${parsed.origin}/`;
+      }
+    } catch {}
+  }
+  return 'http://127.0.0.1:1420/';
+}
+
+const devServerUrl = resolveDevServerUrl();
+let usingPackagedFallback = false;
+let usingFileFallbackUrl = null;
+
 // ============================================================================
 // 开发者选项：F12 DevTools / 后台核心进程日志
 // ============================================================================
@@ -232,8 +270,87 @@ const events = new Set([
   'multiplayer:status',
   'multiplayer:log',
   'multiplayer:install',
+  'multiplayer:clone',
   'update:progress',
 ]);
+
+// ============================================================================
+// [IPC 帧合并加速] 将 Rust 核心高频进度与日志事件按 16ms (60fps) 窗口合并为单次
+// webContents.send('core:events')，避免多线程高速下载或游戏海量日志刷屏阻塞渲染主线程。
+// ============================================================================
+let pendingEventBatch = [];
+let pendingEventTimer = null;
+
+function flushRendererEvents() {
+  if (pendingEventTimer !== null) {
+    clearTimeout(pendingEventTimer);
+    pendingEventTimer = null;
+  }
+  if (pendingEventBatch.length === 0) return;
+  const batch = pendingEventBatch;
+  pendingEventBatch = [];
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (batch.length === 1) {
+    mainWindow.webContents.send('core:event', batch[0].event, batch[0].payload);
+  } else {
+    mainWindow.webContents.send('core:events', batch);
+  }
+}
+
+function enqueueRendererEvent(event, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const isImmediate =
+    event === 'game:status' ||
+    event === 'game:exit' ||
+    event === 'multiplayer:status' ||
+    (payload &&
+      (payload.stage === 'done' ||
+        payload.stage === 'error' ||
+        payload.status === 'ready' ||
+        payload.status === 'error'));
+
+  if (event === 'install:progress' && !isImmediate) {
+    for (let i = pendingEventBatch.length - 1; i >= 0; i -= 1) {
+      if (pendingEventBatch[i].event === 'install:progress') {
+        const prevLogs = pendingEventBatch[i].payload?.fileLogs;
+        const nextLogs = payload?.fileLogs;
+        const mergedPayload =
+          Array.isArray(prevLogs) && prevLogs.length > 0
+            ? {
+                ...payload,
+                fileLogs: Array.isArray(nextLogs)
+                  ? prevLogs.concat(nextLogs).slice(-300)
+                  : prevLogs,
+              }
+            : payload;
+        pendingEventBatch[i] = { event, payload: mergedPayload };
+        return;
+      }
+    }
+  } else if (
+    (event === 'content:progress' || event === 'update:progress') &&
+    !isImmediate
+  ) {
+    for (let i = pendingEventBatch.length - 1; i >= 0; i -= 1) {
+      if (
+        pendingEventBatch[i].event === event &&
+        pendingEventBatch[i].payload?.id === payload?.id
+      ) {
+        pendingEventBatch[i] = { event, payload };
+        return;
+      }
+    }
+  }
+
+  pendingEventBatch.push({ event, payload });
+
+  if (isImmediate || pendingEventBatch.length >= 64) {
+    flushRendererEvents();
+  } else if (pendingEventTimer === null) {
+    pendingEventTimer = setTimeout(flushRendererEvents, 16);
+  }
+}
 
 function resolveCoreBinary() {
   const binary = `open-source-minecraft-launcher${process.platform === 'win32' ? '.exe' : ''}`;
@@ -343,17 +460,18 @@ function startCore() {
       return;
     }
     if (message.event) {
-      appendBackendLog('event', String(message.event));
-    } else if (message.id != null) {
+      if (backendConsoleEnabled) appendBackendLog('event', String(message.event));
+    } else if (message.id != null && backendConsoleEnabled) {
       appendBackendLog(
         'ipc',
         `#${message.id} ${message.error != null ? `失败: ${message.error}` : '完成'}`,
       );
     }
     if (events.has(message.event) && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('core:event', message.event, message.payload);
+      enqueueRendererEvent(message.event, message.payload);
     }
     if (message.id != null && pending.has(message.id)) {
+      flushRendererEvents();
       const { resolve, reject } = pending.get(message.id);
       pending.delete(message.id);
       message.error != null ? reject(new Error(message.error)) : resolve(message.result);
@@ -399,7 +517,13 @@ function trusted(event) {
     throw new Error('Unauthorized IPC sender');
   }
   const url = event.senderFrame.url;
-  if (!(app.isPackaged ? url.startsWith('launcher://app/') : url.startsWith('http://127.0.0.1:1420/'))) {
+  const allowLauncherProtocol = app.isPackaged || usingPackagedFallback;
+  const allowed = usingFileFallbackUrl
+    ? url.startsWith(usingFileFallbackUrl)
+    : allowLauncherProtocol
+      ? url.startsWith('launcher://app/')
+      : url.startsWith(devServerUrl);
+  if (!allowed) {
     throw new Error('Unauthorized IPC origin');
   }
 }
@@ -823,10 +947,22 @@ app.whenReady().then(async () => {
     if (!devToolsEnabled) mainWindow.webContents.closeDevTools();
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const allowed = app.isPackaged
-      ? url.startsWith('launcher://app/')
-      : url.startsWith('http://127.0.0.1:1420/');
+    const allowed = usingFileFallbackUrl
+      ? url.startsWith(usingFileFallbackUrl)
+      : app.isPackaged || usingPackagedFallback
+        ? url.startsWith('launcher://app/')
+        : url.startsWith(devServerUrl);
     if (!allowed) event.preventDefault();
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('渲染进程异常退出:', details);
+    try {
+      fs.appendFileSync(
+        path.join(launcherDataDir, 'startup.log'),
+        `[${new Date().toISOString()}] 渲染进程异常退出：${JSON.stringify(details)}\n`,
+      );
+    } catch {}
   });
 
   mainWindow.webContents.once('did-finish-load', () => {
@@ -932,10 +1068,28 @@ app.whenReady().then(async () => {
       await mainWindow.loadURL('launcher://app/index.html');
     } catch (loadErr) {
       console.warn('launcher:// 协议加载失败，正在尝试本地文件回退加载:', loadErr);
-      await mainWindow.loadFile(path.resolve(__dirname, '..', 'dist', 'index.html'));
+      const distIndex = path.resolve(__dirname, '..', 'dist', 'index.html');
+      usingFileFallbackUrl = pathToFileURL(distIndex).toString();
+      await mainWindow.loadFile(distIndex);
     }
   } else {
-    await mainWindow.loadURL('http://127.0.0.1:1420/');
+    try {
+      await mainWindow.loadURL(devServerUrl);
+    } catch (devErr) {
+      const distIndex = path.resolve(__dirname, '..', 'dist', 'index.html');
+      if (fs.existsSync(distIndex)) {
+        console.warn(`开发服务器 ${devServerUrl} 不可达，正在回退加载本地构建产物 dist/index.html:`, devErr);
+        usingPackagedFallback = true;
+        try {
+          await mainWindow.loadURL('launcher://app/index.html');
+        } catch {
+          usingFileFallbackUrl = pathToFileURL(distIndex).toString();
+          await mainWindow.loadFile(distIndex);
+        }
+      } else {
+        throw devErr;
+      }
+    }
   }
 }).catch((error) => {
   console.error(error);

@@ -400,6 +400,10 @@ fn hit_from_project(
         date_modified: project.date_modified,
         latest_version,
         project_type: project_type.to_string(),
+        display_title: None,
+        display_subtitle: None,
+        display_tags: None,
+        is_bedrock: None,
     }
 }
 

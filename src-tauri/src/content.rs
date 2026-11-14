@@ -141,9 +141,19 @@ impl SearchRequest {
 }
 
 type VersionListCache = std::collections::HashMap<String, (Instant, Vec<ContentVersionItem>)>;
+type SearchResultCache = std::collections::HashMap<String, (Instant, SearchContentResult)>;
+
+const SEARCH_CACHE_TTL: Duration = Duration::from_secs(120);
+const SEARCH_CACHE_MAX_ENTRIES: usize = 96;
 
 fn version_list_cache() -> &'static std::sync::Mutex<VersionListCache> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<VersionListCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn search_result_cache() -> &'static std::sync::Mutex<SearchResultCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<SearchResultCache>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -165,6 +175,14 @@ pub struct ContentHit {
     pub date_modified: Option<String>,
     pub latest_version: Option<String>,
     pub project_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_bedrock: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +316,252 @@ struct ModrinthRawHit {
     project_type: String,
 }
 
+fn translate_resource_tag(tag: &str) -> &str {
+    match tag {
+        // CurseForge: Mod
+        "406" => "世界元素",
+        "407" => "生物群系",
+        "410" => "维度",
+        "408" => "矿物/资源",
+        "409" => "天然结构",
+        "412" => "科技",
+        "415" => "管道/物流",
+        "4843" => "自动化",
+        "417" => "能源",
+        "4558" => "红石",
+        "436" => "食物/烹饪",
+        "416" => "农业",
+        "414" => "运输",
+        "420" => "仓储",
+        "419" => "魔法",
+        "422" => "冒险",
+        "424" => "装饰",
+        "411" => "生物",
+        "434" => "装备",
+        "6814" => "性能优化",
+        "9026" => "创造模式",
+        "423" => "信息显示",
+        "435" => "服务器",
+        "5191" => "改良",
+        "421" => "支持库",
+        // CurseForge: ModPack
+        "4484" => "多人",
+        "4479" => "硬核",
+        "4483" => "战斗",
+        "4478" => "任务",
+        "4472" => "科技",
+        "4473" => "魔法",
+        "4475" => "冒险",
+        "4476" => "探索",
+        "4477" => "小游戏",
+        "4474" => "科幻",
+        "4736" => "空岛",
+        "5128" => "原版改良",
+        "4487" => "FTB",
+        "4480" => "基于地图",
+        "4481" => "轻量",
+        "4482" => "大型",
+        // CurseForge: ResourcePack / Shader / DataPack
+        "403" => "原版风",
+        "400" => "写实风",
+        "401" => "现代风",
+        "402" => "中世纪",
+        "399" => "蒸汽朋克",
+        "5244" => "含字体",
+        "404" => "动态效果",
+        "4465" => "兼容 Mod",
+        "393" => "16x",
+        "394" => "32x",
+        "395" => "64x",
+        "396" => "128x",
+        "397" => "256x",
+        "398" => "超高清",
+        "5193" => "数据包",
+        "6553" => "写实风",
+        "6554" => "幻想风",
+        "6555" => "原版风",
+        "6948" => "冒险",
+        "6949" => "幻想",
+        "6950" => "支持库",
+        "6952" => "魔法",
+        "6946" => "Mod 相关",
+        "6951" => "科技",
+        "6953" => "实用",
+        // Modrinth category slugs
+        "technology" => "科技",
+        "magic" => "魔法",
+        "adventure" => "冒险",
+        "utility" => "实用",
+        "optimization" => "性能优化",
+        "vanilla-like" => "原版风",
+        "realistic" => "写实风",
+        "worldgen" => "世界元素",
+        "food" => "食物/烹饪",
+        "game-mechanics" => "游戏机制",
+        "transportation" => "运输",
+        "storage" => "仓储",
+        "decoration" => "装饰",
+        "mobs" => "生物",
+        "equipment" => "装备",
+        "social" => "服务器",
+        "library" => "支持库",
+        "multiplayer" => "多人",
+        "challenging" => "硬核",
+        "combat" => "战斗",
+        "quests" => "任务",
+        "kitchen-sink" => "水槽包",
+        "lightweight" => "轻量",
+        "simplistic" => "简洁",
+        "tweaks" => "改良",
+        "8x-" => "极简",
+        "512x+" => "超高清",
+        "audio" => "含声音",
+        "fonts" => "含字体",
+        "models" => "含模型",
+        "gui" => "含 UI",
+        "locale" => "含语言",
+        "core-shaders" => "核心着色器",
+        "modded" => "兼容 Mod",
+        "fantasy" => "幻想风",
+        "semi-realistic" => "半写实风",
+        "cartoon" => "卡通风",
+        "colored-lighting" => "彩色光照",
+        "path-tracing" => "路径追踪",
+        "pbr" => "PBR",
+        "reflections" => "反射",
+        "iris" => "Iris",
+        "optifine" => "OptiFine",
+        "vanilla" => "原版可用",
+        "datapack" => "数据包",
+        other => other,
+    }
+}
+
+fn has_loader_word(lower: &str) -> bool {
+    ["neoforge", "forge", "fabric", "quilt"]
+        .iter()
+        .any(|w| lower.contains(w))
+}
+
+fn without_loader_words(lower: &str) -> String {
+    let mut s = lower.to_string();
+    for w in ["neoforge", "forge", "fabric", "quilt"] {
+        s = s.replace(w, "");
+    }
+    s
+}
+
+fn split_project_name(raw: &str) -> Vec<String> {
+    let normalized = raw.replace(" | ", "\x00").replace(" - ", "\x00");
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    for ch in normalized.chars() {
+        if matches!(ch, '\x00' | '(' | ')' | '[' | ']' | '{' | '}') {
+            let trimmed = cur.trim_matches(|c| matches!(c, ' ' | '/' | '\\'));
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+    }
+    let trimmed = cur.trim_matches(|c| matches!(c, ' ' | '/' | '\\'));
+    if !trimmed.is_empty() {
+        parts.push(trimmed.to_string());
+    }
+    parts
+}
+
+/// Native Rust port of PCL2 `ResourceProject.GetControlTitle` for raw titles.
+fn compute_control_title(raw_name: &str) -> (String, String) {
+    let name_lists = split_project_name(raw_name);
+    if name_lists.len() <= 1 {
+        return (raw_name.to_string(), String::new());
+    }
+    let mut normal_names = Vec::new();
+    let mut subtitles = Vec::new();
+    for name in name_lists {
+        let lower = name.to_lowercase();
+        let is_abbr = name == name.to_uppercase() && name != "FPS" && name != "HUD";
+        let stripped = without_loader_words(&lower);
+        let is_edition = has_loader_word(&lower) && !stripped.chars().any(|c| c.is_ascii_lowercase());
+        if is_abbr || is_edition {
+            subtitles.push(name);
+        } else {
+            normal_names.push(name);
+        }
+    }
+    if normal_names.is_empty() || subtitles.is_empty() {
+        return (raw_name.to_string(), String::new());
+    }
+    let title = normal_names.join(" - ");
+    let mut out_sub = Vec::new();
+    for entry in subtitles {
+        let lower = entry.to_lowercase();
+        if entry.len() < 16 && lower.contains("fabric") && lower.contains("forge") {
+            continue;
+        }
+        out_sub.push(entry.trim().to_string());
+    }
+    (title, out_sub.join(" | "))
+}
+
+fn alnum_lower(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+fn is_like_hit(a: &ContentHit, b: &ContentHit) -> bool {
+    if a.project_id == b.project_id || a.title == b.title {
+        return true;
+    }
+    if alnum_lower(&a.slug) == alnum_lower(&b.slug) {
+        return true;
+    }
+    !a.description.is_empty() && a.description == b.description
+}
+
+fn finalize_search_result(mut result: SearchContentResult, project_type: &str) -> SearchContentResult {
+    let mut deduped: Vec<ContentHit> = Vec::with_capacity(result.hits.len());
+    for mut hit in result.hits.drain(..) {
+        if deduped.iter().any(|existing| is_like_hit(existing, &hit)) {
+            continue;
+        }
+        let is_bedrock = hit
+            .categories
+            .iter()
+            .any(|c| c == "bedrock" || c == "基岩版")
+            || hit.versions.iter().any(|v| v == "基岩版");
+        let (title, subtitle) = compute_control_title(&hit.title);
+        let mut tags = Vec::with_capacity(3);
+        for cat in &hit.categories {
+            if cat == "bedrock" || cat == "基岩版" {
+                continue;
+            }
+            if project_type == "world" && (cat == "world" || cat == "地图") {
+                continue;
+            }
+            let label = translate_resource_tag(cat).to_string();
+            if !label.is_empty() && !tags.contains(&label) {
+                tags.push(label);
+                if tags.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        hit.display_title = Some(title);
+        hit.display_subtitle = Some(subtitle);
+        hit.display_tags = Some(tags);
+        hit.is_bedrock = Some(is_bedrock);
+        deduped.push(hit);
+    }
+    result.hits = deduped;
+    result
+}
+
 pub async fn search_content(
     query: String,
     project_type: String,
@@ -308,6 +572,24 @@ pub async fn search_content(
     limit: u32,
 ) -> Result<SearchContentResult, String> {
     let limit = limit.clamp(1, 50);
+    let cache_key = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        project_type,
+        query.trim(),
+        game_version.as_deref().unwrap_or(""),
+        loader.as_deref().unwrap_or(""),
+        sort.as_deref().unwrap_or(""),
+        offset,
+        limit
+    );
+    if let Ok(cache) = search_result_cache().lock() {
+        if let Some((at, cached)) = cache.get(&cache_key) {
+            if at.elapsed() < SEARCH_CACHE_TTL {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
     // PCL2 `ResourceSearcher.SearchRequest`, built the same way as
     // `PageResource.LoaderInput` does from the current page/filters.
     let request = SearchRequest::new(
@@ -336,6 +618,20 @@ pub async fn search_content(
     let translated = crate::search_i18n::translate_query(search_text);
     let effective = translated.as_deref().unwrap_or(search_text);
 
+    let store_and_return = |res: SearchContentResult| -> Result<SearchContentResult, String> {
+        let finalized = finalize_search_result(res, &project_type);
+        if let Ok(mut cache) = search_result_cache().lock() {
+            if cache.len() >= SEARCH_CACHE_MAX_ENTRIES {
+                cache.retain(|_, (at, _)| at.elapsed() < SEARCH_CACHE_TTL);
+                if cache.len() >= SEARCH_CACHE_MAX_ENTRIES {
+                    cache.clear();
+                }
+            }
+            cache.insert(cache_key.clone(), (Instant::now(), finalized.clone()));
+        }
+        Ok(finalized)
+    };
+
     if resource_type == ResourceType::World {
         // Maps live on CurseForge, never Modrinth: Java in gameId 432 and
         // Bedrock in gameId 78022. The UI sends `loader=bedrock` to request the
@@ -362,13 +658,13 @@ pub async fn search_content(
             } {
                 if fallback.total_hits > 0 {
                     fallback.translated_query = translated.clone();
-                    return Ok(fallback);
+                    return store_and_return(fallback);
                 }
             }
         }
 
         result.translated_query = translated;
-        return Ok(result);
+        return store_and_return(result);
     }
 
     if is_bedrock {
@@ -392,13 +688,13 @@ pub async fn search_content(
             {
                 if fallback.total_hits > 0 {
                     fallback.translated_query = translated.clone();
-                    return Ok(fallback);
+                    return store_and_return(fallback);
                 }
             }
         }
 
         result.translated_query = translated;
-        return Ok(result);
+        return store_and_return(result);
     }
 
     let mut result =
@@ -418,13 +714,13 @@ pub async fn search_content(
         {
             if fallback.total_hits > 0 {
                 fallback.translated_query = translated.clone();
-                return Ok(fallback);
+                return store_and_return(fallback);
             }
         }
     }
 
     result.translated_query = translated;
-    Ok(result)
+    store_and_return(result)
 }
 
 /// One Modrinth search request for a query that is already in English.
@@ -497,6 +793,10 @@ async fn search_modrinth(
             date_modified: h.date_modified,
             latest_version: h.latest_version,
             project_type: h.project_type,
+            display_title: None,
+            display_subtitle: None,
+            display_tags: None,
+            is_bedrock: None,
         })
         .collect();
 

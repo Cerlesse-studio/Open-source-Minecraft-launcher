@@ -19,6 +19,21 @@ export interface VersionManifest {
   versions: VersionSummary[];
 }
 
+export interface VersionCatalogCounts {
+  release: number;
+  snapshot: number;
+  aprilFools: number;
+  legacy: number;
+}
+
+export interface VersionCatalogResult {
+  release: VersionSummary[];
+  snapshot: VersionSummary[];
+  aprilFools: VersionSummary[];
+  legacy: VersionSummary[];
+  counts: VersionCatalogCounts;
+}
+
 export interface InstalledVersion {
   id: string;
   type: string;
@@ -194,6 +209,10 @@ export interface ContentHit {
   dateModified?: string;
   latestVersion?: string;
   projectType: ContentProjectType;
+  displayTitle?: string;
+  displaySubtitle?: string;
+  displayTags?: string[];
+  isBedrock?: boolean;
 }
 
 export interface SearchContentResult {

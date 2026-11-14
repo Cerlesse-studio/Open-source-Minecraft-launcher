@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, Terminal, Trash2 } from "lucide-react";
 import { cn } from "cn";
 import type { GameStateName } from "../lib/types";
@@ -20,6 +20,36 @@ const streamColor: Record<string, string> = {
   stdout: "text-[#c9d5cc]",
 };
 
+const DEFAULT_VISIBLE_LOG_CAP = 250;
+
+const ConsoleLogRow = memo(function ConsoleLogRow({ entry }: { entry: LogEntry }) {
+  return (
+    <div className="cv-log-row grid grid-cols-[52px_4px_minmax(0,1fr)] gap-x-2.5 px-4 py-[2px] text-[10px] leading-[18px] hover:bg-white/[0.025]">
+      <span className="tabular text-right text-muted-foreground/40">
+        {entry.at}
+      </span>
+      <span
+        className={cn(
+          "mt-[7px] size-1 rounded-full",
+          entry.stream === "stderr"
+            ? "bg-[#ef9b8e]"
+            : entry.stream === "cobble"
+              ? "bg-primary"
+              : "bg-muted-foreground/30",
+        )}
+      />
+      <span
+        className={cn(
+          "whitespace-pre-wrap break-words",
+          streamColor[entry.stream] ?? "text-[#c9d5cc]",
+        )}
+      >
+        {entry.line || " "}
+      </span>
+    </div>
+  );
+});
+
 export function ConsolePanel({
   logs,
   runtime,
@@ -38,6 +68,22 @@ export function ConsolePanel({
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const [showAllLogs, setShowAllLogs] = useState(false);
+
+  const visibleLogs = useMemo(
+    () =>
+      showAllLogs || logs.length <= DEFAULT_VISIBLE_LOG_CAP
+        ? logs
+        : logs.slice(logs.length - DEFAULT_VISIBLE_LOG_CAP),
+    [logs, showAllLogs],
+  );
+  const hiddenCount = logs.length - visibleLogs.length;
+
+  useEffect(() => {
+    if (logs.length === 0 && showAllLogs) {
+      setShowAllLogs(false);
+    }
+  }, [logs.length, showAllLogs]);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -45,7 +91,7 @@ export function ConsolePanel({
     if (stickToBottom.current) {
       body.scrollTop = body.scrollHeight;
     }
-  }, [logs]);
+  }, [visibleLogs]);
 
   const handleScroll = () => {
     const body = bodyRef.current;
@@ -132,34 +178,22 @@ export function ConsolePanel({
             </div>
           </div>
         ) : (
-          logs.map((entry) => (
-            <div
-              className="grid grid-cols-[52px_4px_minmax(0,1fr)] gap-x-2.5 px-4 py-[2px] text-[10px] leading-[18px] hover:bg-white/[0.025]"
-              key={entry.id}
-            >
-              <span className="tabular text-right text-muted-foreground/40">
-                {entry.at}
-              </span>
-              <span
-                className={cn(
-                  "mt-[7px] size-1 rounded-full",
-                  entry.stream === "stderr"
-                    ? "bg-[#ef9b8e]"
-                    : entry.stream === "cobble"
-                      ? "bg-primary"
-                      : "bg-muted-foreground/30",
-                )}
-              />
-              <span
-                className={cn(
-                  "whitespace-pre-wrap break-words",
-                  streamColor[entry.stream] ?? "text-[#c9d5cc]",
-                )}
-              >
-                {entry.line || " "}
-              </span>
-            </div>
-          ))
+          <>
+            {hiddenCount > 0 ? (
+              <div className="px-4 py-1 text-center">
+                <button
+                  type="button"
+                  onClick={() => setShowAllLogs(true)}
+                  className="rounded border border-border/50 bg-background/40 px-2.5 py-0.5 text-[10px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+                >
+                  已折叠较早的 {hiddenCount} 条日志以确保流畅度 · 点击展开全部 ({logs.length})
+                </button>
+              </div>
+            ) : null}
+            {visibleLogs.map((entry) => (
+              <ConsoleLogRow key={entry.id} entry={entry} />
+            ))}
+          </>
         )}
       </div>
     </Card>

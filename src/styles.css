@@ -478,6 +478,16 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .cv-log-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 20px;
+  }
+
+  .cv-card-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 76px;
+  }
+
   .mica-enabled [class*="bg-card"],
   .mica-enabled [class*="bg-sidebar"] {
     backdrop-filter: blur(12px);

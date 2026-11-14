@@ -34,7 +34,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 # Chrome 扩展弹窗里 <link>/<script>/<img> 与 CSS url() 需要就地内联，
 # 否则 iframe 的 srcDoc 没有扩展目录作为基准地址。
-regex = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 tar = "0.4"
 base64 = "0.22"
 
@@ -57,6 +57,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = 3
+opt-level = "z"
 panic = "abort"
 strip = true

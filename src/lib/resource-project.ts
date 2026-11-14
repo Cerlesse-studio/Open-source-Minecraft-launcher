@@ -30,6 +30,10 @@ export interface ResourceProject {
   downloadCount: number;
   modLoaders: string[];
   drops: string[];
+  /** Optional precomputed title from the Rust core. */
+  displayTitle?: string;
+  /** Optional precomputed subtitle (without leading pipe) from the Rust core. */
+  displaySubtitle?: string;
 }
 
 /** PCL2 `MyResourceItem` title tuple (PascalCase names kept from VB). */
@@ -51,6 +55,7 @@ export function toResourceProject(
     slug: hit.slug ?? "",
     id: hit.projectId ?? "",
     platform:
+      hit.isBedrock ||
       hit.categories?.some((c) => c === "bedrock" || c === "基岩版") ||
       hit.versions?.includes("基岩版")
         ? "CurseForge"
@@ -61,6 +66,8 @@ export function toResourceProject(
     downloadCount: hit.downloads ?? 0,
     modLoaders: [],
     drops: hit.versions ?? [],
+    displayTitle: hit.displayTitle ?? undefined,
+    displaySubtitle: hit.displaySubtitle ?? undefined,
   };
 }
 
@@ -118,6 +125,16 @@ export function getControlTitle(
   project: ResourceProject,
   hasModLoaderDescription = true,
 ): ControlTitle {
+  if (
+    project.translatedName === project.rawName &&
+    hasModLoaderDescription &&
+    project.displayTitle !== undefined
+  ) {
+    return {
+      Title: project.displayTitle,
+      SubTitle: project.displaySubtitle ? ` | ${project.displaySubtitle}` : "",
+    };
+  }
   let title = project.rawName;
   let subtitleList: string[] = [];
 
@@ -265,6 +282,9 @@ export function toDisplayTags(
   max = 3,
   translateTags = true,
 ): string[] {
+  if (translateTags && max === 3 && Array.isArray(hit.displayTags)) {
+    return hit.displayTags;
+  }
   const tags: string[] = [];
   for (const category of hit.categories ?? []) {
     if (category === "bedrock" || category === "基岩版") continue;
@@ -291,6 +311,10 @@ export function isLike(a: ContentHit, b: ContentHit): boolean {
 
 /** PCL2 `ResourceSearcher` cross-source deduplication. */
 export function dedupeResults(hits: ContentHit[]): ContentHit[] {
+  if (hits.length > 0 && hits[0].displayTitle !== undefined) {
+    // Already deduplicated and enriched by the Rust core.
+    return hits;
+  }
   const results: ContentHit[] = [];
   for (const hit of hits) {
     if (!results.some((existing) => isLike(existing, hit))) results.push(hit);

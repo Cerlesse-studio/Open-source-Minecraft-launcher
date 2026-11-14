@@ -283,6 +283,26 @@ async fn get_betacraft_manifest(
     minecraft::fetch_betacraft_manifest(&root, force.unwrap_or(false)).await
 }
 
+async fn query_version_catalog(
+    root: String,
+    query: Option<String>,
+    betacraft_phase: Option<String>,
+    legacy_source: Option<String>,
+) -> Result<minecraft::VersionCatalogResult, String> {
+    let root = if root.trim().is_empty() {
+        default_root_path()
+    } else {
+        PathBuf::from(root)
+    };
+    Ok(minecraft::query_version_catalog(
+        &root,
+        query.as_deref().unwrap_or(""),
+        betacraft_phase.as_deref().unwrap_or("all"),
+        legacy_source.as_deref().unwrap_or("all"),
+    )
+    .await)
+}
+
 fn get_installed_versions(root: String) -> Result<Vec<InstalledVersion>, String> {
     minecraft::list_installed(&PathBuf::from(root))
 }
@@ -769,6 +789,9 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
             message: None,
         };
         let mut raw = Vec::new();
+        let mut window_start = std::time::Instant::now();
+        let mut emitted_in_window = 0usize;
+        let mut suppressed_in_window = 0usize;
         loop {
             raw.clear();
             match reader.read_until(b'\n', &mut raw) {
@@ -801,20 +824,59 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                         window_ready.store(true, Ordering::Relaxed);
                     }
                 }
-                let stream = if line.contains("/ERROR]") {
+                let out_stream = if line.contains("/ERROR]") {
                     "stderr"
                 } else {
                     stream
                 };
-                log.write(stream, &line);
-                let _ = app.emit(
-                    "game:log",
-                    GameLogPayload {
-                        stream: stream.to_string(),
-                        line,
-                    },
-                );
+                log.write(out_stream, &line);
+
+                let now = std::time::Instant::now();
+                if now.duration_since(window_start) >= Duration::from_millis(16) {
+                    if suppressed_in_window > 0 {
+                        let _ = app.emit(
+                            "game:log",
+                            GameLogPayload {
+                                stream: "cobble".to_string(),
+                                line: format!(
+                                    "… [高频输出保护：已折叠 {suppressed_in_window} 行日志，完整日志已写入日志文件]"
+                                ),
+                            },
+                        );
+                        suppressed_in_window = 0;
+                    }
+                    window_start = now;
+                    emitted_in_window = 0;
+                }
+
+                let is_important = out_stream == "stderr"
+                    || line.contains("Exception")
+                    || line.contains("Error")
+                    || line.contains("WARN");
+                if is_important || emitted_in_window < 48 {
+                    emitted_in_window += 1;
+                    let _ = app.emit(
+                        "game:log",
+                        GameLogPayload {
+                            stream: out_stream.to_string(),
+                            line,
+                        },
+                    );
+                } else {
+                    suppressed_in_window += 1;
+                }
             }
+        }
+        if suppressed_in_window > 0 {
+            let _ = app.emit(
+                "game:log",
+                GameLogPayload {
+                    stream: "cobble".to_string(),
+                    line: format!(
+                        "… [高频输出保护：已折叠 {suppressed_in_window} 行日志，完整日志已写入日志文件]"
+                    ),
+                },
+            );
         }
     })
 }

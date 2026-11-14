@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -45,6 +45,7 @@ import {
   getBetacraftManifest,
   installBedrockVersion,
   launchBedrock,
+  queryVersionCatalog,
 } from "../lib/backend";
 import {
   RESOURCE_CATEGORIES,
@@ -58,6 +59,7 @@ import type {
   BedrockVersionItem,
   InstallProgress,
   InstalledVersion,
+  VersionCatalogResult,
   VersionManifest,
   VersionSummary,
 } from "../lib/types";
@@ -269,7 +271,7 @@ interface DownloadCatalogViewProps {
   onNotify: (tone: "success" | "error" | "info", title: string, detail?: string) => void;
 }
 
-function VersionGlyph({ type, source }: { type: string; source?: string }) {
+const VersionGlyph = memo(function VersionGlyph({ type, source }: { type: string; source?: string }) {
   let iconSrc = "/icons/minecraft/grass_block.png";
   let borderClass = "border-primary/25 bg-primary/10";
   let altText = "Java 正式版";
@@ -307,7 +309,7 @@ function VersionGlyph({ type, source }: { type: string; source?: string }) {
       />
     </span>
   );
-}
+});
 
 /**
  * Version type aliases for the catalogue search.
@@ -371,6 +373,8 @@ export function DownloadCatalogView({
   const activeProjectType = getResourceCategory(activeCategory).projectType;
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [rustCatalog, setRustCatalog] = useState<VersionCatalogResult | null>(null);
   const [deletingItem, setDeletingItem] = useState<{ id: string; name: string; edition: "java" | "bedrock" } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<GroupId, boolean>>({
@@ -489,6 +493,23 @@ export function DownloadCatalogView({
     [installed],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void queryVersionCatalog({
+      root: gameRoot,
+      query: deferredQuery,
+      betacraftPhase: betacraftPhaseFilter,
+      legacySource,
+    }).then((res) => {
+      if (!cancelled && res) {
+        setRustCatalog(res);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [gameRoot, deferredQuery, betacraftPhaseFilter, legacySource, manifest, betacraftManifest]);
+
   const groups = useMemo<
     Array<{
       id: GroupId;
@@ -496,8 +517,37 @@ export function DownloadCatalogView({
       bedrockItems?: BedrockVersionItem[];
     }>
   >(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
     const aliasTypes = aliasTypesFor(needle);
+    const filteredBedrock = bedrockVersions.filter((v) => {
+      if (!needle) return true;
+      if (
+        v.name.toLowerCase().includes(needle) ||
+        v.version.toLowerCase().includes(needle)
+      ) {
+        return true;
+      }
+      const releaseType = (v.releaseType ?? "").toLowerCase();
+      if (aliasTypes.has("release") && releaseType.includes("release")) return true;
+      if (
+        aliasTypes.has("snapshot") &&
+        (releaseType.includes("preview") || releaseType.includes("beta"))
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (rustCatalog) {
+      return [
+        { id: "release", items: rustCatalog.release },
+        { id: "snapshot", items: rustCatalog.snapshot },
+        { id: "april_fools", items: rustCatalog.aprilFools },
+        { id: "legacy", items: rustCatalog.legacy },
+        { id: "bedrock", items: [], bedrockItems: filteredBedrock },
+      ];
+    }
+
     const typeMatches = (type?: string) => {
       if (aliasTypes.size === 0) return false;
       const value = (type ?? "").toLowerCase();
@@ -531,24 +581,6 @@ export function DownloadCatalogView({
     };
 
     const all = (manifest?.versions ?? []).filter(matches);
-    const filteredBedrock = bedrockVersions.filter((v) => {
-      if (!needle) return true;
-      if (
-        v.name.toLowerCase().includes(needle) ||
-        v.version.toLowerCase().includes(needle)
-      ) {
-        return true;
-      }
-      const releaseType = (v.releaseType ?? "").toLowerCase();
-      if (aliasTypes.has("release") && releaseType.includes("release")) return true;
-      if (
-        aliasTypes.has("snapshot") &&
-        (releaseType.includes("preview") || releaseType.includes("beta"))
-      ) {
-        return true;
-      }
-      return false;
-    });
 
     const aprilFoolsFromManifest = all.filter(isAprilFools);
     const manifestFoolsIds = new Set(aprilFoolsFromManifest.map((v) => v.id));
@@ -624,7 +656,7 @@ export function DownloadCatalogView({
         bedrockItems: filteredBedrock,
       },
     ];
-  }, [manifest, betacraftManifest, bedrockVersions, query, betacraftPhaseFilter, legacySource]);
+  }, [rustCatalog, manifest, betacraftManifest, bedrockVersions, deferredQuery, betacraftPhaseFilter, legacySource]);
 
   const counts = useMemo(() => {
     const byGroup = Object.fromEntries(
@@ -669,15 +701,31 @@ export function DownloadCatalogView({
 
   const activeBannerProgress = installProgress ?? lastProgress;
   const isCurrentlyDownloading = Boolean(installingVersion && installProgress);
+  const bannerMaxPctRef = useRef<{ versionId: string; pct: number }>({
+    versionId: "",
+    pct: 0,
+  });
   const bannerPercent = useMemo(() => {
     if (!activeBannerProgress) return 0;
-    if (activeBannerProgress.stage === "done") return 100;
+    if (activeBannerProgress.stage === "done") {
+      bannerMaxPctRef.current = { versionId: activeBannerProgress.versionId, pct: 100 };
+      return 100;
+    }
     const dl = activeBannerProgress.downloadedBytes ?? 0;
     const tot = activeBannerProgress.totalBytes ?? 0;
-    if (tot > 0) {
-      return Math.max(0, Math.min(100, Math.round((dl / tot) * 100)));
+    const rawPct =
+      activeBannerProgress.total === 100
+        ? (progressPercent(activeBannerProgress.done, activeBannerProgress.total) ?? 0)
+        : tot > 0
+          ? Math.max(0, Math.min(100, Math.round((dl / tot) * 100)))
+          : (progressPercent(activeBannerProgress.done, activeBannerProgress.total) ?? 0);
+    if (bannerMaxPctRef.current.versionId !== activeBannerProgress.versionId) {
+      bannerMaxPctRef.current = { versionId: activeBannerProgress.versionId, pct: rawPct };
+      return rawPct;
     }
-    return progressPercent(activeBannerProgress.done, activeBannerProgress.total) ?? 0;
+    const monotonic = Math.max(bannerMaxPctRef.current.pct, rawPct);
+    bannerMaxPctRef.current.pct = monotonic;
+    return monotonic;
   }, [activeBannerProgress]);
 
   const renderActions = (version: VersionSummary) => {

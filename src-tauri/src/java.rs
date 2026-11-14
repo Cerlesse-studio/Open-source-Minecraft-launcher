@@ -528,9 +528,7 @@ async fn fetch_adoptium_release(major: u32) -> Result<AdoptiumRelease, String> {
         adoptium_arch(),
         adoptium_os()
     );
-    let releases = net::client()
-        .get(&url)
-        .send()
+    let releases = net::get_prefer_direct(&url, std::time::Duration::from_secs(15))
         .await
         .map_err(|e| format!("无法连接 Java 下载服务: {e}"))?
         .error_for_status()

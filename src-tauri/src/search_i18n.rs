@@ -15,19 +15,33 @@
 //! demo backend can use the same vocabulary; `include_str!` keeps the core
 //! self-contained at runtime.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// `[term, english keywords]` pairs. Terms are matched case-insensitively and
-/// the longest match wins, so multi-character names must simply be present in
-/// the table — order does not matter.
-fn glossary() -> &'static [(String, String)] {
-    static TABLE: OnceLock<Vec<(String, String)>> = OnceLock::new();
-    TABLE
-        .get_or_init(|| {
+/// Pre-indexed glossary bucketed by first character and sorted by descending
+/// byte length within each bucket. Because buckets are sorted longest-first,
+/// the first `starts_with` hit is guaranteed to be the longest match in O(1)
+/// bucket lookup without scanning all ~1,100 glossary rows at every character.
+fn glossary_index() -> &'static HashMap<char, Vec<(String, String)>> {
+    static INDEX: OnceLock<HashMap<char, Vec<(String, String)>>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let pairs: Vec<(String, String)> =
             serde_json::from_str(include_str!("../../src/lib/search-glossary.json"))
-                .expect("search-glossary.json must be a list of [term, english] pairs")
-        })
-        .as_slice()
+                .expect("search-glossary.json must be a list of [term, english] pairs");
+        let mut map: HashMap<char, Vec<(String, String)>> = HashMap::new();
+        for (term, english) in pairs {
+            let lowered_term = term.to_lowercase();
+            if let Some(first_ch) = lowered_term.chars().next() {
+                map.entry(first_ch)
+                    .or_default()
+                    .push((lowered_term, english));
+            }
+        }
+        for bucket in map.values_mut() {
+            bucket.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()));
+        }
+        map
+    })
 }
 
 fn push_terms(terms: &mut Vec<String>, text: &str) {
@@ -51,31 +65,34 @@ pub fn translate_query(query: &str) -> Option<String> {
     }
 
     let lowered = trimmed.to_lowercase();
+    let index_map = glossary_index();
     let mut terms: Vec<String> = Vec::new();
     let mut latin = String::new();
     let mut matched = false;
     let mut index = 0usize;
 
     while index < lowered.len() {
-        let best = glossary()
-            .iter()
-            .filter(|(term, _)| lowered[index..].starts_with(term.as_str()))
-            .max_by_key(|(term, _)| term.len());
-
-        if let Some((term, english)) = best {
-            if !latin.is_empty() {
-                push_terms(&mut terms, &latin);
-                latin.clear();
-            }
-            push_terms(&mut terms, english);
-            matched = true;
-            index += term.len();
-            continue;
-        }
-
-        let Some(ch) = lowered[index..].chars().next() else {
+        let tail = &lowered[index..];
+        let Some(ch) = tail.chars().next() else {
             break;
         };
+
+        if let Some(bucket) = index_map.get(&ch) {
+            if let Some((term, english)) = bucket
+                .iter()
+                .find(|(term, _)| tail.starts_with(term.as_str()))
+            {
+                if !latin.is_empty() {
+                    push_terms(&mut terms, &latin);
+                    latin.clear();
+                }
+                push_terms(&mut terms, english);
+                matched = true;
+                index += term.len();
+                continue;
+            }
+        }
+
         if ch.is_ascii() {
             // Keep ASCII tokens (version numbers, slugs) intact; only
             // whitespace separates them.

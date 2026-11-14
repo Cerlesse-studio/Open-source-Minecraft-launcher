@@ -1347,6 +1347,9 @@ ${bodyHtml}
   }
 }
 
+const pclHomepageCache = new Map<string, PclHomepageResult>();
+const MAX_PCL_HOMEPAGE_CACHE = 16;
+
 /**
  * Render a PCL2 home page (XAML) into a self-contained HTML document.
  * Throws when the XAML cannot be parsed at all.
@@ -1355,5 +1358,17 @@ export async function renderPclHomepage(
   source: string,
   ctx: PclHomepageContext,
 ): Promise<PclHomepageResult> {
+  if (!ctx.resolveLocalResource) {
+    const cacheKey = `${ctx.accent}|${ctx.dark}|${ctx.baseHref ?? ""}|${JSON.stringify(ctx.runtime ?? {})}|${source}`;
+    const cached = pclHomepageCache.get(cacheKey);
+    if (cached) return cached;
+    const rendered = await new XamlHomepageRenderer(ctx).render(source);
+    if (pclHomepageCache.size >= MAX_PCL_HOMEPAGE_CACHE) {
+      const oldestKey = pclHomepageCache.keys().next().value;
+      if (oldestKey !== undefined) pclHomepageCache.delete(oldestKey);
+    }
+    pclHomepageCache.set(cacheKey, rendered);
+    return rendered;
+  }
   return new XamlHomepageRenderer(ctx).render(source);
 }

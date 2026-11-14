@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
   Check,
@@ -138,6 +138,7 @@ export function VersionSelectView({
 }: VersionSelectViewProps) {
   const [filter, setFilter] = useState<UnifiedFilter>("all");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [bedrockStatus, setBedrockStatus] = useState<BedrockStatus | null>(null);
   const [cloudBedrockVersions, setCloudBedrockVersions] = useState<BedrockVersionItem[]>([]);
   const [deletingItem, setDeletingItem] = useState<MixedVersionItem | null>(null);
@@ -353,7 +354,7 @@ export function VersionSelectView({
 
   // Filtered Items
   const filteredItems = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
     return mixedItems.filter((item) => {
       if (needle && !item.name.toLowerCase().includes(needle) && !item.id.toLowerCase().includes(needle)) {
         return false;
@@ -369,7 +370,7 @@ export function VersionSelectView({
       }
       return true;
     });
-  }, [mixedItems, filter, query]);
+  }, [mixedItems, filter, deferredQuery]);
 
   const activeFilterLabel =
     UNIFIED_FILTERS.find((entry) => entry.id === filter)?.label ?? "全部版本";

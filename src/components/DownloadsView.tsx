@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
@@ -497,6 +497,11 @@ export function DownloadsView({
     return DEFAULT_STAGES;
   }, [activeProgress]);
 
+  const maxPercentRef = useRef<{ versionId: string; pct: number }>({
+    versionId: "",
+    pct: 0,
+  });
+
   const overallPercent = useMemo(() => {
     // 后台任务进行时按后台任务的字节数计算，不依赖版本安装的进度对象。
     if (!versionDownloading && hasRunningBg) {
@@ -506,11 +511,23 @@ export function DownloadsView({
       return 0;
     }
     if (!activeProgress) return 0;
-    if (activeProgress.stage === "done") return 100;
-    if (totalBytes > 0) {
-      return Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)));
+    if (activeProgress.stage === "done") {
+      maxPercentRef.current = { versionId: activeProgress.versionId, pct: 100 };
+      return 100;
     }
-    return progressPercent(activeProgress.done, activeProgress.total) ?? 0;
+    const rawPct =
+      activeProgress.total === 100
+        ? (progressPercent(activeProgress.done, activeProgress.total) ?? 0)
+        : totalBytes > 0
+          ? Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)))
+          : (progressPercent(activeProgress.done, activeProgress.total) ?? 0);
+    if (maxPercentRef.current.versionId !== activeProgress.versionId) {
+      maxPercentRef.current = { versionId: activeProgress.versionId, pct: rawPct };
+      return rawPct;
+    }
+    const monotonic = Math.max(maxPercentRef.current.pct, rawPct);
+    maxPercentRef.current.pct = monotonic;
+    return monotonic;
   }, [
     activeProgress,
     downloadedBytes,
@@ -1374,7 +1391,7 @@ export function DownloadsView({
                       className={cn(
                         "h-7.5 gap-1.5 px-2.5 text-[11px]",
                         paused && task.resumable
-                          ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                          ? "border-gold/40 bg-gold/15 text-gold hover:bg-gold/20"
                           : "border-border/80",
                       )}
                       onClick={() => onRetryBackgroundTask(task.id)}
@@ -1587,7 +1604,7 @@ export function DownloadsView({
                     <Button
                       size="sm"
                       variant="default"
-                      className="h-7.5 gap-1.5 px-3 text-[11px] bg-amber-500 text-black hover:bg-amber-400 font-semibold"
+                      className="h-7.5 gap-1.5 rounded-md border border-[#fbbf24]/50 bg-[#f59e0b] px-3 text-[11px] font-semibold text-[#0b1408] shadow-xs hover:bg-[#fbbf24]"
                       onClick={() => onResumeInstall(item)}
                     >
                       <Play className="size-3 fill-current" />

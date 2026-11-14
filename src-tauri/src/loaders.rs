@@ -79,10 +79,7 @@ async fn get_json_with_timeout_duration<T: for<'de> Deserialize<'de>>(
     url: &str,
     timeout: Duration,
 ) -> Result<T, String> {
-    let response = net::client()
-        .get(url)
-        .timeout(timeout)
-        .send()
+    let response = net::get_prefer_direct(url, timeout)
         .await
         .map_err(|e| format!("请求失败 ({url}): {e}"))?;
     if !response.status().is_success() {
@@ -294,7 +291,9 @@ async fn fetch_forge_official(mc_version: &str) -> Option<Vec<LoaderVersionItem>
     let maven_meta_url =
         "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
     let mut versions = Vec::new();
-    if let Ok(client_resp) = net::client().get(maven_meta_url).send().await {
+    if let Ok(client_resp) =
+        net::get_prefer_direct(maven_meta_url, Duration::from_secs(12)).await
+    {
         if client_resp.status().is_success() {
             if let Ok(xml) = client_resp.text().await {
                 let prefix = format!("<version>{mc_version}-");

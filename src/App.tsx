@@ -425,7 +425,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    applyThemeToDom(settings);
+    const raf = window.requestAnimationFrame(() => {
+      applyThemeToDom(settings);
+    });
+    return () => window.cancelAnimationFrame(raf);
   }, [
     settings.customThemeColor,
     settings.themeMode,
@@ -488,20 +491,26 @@ export default function App() {
   // The mirror preference is process state on the Rust side: push it whenever
   // it changes so downloads really start from the selected source.
   useEffect(() => {
-    setDownloadPreference(
-      settings.downloadSource,
-      settings.customSourceUrl || "",
-      settings.downloadThreads,
-    ).catch((error) => {
-      console.warn("无法同步下载设置", error);
-    });
+    const timer = window.setTimeout(() => {
+      setDownloadPreference(
+        settings.downloadSource,
+        settings.customSourceUrl || "",
+        settings.downloadThreads,
+      ).catch((error) => {
+        console.warn("无法同步下载设置", error);
+      });
+    }, 80);
+    return () => window.clearTimeout(timer);
   }, [settings.downloadSource, settings.customSourceUrl, settings.downloadThreads]);
 
   // PCL2 `NetTaskSpeedLimitHigh` is process-wide on the Rust side.
   useEffect(() => {
-    setDownloadSpeedLimit(settings.downloadSpeedLimit).catch((error) => {
-      console.warn("无法同步下载限速", error);
-    });
+    const timer = window.setTimeout(() => {
+      setDownloadSpeedLimit(settings.downloadSpeedLimit).catch((error) => {
+        console.warn("无法同步下载限速", error);
+      });
+    }, 80);
+    return () => window.clearTimeout(timer);
   }, [settings.downloadSpeedLimit]);
 
   useEffect(() => {
@@ -553,6 +562,8 @@ export default function App() {
 
   useEffect(() => {
     const handleBeforeUnload = () => {
+      saveSettings(settingsRef.current);
+      saveVersionSettings(versionSettingsRef.current);
       const currentTask = activeInstallParamsRef.current;
       if (currentTask) {
         const snap = latestProgressRef.current;
@@ -599,8 +610,11 @@ export default function App() {
 
   useEffect(() => {
     settingsRef.current = settings;
-    saveSettings(settings);
     setLanguage(settings.language);
+    const timer = window.setTimeout(() => {
+      saveSettings(settings);
+    }, 200);
+    return () => window.clearTimeout(timer);
   }, [settings]);
 
   useEffect(() => {
@@ -621,7 +635,10 @@ export default function App() {
 
   useEffect(() => {
     versionSettingsRef.current = versionSettings;
-    saveVersionSettings(versionSettings);
+    const timer = window.setTimeout(() => {
+      saveVersionSettings(versionSettings);
+    }, 200);
+    return () => window.clearTimeout(timer);
   }, [versionSettings]);
 
   useEffect(() => {
@@ -745,9 +762,26 @@ export default function App() {
     [pushToast],
   );
 
+  const pendingLogsRef = useRef<LogEntry[]>([]);
+  const logFlushRafRef = useRef<number | null>(null);
+
   const pushLog = useCallback((stream: string, line: string) => {
     const entry: LogEntry = { id: ++logId.current, stream, line, at: timeNow() };
-    setLogs((current) => [...current, entry].slice(-MAX_LOGS));
+    pendingLogsRef.current.push(entry);
+    if (logFlushRafRef.current === null) {
+      logFlushRafRef.current = window.requestAnimationFrame(() => {
+        logFlushRafRef.current = null;
+        const batch = pendingLogsRef.current;
+        if (batch.length === 0) return;
+        pendingLogsRef.current = [];
+        setLogs((current) => {
+          const combined = current.concat(batch);
+          return combined.length > MAX_LOGS
+            ? combined.slice(combined.length - MAX_LOGS)
+            : combined;
+        });
+      });
+    }
   }, []);
 
   const refreshManifest = useCallback(
@@ -774,7 +808,23 @@ export default function App() {
       if (!target) return [] as InstalledVersion[];
       try {
         const next = await getInstalledVersions(target);
-        setInstalled(next);
+        setInstalled((prev) => {
+          if (
+            prev.length === next.length &&
+            prev.every(
+              (item, idx) =>
+                item.id === next[idx].id &&
+                item.installedAt === next[idx].installedAt &&
+                item.type === next[idx].type &&
+                item.loader === next[idx].loader &&
+                item.loaderVersion === next[idx].loaderVersion &&
+                item.optifineVersion === next[idx].optifineVersion,
+            )
+          ) {
+            return prev;
+          }
+          return next;
+        });
         return next;
       } catch (error) {
         pushToast("error", "读取已安装版本失败", String(error));
@@ -962,25 +1012,93 @@ export default function App() {
         });
     };
 
+    let progressRaf: number | null = null;
+    let queuedProgress: InstallProgress | null = null;
+    let queuedFileAdditions: DownloadFileEvent[] = [];
+    const queuedCompletedKeys = new Set<string>();
+
+    const flushQueuedProgress = () => {
+      progressRaf = null;
+      const progress = queuedProgress;
+      if (!progress) return;
+      queuedProgress = null;
+
+      setInstallProgress(progress);
+      setLastInstallProgress(progress);
+
+      const speed = progress.speedBps ?? 0;
+      if (speed > 0) {
+        if (speed > peakSpeedRef.current) {
+          peakSpeedRef.current = speed;
+        }
+        setPeakSpeedBps((prev) => Math.max(prev, speed));
+        setSpeedHistory((prev) => [...prev.slice(-23), speed]);
+      }
+
+      const additions = queuedFileAdditions;
+      queuedFileAdditions = [];
+      const completedSnap = new Set(queuedCompletedKeys);
+      queuedCompletedKeys.clear();
+
+      if (additions.length > 0) {
+        setFileEvents((prev) =>
+          [
+            ...additions,
+            ...prev.filter(
+              (event) =>
+                event.status !== "active" ||
+                !completedSnap.has(`${event.stage}:${event.detail}`),
+            ),
+          ].slice(0, MAX_FILE_EVENTS),
+        );
+      }
+
+      if (progress.stage === "java" || progress.stage === "launch") {
+        setLaunchProgress(progress);
+      }
+    };
+
     track(
-      subscribe("install:progress", (progress) => {
-        setInstallProgress(progress);
-        setLastInstallProgress(progress);
+      subscribe("install:progress", (incoming) => {
+        const prev = latestProgressRef.current;
+        let progress = incoming;
+        if (
+          prev &&
+          prev.versionId === incoming.versionId &&
+          incoming.stage !== "done"
+        ) {
+          const prevPct =
+            prev.total > 0 ? Math.round((prev.done / prev.total) * 100) : 0;
+          const nextPct =
+            incoming.total > 0 ? Math.round((incoming.done / incoming.total) * 100) : 0;
+          const clampedDone =
+            incoming.total === 100
+              ? Math.max(prev.total === 100 ? prev.done : prevPct, nextPct)
+              : incoming.done;
+          const prevTotalBytes = prev.totalBytes ?? 0;
+          const nextTotalBytes = incoming.totalBytes ?? 0;
+          const clampedTotalBytes = Math.max(prevTotalBytes, nextTotalBytes);
+          const prevDlBytes = prev.downloadedBytes ?? 0;
+          const nextDlBytes = incoming.downloadedBytes ?? 0;
+          const clampedDlBytes =
+            clampedTotalBytes > 0
+              ? Math.min(clampedTotalBytes, Math.max(prevDlBytes, nextDlBytes))
+              : Math.max(prevDlBytes, nextDlBytes);
+          progress = {
+            ...incoming,
+            done: clampedDone,
+            downloadedBytes: clampedDlBytes,
+            totalBytes: clampedTotalBytes,
+          };
+        }
         latestProgressRef.current = progress;
+        queuedProgress = progress;
 
         const speed = progress.speedBps ?? 0;
-        if (speed > 0) {
-          if (speed > peakSpeedRef.current) {
-            peakSpeedRef.current = speed;
-          }
-          setPeakSpeedBps((prev) => Math.max(prev, speed));
-          setSpeedHistory((prev) => [...prev.slice(-23), speed]);
-        }
-
         const detailKey = `${progress.stage}:${progress.detail}`;
         if (progress.detail && detailKey !== lastDetailRef.current) {
           lastDetailRef.current = detailKey;
-          const ev: DownloadFileEvent = {
+          queuedFileAdditions.unshift({
             id: ++fileEventId.current,
             time: timeNow(),
             versionId: progress.versionId,
@@ -988,18 +1106,14 @@ export default function App() {
             detail: progress.detail,
             speedBps: speed,
             status: "active",
-          };
-          setFileEvents((prev) => [ev, ...prev].slice(0, MAX_FILE_EVENTS));
+          });
         }
 
         if (progress.fileLogs && progress.fileLogs.length > 0) {
-          const completedKeys = new Set(
-            progress.fileLogs.map((log) => `${log.stage}:${log.file}`),
-          );
-          const additions: DownloadFileEvent[] = progress.fileLogs
-            .slice()
-            .reverse()
-            .map((log) => ({
+          for (let i = 0; i < progress.fileLogs.length; i += 1) {
+            const log = progress.fileLogs[i];
+            queuedCompletedKeys.add(`${log.stage}:${log.file}`);
+            queuedFileAdditions.unshift({
               id: ++fileEventId.current,
               time: timeNow(),
               versionId: progress.versionId,
@@ -1015,21 +1129,21 @@ export default function App() {
               threads: log.threads,
               elapsedMs: log.elapsedMs,
               error: log.error,
-            }));
-          setFileEvents((prev) =>
-            [
-              ...additions,
-              ...prev.filter(
-                (event) =>
-                  event.status !== "active" ||
-                  !completedKeys.has(`${event.stage}:${event.detail}`),
-              ),
-            ].slice(0, MAX_FILE_EVENTS),
-          );
+            });
+          }
+          if (queuedFileAdditions.length > MAX_FILE_EVENTS) {
+            queuedFileAdditions.length = MAX_FILE_EVENTS;
+          }
         }
 
-        if (progress.stage === "java" || progress.stage === "launch") {
-          setLaunchProgress(progress);
+        if (progress.stage === "done" || progress.stage === "error") {
+          if (progressRaf !== null) {
+            window.cancelAnimationFrame(progressRaf);
+            progressRaf = null;
+          }
+          flushQueuedProgress();
+        } else if (progressRaf === null) {
+          progressRaf = window.requestAnimationFrame(flushQueuedProgress);
         }
       }),
     );
@@ -1251,7 +1365,7 @@ export default function App() {
         versionId: targetId,
         stage: "prepare",
         done: 0,
-        total: selection?.loaderType || selection?.optifineVersion ? 4 : 3,
+        total: 100,
         detail: "准备下载",
         downloadedBytes: 0,
         totalBytes: 0,
@@ -1364,10 +1478,10 @@ export default function App() {
         versionId: `bedrock:${ver.id}`,
         stage: "prepare",
         done: 0,
-        total: 3,
+        total: 100,
         detail: `准备多线程下载 ${targetLabel}`,
         downloadedBytes: 0,
-        totalBytes: ver.size || 85_983_232,
+        totalBytes: 0,
         speedBps: 0,
         threads,
         activeThreads: 1,

@@ -425,7 +425,16 @@ export function ProgressBar({
   progress: InstallProgress;
   compact?: boolean;
 }) {
-  const percent = progressPercent(progress.done, progress.total);
+  const downloadedBytes = progress.downloadedBytes ?? 0;
+  const totalBytes = progress.totalBytes ?? 0;
+  const percent =
+    progress.stage === "done"
+      ? 100
+      : progress.total === 100
+        ? progressPercent(progress.done, progress.total)
+        : totalBytes > 0
+          ? Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)))
+          : progressPercent(progress.done, progress.total);
   return (
     <div className={cn("flex flex-col gap-2", compact && "gap-1.5")}>
       <Progress

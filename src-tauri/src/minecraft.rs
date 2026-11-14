@@ -540,16 +540,37 @@ fn manifest_source_label(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+fn manifest_memory_cache() -> &'static Mutex<HashMap<PathBuf, VersionManifest>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, VersionManifest>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn betacraft_memory_cache() -> &'static Mutex<HashMap<PathBuf, VersionManifest>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, VersionManifest>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest, String> {
     let root = net::absolute_path(root);
     let root = root.as_path();
     let cache = root.join("meta").join("version_manifest_v2.json");
 
-    // The manifest is a large, slowly changing download. Serve a local copy
-    // immediately; the version library's refresh button forces a fresh one.
+    // The manifest is a large, slowly changing download. Serve from RAM or
+    // local disk copy immediately; the version library's refresh button forces
+    // a fresh network request.
     if !force {
+        if let Ok(guard) = manifest_memory_cache().lock() {
+            if let Some(cached) = guard.get(&cache) {
+                return Ok(cached.clone());
+            }
+        }
         if let Ok(text) = tokio::fs::read_to_string(&cache).await {
             if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                if let Ok(mut guard) = manifest_memory_cache().lock() {
+                    guard.insert(cache.clone(), manifest.clone());
+                }
                 return Ok(manifest);
             }
         }
@@ -570,6 +591,9 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
                 let _ = tokio::fs::write(&cache, text).await;
+                if let Ok(mut guard) = manifest_memory_cache().lock() {
+                    guard.insert(cache.clone(), manifest.clone());
+                }
                 return Ok(manifest);
             }
             Err(error) => failures.push(format!("{}: {}", manifest_source_label(&url), error)),
@@ -580,6 +604,9 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
     // even when the user explicitly asked for a refresh.
     if let Ok(text) = tokio::fs::read_to_string(&cache).await {
         if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+            if let Ok(mut guard) = manifest_memory_cache().lock() {
+                guard.insert(cache.clone(), manifest.clone());
+            }
             return Ok(manifest);
         }
     }
@@ -617,8 +644,16 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
     let cache = root.join("meta").join("betacraft_version_manifest_v2.json");
 
     if !force {
+        if let Ok(guard) = betacraft_memory_cache().lock() {
+            if let Some(cached) = guard.get(&cache) {
+                return Ok(cached.clone());
+            }
+        }
         if let Ok(text) = tokio::fs::read_to_string(&cache).await {
             if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                if let Ok(mut guard) = betacraft_memory_cache().lock() {
+                    guard.insert(cache.clone(), manifest.clone());
+                }
                 return Ok(manifest);
             }
         }
@@ -689,11 +724,17 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
             if let Ok(serialized) = serde_json::to_string(&manifest) {
                 let _ = tokio::fs::write(&cache, serialized).await;
             }
+            if let Ok(mut guard) = betacraft_memory_cache().lock() {
+                guard.insert(cache.clone(), manifest.clone());
+            }
             Ok(manifest)
         }
         Err(error) => {
             if let Ok(text) = tokio::fs::read_to_string(&cache).await {
                 if let Ok(manifest) = serde_json::from_str::<VersionManifest>(&text) {
+                    if let Ok(mut guard) = betacraft_memory_cache().lock() {
+                        guard.insert(cache.clone(), manifest.clone());
+                    }
                     return Ok(manifest);
                 }
             }
@@ -702,13 +743,358 @@ pub async fn fetch_betacraft_manifest(root: &Path, force: bool) -> Result<Versio
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCatalogCounts {
+    pub release: usize,
+    pub snapshot: usize,
+    pub april_fools: usize,
+    pub legacy: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCatalogResult {
+    pub release: Vec<VersionSummary>,
+    pub snapshot: Vec<VersionSummary>,
+    pub april_fools: Vec<VersionSummary>,
+    pub legacy: Vec<VersionSummary>,
+    pub counts: VersionCatalogCounts,
+}
+
+fn april_fools_fallback_versions() -> [VersionSummary; 7] {
+    [
+        VersionSummary {
+            id: "24w14potato".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/e17ba5ae44e2665a2f2c1d40f520b34ce11a1057/24w14potato.json".to_string(),
+            time: Some("2024-04-01T11:07:19+00:00".to_string()),
+            release_time: Some("2024-04-01T11:07:19+00:00".to_string()),
+            sha1: Some("e17ba5ae44e2665a2f2c1d40f520b34ce11a1057".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "23w13a_or_b".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/6d9b7b1f3fa890704ec5d3d4bfb0145f44437b22/23w13a_or_b.json".to_string(),
+            time: Some("2023-04-01T12:52:18+00:00".to_string()),
+            release_time: Some("2023-04-01T12:52:18+00:00".to_string()),
+            sha1: Some("6d9b7b1f3fa890704ec5d3d4bfb0145f44437b22".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "22w13oneblockatatime".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/d70cef49b7606e8c37e49abad4ff542e2ce21d09/22w13oneblockatatime.json".to_string(),
+            time: Some("2022-04-01T11:56:58+00:00".to_string()),
+            release_time: Some("2022-04-01T11:56:58+00:00".to_string()),
+            sha1: Some("d70cef49b7606e8c37e49abad4ff542e2ce21d09".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "20w14infinite".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/73eb2a736f0a7349fb5f73e685f847826e5321fd/20w14infinite.json".to_string(),
+            time: Some("2020-04-01T12:47:08+00:00".to_string()),
+            release_time: Some("2020-04-01T12:47:08+00:00".to_string()),
+            sha1: Some("73eb2a736f0a7349fb5f73e685f847826e5321fd".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "3D Shareware v1.34".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/5b59564acaa4cc153b6f934e56622642ed978ab/3D%20Shareware%20v1.34.json".to_string(),
+            time: Some("2019-04-01T11:18:08+00:00".to_string()),
+            release_time: Some("2019-04-01T11:18:08+00:00".to_string()),
+            sha1: Some("5b59564acaa4cc153b6f934e566226642ed978ab".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "1.RV-Pre1".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/23761c1cc8b5c7c72f6604e1e7322a056a6af2f8/1.RV-Pre1.json".to_string(),
+            time: Some("2016-03-31T16:18:53+00:00".to_string()),
+            release_time: Some("2016-03-31T16:18:53+00:00".to_string()),
+            sha1: Some("23761c1cc8b5c7c72f6604e1e7322a056a6af2f8".to_string()),
+            phase: None,
+            source: None,
+        },
+        VersionSummary {
+            id: "15w14a".to_string(),
+            version_type: "snapshot".to_string(),
+            url: "https://piston-meta.mojang.com/v1/packages/e9349d236c0f4b8760f75621b3eaad538055c759/15w14a.json".to_string(),
+            time: Some("2015-04-01T07:08:00+00:00".to_string()),
+            release_time: Some("2015-04-01T07:08:00+00:00".to_string()),
+            sha1: Some("e9349d236c0f4b8760f75621b3eaad538055c759".to_string()),
+            phase: None,
+            source: None,
+        },
+    ]
+}
+
+fn is_april_fools_version(id: &str) -> bool {
+    matches!(
+        id,
+        "24w14potato"
+            | "23w13a_or_b"
+            | "22w13oneblockatatime"
+            | "20w14infinite"
+            | "3D Shareware v1.34"
+            | "1.RV-Pre1"
+            | "15w14a"
+    ) || {
+        let vid = id.to_ascii_lowercase();
+        vid.contains("potato")
+            || vid.contains("shareware")
+            || vid.contains("oneblock")
+            || vid.contains("infinite")
+            || vid == "23w13a_or_b"
+            || vid == "1.rv-pre1"
+            || vid == "15w14a"
+    }
+}
+
+fn alias_types_for_query(needle: &str) -> HashSet<&'static str> {
+    let mut types = HashSet::new();
+    if needle.chars().count() < 2 && needle.len() < 2 {
+        return types;
+    }
+    const ALIASES: &[(&[&str], &[&str])] = &[
+        (
+            &["release"],
+            &["正式版", "正式", "稳定版", "穩定版", "release", "stable"],
+        ),
+        (
+            &["snapshot"],
+            &["快照", "预览版", "預覽版", "测试版", "測試版", "snapshot", "preview"],
+        ),
+        (
+            &["april_fools"],
+            &["愚人节", "愚人節", "愚人节限定", "april fools", "april_fools"],
+        ),
+        (&["old_beta"], &["beta", "贝塔版", "貝塔版"]),
+        (&["old_alpha"], &["alpha", "阿尔法版", "阿爾法版"]),
+        (
+            &["legacy"],
+            &[
+                "远古", "遠古", "古老", "旧版本", "舊版本", "classic", "indev", "infdev",
+            ],
+        ),
+    ];
+    for (target_types, words) in ALIASES {
+        let hit = words.iter().any(|alias| {
+            *alias == needle || (alias.chars().count() >= 2 && alias.contains(needle))
+        });
+        if hit {
+            for t in *target_types {
+                types.insert(*t);
+            }
+        }
+    }
+    types
+}
+
+/// Native Rust version catalog filter & grouper so the frontend does not need
+/// to filter, deduplicate, and group 1,100+ Mojang + BetaCraft versions in JS
+/// on every keystroke or filter change.
+pub async fn query_version_catalog(
+    root: &Path,
+    query: &str,
+    betacraft_phase: &str,
+    legacy_source: &str,
+) -> VersionCatalogResult {
+    let mojang_versions = fetch_manifest(root, false)
+        .await
+        .map(|m| m.versions)
+        .unwrap_or_default();
+    let betacraft_versions = fetch_betacraft_manifest(root, false)
+        .await
+        .map(|m| m.versions)
+        .unwrap_or_default();
+
+    let needle = query.trim().to_lowercase();
+    let alias_types = alias_types_for_query(&needle);
+
+    let type_matches = |vtype: &str| -> bool {
+        if alias_types.is_empty() {
+            return false;
+        }
+        let lower = vtype.to_ascii_lowercase();
+        if alias_types.contains(lower.as_str()) {
+            return true;
+        }
+        alias_types.contains("legacy") && lower != "release" && lower != "snapshot"
+    };
+
+    let matches = |version: &VersionSummary| -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        if version.id.to_lowercase().contains(&needle) {
+            return true;
+        }
+        let fool = is_april_fools_version(&version.id);
+        if alias_types.contains("april_fools") && fool {
+            return true;
+        }
+        if fool && alias_types.contains("snapshot") {
+            return false;
+        }
+        type_matches(&version.version_type)
+    };
+
+    let all: Vec<VersionSummary> = mojang_versions.into_iter().filter(&matches).collect();
+
+    let mut april_fools_items: Vec<VersionSummary> = all
+        .iter()
+        .filter(|v| is_april_fools_version(&v.id))
+        .cloned()
+        .collect();
+    let manifest_fools_ids: HashSet<String> =
+        april_fools_items.iter().map(|v| v.id.clone()).collect();
+    for fb in april_fools_fallback_versions() {
+        if !manifest_fools_ids.contains(&fb.id) && matches(&fb) {
+            april_fools_items.push(fb);
+        }
+    }
+
+    let all_betacraft: Vec<VersionSummary> =
+        betacraft_versions.into_iter().filter(&matches).collect();
+    let mojang_legacy: Vec<VersionSummary> = all
+        .iter()
+        .filter(|v| {
+            v.version_type != "release"
+                && v.version_type != "snapshot"
+                && !is_april_fools_version(&v.id)
+        })
+        .cloned()
+        .collect();
+
+    let mut legacy_items: Vec<VersionSummary> = match legacy_source {
+        "mojang" => mojang_legacy,
+        "betacraft" => all_betacraft,
+        _ => {
+            let mut seen = HashSet::with_capacity(all_betacraft.len() + mojang_legacy.len());
+            let mut merged = Vec::with_capacity(all_betacraft.len() + mojang_legacy.len());
+            for v in all_betacraft {
+                seen.insert(v.id.clone());
+                merged.push(v);
+            }
+            for v in mojang_legacy {
+                if seen.insert(v.id.clone()) {
+                    merged.push(v);
+                }
+            }
+            merged
+        }
+    };
+
+    let phase_filter = betacraft_phase.trim().to_ascii_lowercase();
+    if !phase_filter.is_empty() && phase_filter != "all" {
+        legacy_items.retain(|v| {
+            if let Some(ph) = v.phase.as_deref() {
+                if !ph.is_empty() {
+                    return ph.eq_ignore_ascii_case(&phase_filter);
+                }
+            }
+            let id_lower = v.id.to_ascii_lowercase();
+            match phase_filter.as_str() {
+                "beta" => id_lower.starts_with('b') || v.version_type == "old_beta",
+                "alpha" => id_lower.starts_with('a') || v.version_type == "old_alpha",
+                "classic" => id_lower.starts_with('c'),
+                "indev" => id_lower.starts_with("in"),
+                "infdev" => id_lower.starts_with("inf"),
+                "oddballs" => id_lower.contains("rd") || id_lower.contains("test"),
+                _ => true,
+            }
+        });
+    }
+
+    let release_items: Vec<VersionSummary> = all
+        .iter()
+        .filter(|v| v.version_type == "release")
+        .cloned()
+        .collect();
+    let snapshot_items: Vec<VersionSummary> = all
+        .into_iter()
+        .filter(|v| v.version_type == "snapshot" && !is_april_fools_version(&v.id))
+        .collect();
+
+    let counts = VersionCatalogCounts {
+        release: release_items.len(),
+        snapshot: snapshot_items.len(),
+        april_fools: april_fools_items.len(),
+        legacy: legacy_items.len(),
+    };
+
+    VersionCatalogResult {
+        release: release_items,
+        snapshot: snapshot_items,
+        april_fools: april_fools_items,
+        legacy: legacy_items,
+        counts,
+    }
+}
+
 fn game_dir(root: &Path, id: &str) -> PathBuf {
     version_dir(root, id)
+}
+
+fn installed_memory_cache() -> &'static Mutex<HashMap<PathBuf, (u64, Vec<InstalledVersion>)>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, Vec<InstalledVersion>)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn compute_installed_dir_fingerprint(dir: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut items: Vec<(String, u64, u64, bool)> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().to_string();
+        let subdir = entry.path();
+        let json_meta = std::fs::metadata(subdir.join(format!("{id}.json")))
+            .or_else(|_| std::fs::metadata(subdir.join("version.json")))
+            .ok();
+        let Some(meta) = json_meta else {
+            continue;
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let jar_ok = subdir.join(format!("{id}.jar")).is_file();
+        items.push((id, mtime, meta.len(), jar_ok));
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
     let root = net::absolute_path(root);
     let dir = versions_dir(&root);
+    let fingerprint = compute_installed_dir_fingerprint(&dir);
+    if let Some(fp) = fingerprint {
+        if let Ok(guard) = installed_memory_cache().lock() {
+            if let Some((cached_fp, cached_list)) = guard.get(&dir) {
+                if *cached_fp == fp {
+                    return Ok(cached_list.clone());
+                }
+            }
+        }
+    }
     let mut result = Vec::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -795,6 +1181,11 @@ pub fn list_installed(root: &Path) -> Result<Vec<InstalledVersion>, String> {
         });
     }
     result.sort_by(|a, b| b.installed_at.cmp(&a.installed_at));
+    if let Some(fp) = fingerprint {
+        if let Ok(mut guard) = installed_memory_cache().lock() {
+            guard.insert(dir, (fp, result.clone()));
+        }
+    }
     Ok(result)
 }
 
@@ -1281,6 +1672,9 @@ struct DownloadTracker {
     network_bytes: AtomicU64,
     skipped_files: AtomicU64,
     retried_files: AtomicU64,
+    max_downloaded_bytes: AtomicU64,
+    max_total_bytes: AtomicU64,
+    max_permille: AtomicU64,
     active_tasks: Mutex<HashMap<usize, ActiveDownloadTask>>,
     stages: Mutex<Vec<StageProgress>>,
     pending_file_logs: Mutex<Vec<InstallFileLog>>,
@@ -1350,6 +1744,9 @@ impl DownloadTracker {
             network_bytes: AtomicU64::new(0),
             skipped_files: AtomicU64::new(0),
             retried_files: AtomicU64::new(0),
+            max_downloaded_bytes: AtomicU64::new(0),
+            max_total_bytes: AtomicU64::new(0),
+            max_permille: AtomicU64::new(0),
             active_tasks: Mutex::new(HashMap::new()),
             stages: Mutex::new(stages),
             pending_file_logs: Mutex::new(Vec::new()),
@@ -1364,6 +1761,19 @@ impl DownloadTracker {
             if let Some(s) = stages.iter_mut().find(|s| s.stage == stage_id) {
                 s.total_files = total_files;
                 s.total_bytes = total_bytes;
+            }
+        }
+    }
+
+    fn ensure_stage_total_bytes(&self, stage_id: &str, total_bytes: u64) {
+        if total_bytes == 0 {
+            return;
+        }
+        if let Ok(mut stages) = self.stages.lock() {
+            if let Some(s) = stages.iter_mut().find(|s| s.stage == stage_id) {
+                if s.total_bytes < total_bytes {
+                    s.total_bytes = total_bytes;
+                }
             }
         }
     }
@@ -1424,6 +1834,15 @@ impl DownloadTracker {
                 }
             }
         }
+    }
+
+    fn complete_worker_task(&self, worker_id: usize, stage_id: &str, files: u64, bytes: u64) -> (u64, u64) {
+        // 先累加阶段已完成计数，再移除 active_tasks，避免快照在两者之间出现字节空窗
+        let res = self.add_stage_completed(stage_id, files, bytes);
+        if let Ok(mut map) = self.active_tasks.lock() {
+            map.remove(&worker_id);
+        }
+        res
     }
 
     fn update_worker_bytes(&self, worker_id: usize, done_bytes: u64, total_bytes: u64, delta: u64) {
@@ -1519,8 +1938,57 @@ impl DownloadTracker {
             };
         }
 
-        let downloaded_bytes: u64 = stages_snapshot.iter().map(|s| s.done_bytes).sum();
-        let total_bytes: u64 = stages_snapshot.iter().map(|s| s.total_bytes).sum();
+        let raw_downloaded_bytes: u64 = stages_snapshot.iter().map(|s| s.done_bytes).sum();
+        let raw_total_bytes: u64 = stages_snapshot.iter().map(|s| s.total_bytes).sum();
+
+        let prev_total = self.max_total_bytes.fetch_max(raw_total_bytes, Ordering::Relaxed);
+        let total_bytes = raw_total_bytes.max(prev_total);
+
+        let raw_permille = if stage == "done" {
+            1000
+        } else if stage == "prepare" {
+            let prep_ratio = if total > 0 {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (prep_ratio * 40.0).round() as u64
+        } else if total_bytes > 0 {
+            let byte_ratio = (raw_downloaded_bytes as f64 / total_bytes as f64).clamp(0.0, 1.0);
+            40 + (byte_ratio * 950.0).round() as u64
+        } else {
+            let file_ratio = if total > 0 {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            40 + (file_ratio * 950.0).round() as u64
+        };
+
+        let clamped_permille = if stage == "done" {
+            1000
+        } else {
+            raw_permille.min(990)
+        };
+        let prev_permille = self.max_permille.fetch_max(clamped_permille, Ordering::Relaxed);
+        let permille = clamped_permille.max(prev_permille);
+
+        let (downloaded_bytes, reported_total_bytes) = if stage == "prepare" {
+            // prepare 阶段不暴露总字节数，避免前端从文件比例切换为 0/totalBytes 时回跳
+            (0, 0)
+        } else if total_bytes > 0 {
+            let prev_dl = self.max_downloaded_bytes.load(Ordering::Relaxed);
+            let floor_by_permille = ((total_bytes as u128 * permille as u128) / 1000) as u64;
+            let mono_dl = raw_downloaded_bytes
+                .max(prev_dl)
+                .max(floor_by_permille)
+                .min(total_bytes);
+            self.max_downloaded_bytes.store(mono_dl, Ordering::Relaxed);
+            (mono_dl, total_bytes)
+        } else {
+            (0, 0)
+        };
+
         let speed_bps = self.sample_speed();
         active_list.truncate(32);
         let file_logs = self.take_file_logs();
@@ -1528,11 +1996,11 @@ impl DownloadTracker {
         InstallProgress {
             version_id: self.version_id.clone(),
             stage: stage.to_string(),
-            done,
-            total,
+            done: (permille / 10).min(100),
+            total: 100,
             detail,
             downloaded_bytes,
-            total_bytes: total_bytes.max(downloaded_bytes),
+            total_bytes: reported_total_bytes.max(downloaded_bytes),
             speed_bps,
             threads: self.threads,
             active_threads,
@@ -1576,6 +2044,7 @@ async fn download_jobs_with_tracker(
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
     worker_offset: usize,
+    semaphore: Option<Arc<tokio::sync::Semaphore>>,
 ) -> Result<(u64, u64), String> {
     let total = jobs.len() as u64;
     tracker.set_stage_status(stage, "active");
@@ -1599,6 +2068,7 @@ async fn download_jobs_with_tracker(
         let done = done.clone();
         let skipped = skipped.clone();
         let stage = stage.to_string();
+        let semaphore = semaphore.clone();
 
         workers.push(async move {
             loop {
@@ -1635,7 +2105,17 @@ async fn download_jobs_with_tracker(
                 }
 
                 let file_bytes: u64;
+                let mut completed_via_worker = false;
                 if !was_skipped {
+                    let _permit = match semaphore.as_ref() {
+                        Some(sem) => Some(
+                            sem.clone()
+                                .acquire_owned()
+                                .await
+                                .map_err(|_| "下载并发信号量已关闭".to_string())?,
+                        ),
+                        None => None,
+                    };
                     // 单个文件的线程预算：小文件无法切片，交给并发文件池；
                     // 大文件或未知大小的文件按“用户线程数 / 当前并发文件数”
                     // 分配分片，只有一个任务时可以吃满全部线程。
@@ -1687,10 +2167,10 @@ async fn download_jobs_with_tracker(
                     )
                     .await;
 
-                    tracker.set_worker_task(worker_id, None);
                     match downloaded_res {
                         Ok(bytes) => {
                             file_bytes = bytes;
+                            completed_via_worker = true;
                             tracker.push_file_log(InstallFileLog {
                                 stage: stage.clone(),
                                 file: name.clone(),
@@ -1703,6 +2183,7 @@ async fn download_jobs_with_tracker(
                             });
                         }
                         Err(err) => {
+                            tracker.set_worker_task(worker_id, None);
                             tracker.push_file_log(InstallFileLog {
                                 stage: stage.clone(),
                                 file: name.clone(),
@@ -1736,7 +2217,11 @@ async fn download_jobs_with_tracker(
                 }
 
                 let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                tracker.add_stage_completed(&stage, 1, file_bytes);
+                if completed_via_worker {
+                    tracker.complete_worker_task(worker_id, &stage, 1, file_bytes);
+                } else {
+                    tracker.add_stage_completed(&stage, 1, file_bytes);
+                }
 
                 if finished == total {
                     tracker.emit_now(&stage, finished, total, name);
@@ -2021,6 +2506,7 @@ async fn ensure_assets_with_tracker(
     tracker: &Arc<DownloadTracker>,
     concurrency: usize,
     worker_offset: usize,
+    semaphore: Option<Arc<tokio::sync::Semaphore>>,
 ) -> Result<usize, String> {
     let Some(prepared) = prepared else {
         tracker.set_stage_status("assets", "done");
@@ -2028,9 +2514,26 @@ async fn ensure_assets_with_tracker(
     };
     let count = prepared.jobs.len();
     let objects_dir = assets_dir(root).join("objects");
+    if !objects_dir.is_dir() {
+        let _ = std::fs::create_dir_all(&objects_dir);
+    }
+    // 预先建好 00..ff 哈希子目录，避免数千个并发资源任务反复争抢 create_dir_all
+    for i in 0..=255u8 {
+        let sub = objects_dir.join(format!("{i:02x}"));
+        if !sub.is_dir() {
+            let _ = std::fs::create_dir(&sub);
+        }
+    }
 
-    download_jobs_with_tracker(prepared.jobs, "assets", tracker, concurrency, worker_offset)
-        .await?;
+    download_jobs_with_tracker(
+        prepared.jobs,
+        "assets",
+        tracker,
+        concurrency,
+        worker_offset,
+        semaphore,
+    )
+    .await?;
 
     if prepared.index.is_virtual() {
         tracker.emit_now("assets", count as u64, count as u64, "整理旧版资源目录");
@@ -2109,6 +2612,7 @@ async fn download_client_with_tracker(
     };
     tracker.set_stage_status("client", "active");
     let total = client.size.unwrap_or(0);
+    tracker.ensure_stage_total_bytes("client", total);
     let started_at = Instant::now();
 
     if net::looks_complete(&dest, client.size) {
@@ -2217,13 +2721,13 @@ async fn download_client_with_tracker(
     )
     .await;
 
-    for w in 0..worker_count {
-        let wid = worker_offset + w + 1;
-        tracker.set_worker_task(wid, None);
-    }
     let downloaded = match res {
         Ok(b) => b,
         Err(err) => {
+            for w in 0..worker_count {
+                let wid = worker_offset + w + 1;
+                tracker.set_worker_task(wid, None);
+            }
             tracker.set_stage_status("client", "error");
             tracker.push_file_log(InstallFileLog {
                 stage: "client".to_string(),
@@ -2250,6 +2754,10 @@ async fn download_client_with_tracker(
         error: None,
     });
     tracker.add_stage_completed("client", 1, downloaded.max(total));
+    for w in 0..worker_count {
+        let wid = worker_offset + w + 1;
+        tracker.set_worker_task(wid, None);
+    }
     tracker.set_stage_status("client", "done");
     tracker.emit_now("client", total.max(1), total.max(1), "客户端下载完成");
     Ok(())
@@ -2512,6 +3020,13 @@ pub async fn install_version_with_options(
     let assets_offset = libs_offset + libs_threads;
     let addons_offset = assets_offset + assets_threads;
 
+    // 共享动态并发信号量：当 client / libraries 先完成后，assets 可自动吃满全量并发连接，
+    // 不再被静态分池限死在少数几个连接上。
+    let shared_pool_limit = (threads * 2).clamp(16, 64);
+    let shared_sem = Arc::new(tokio::sync::Semaphore::new(shared_pool_limit));
+    let dynamic_libs_workers = threads.clamp(4, 32).max(libs_threads);
+    let dynamic_assets_workers = shared_pool_limit.max(assets_threads);
+
     tracker.set_stage_status("client", "active");
     tracker.set_stage_status("libraries", "active");
     tracker.set_stage_status("assets", "active");
@@ -2535,14 +3050,16 @@ pub async fn install_version_with_options(
         let tracker = tracker.clone();
         let plan = plan.clone();
         let instance_dir = instance_dir.clone();
+        let shared_sem = shared_sem.clone();
         async move {
             tracker.emit_now("libraries", 0, plan.jobs.len() as u64, "准备依赖库");
             let (library_count, _) = download_jobs_with_tracker(
                 plan.jobs,
                 "libraries",
                 &tracker,
-                libs_threads,
+                dynamic_libs_workers,
                 libs_offset,
+                Some(shared_sem),
             )
             .await?;
 
@@ -2560,14 +3077,16 @@ pub async fn install_version_with_options(
         let tracker = tracker.clone();
         let root = root.to_path_buf();
         let instance_dir = instance_dir.clone();
+        let shared_sem = shared_sem.clone();
         async move {
             ensure_assets_with_tracker(
                 &root,
                 prepared_assets,
                 &instance_dir,
                 &tracker,
-                assets_threads,
+                dynamic_assets_workers,
                 assets_offset,
+                Some(shared_sem),
             )
             .await
         }
@@ -2591,6 +3110,7 @@ pub async fn install_version_with_options(
                         &tracker,
                         addons_threads,
                         addons_offset,
+                        None,
                     )
                     .await?;
                 }

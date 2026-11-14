@@ -785,9 +785,10 @@ export function ContentMarketplaceView({
       >
         {hits.map((hit) => {
           const isBedrock =
-            hit.categories.includes("bedrock") ||
-            hit.categories.includes("基岩版") ||
-            hit.versions.includes("基岩版");
+            hit.isBedrock ??
+            (hit.categories.includes("bedrock") ||
+              hit.categories.includes("基岩版") ||
+              hit.versions.includes("基岩版"));
           // PCL2 `ResourceProject.ToResourceItem` -> `GetControlTitle`.
           const controlTitle = getControlTitle(toResourceProject(hit));
           const subTitle = subTitleText(controlTitle.SubTitle);
@@ -806,7 +807,7 @@ export function ContentMarketplaceView({
                   setSelectedProject(hit);
                 }
               }}
-              className="group flex cursor-pointer flex-col gap-3 border-border/70 bg-card/55 p-3.5 transition-all hover:border-primary/45 hover:bg-card/85 sm:flex-row sm:items-center sm:justify-between"
+              className="cv-card-row group flex cursor-pointer flex-col gap-3 border-border/70 bg-card/55 p-3.5 transition-all hover:border-primary/45 hover:bg-card/85 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-start gap-3.5">
                 <ContentIcon

@@ -1,40 +1,13 @@
 import { invoke, isDesktop, listen } from "./desktop";
 export { isDesktop } from "./desktop";
-import {
-  demoDetectJava,
-  demoDownloadContentFile,
-  demoGetBedrockContent,
-  demoGetBedrockStatus,
-  demoGetBedrockVersions,
-  demoGetContentVersions,
-  demoInstall,
-  demoDeleteVersion,
-  demoDeleteBedrockVersion,
-  demoCleanDownloadCache,
-  demoInstallBedrockPack,
-  demoInstallBedrockVersion,
-  demoInstalledVersions,
-  demoLaunch,
-  demoLaunchBedrock,
-  demoManifest,
-  demoSearchContent,
-  demoStopGame,
-  demoSubscribe,
-  demoSystemInfo,
-  demoVersionLoaders,
-  demoGetBedrockLoaders,
-  demoInstallBedrockLoader,
-  demoGetBedrockMods,
-  demoToggleBedrockMod,
-  demoDeleteBedrockMod,
-  demoInstallBedrockModFile,
-  demoGetBedrockPacks,
-  demoSetBedrockPackEnabled,
-  demoDeleteBedrockPack,
-  demoImportBedrockPackFile,
-  demoEmit,
-  demoCheckAppUpdate,
-} from "./demo";
+
+let demoModulePromise: Promise<typeof import("./demo")> | null = null;
+function loadDemo(): Promise<typeof import("./demo")> {
+  if (!demoModulePromise) {
+    demoModulePromise = import("./demo");
+  }
+  return demoModulePromise;
+}
 import type {
   AppUpdateAsset,
   AppUpdateDownloadResult,
@@ -98,6 +71,7 @@ import type {
   VersionFileReport,
   VersionLoadersCatalog,
   VersionManifest,
+  VersionCatalogResult,
 } from "./types";
 
 
@@ -119,6 +93,7 @@ export async function subscribe<K extends keyof LauncherEventMap>(
   handler: (payload: LauncherEventMap[K]) => void,
 ): Promise<() => void> {
   if (!isDesktop) {
+    const { demoSubscribe } = await loadDemo();
     return demoSubscribe(event, handler);
   }
   return listen<LauncherEventMap[K]>(event, (message) => handler(message.payload));
@@ -128,7 +103,7 @@ export async function getVersionManifest(
   root: string,
   force = false,
 ): Promise<VersionManifest> {
-  if (!isDesktop) return demoManifest();
+  if (!isDesktop) return (await loadDemo()).demoManifest();
   return invoke<VersionManifest>("get_version_manifest", { root, force });
 }
 
@@ -161,6 +136,21 @@ export async function getBetacraftManifest(
     return { latest: { release: "1.7.10", snapshot: "b1.8.1" }, versions: [] };
   }
   return invoke<VersionManifest>("get_betacraft_manifest", { root, force });
+}
+
+export async function queryVersionCatalog(options: {
+  root: string;
+  query?: string;
+  betacraftPhase?: string;
+  legacySource?: "all" | "betacraft" | "mojang";
+}): Promise<VersionCatalogResult | null> {
+  if (!isDesktop) return null;
+  return invoke<VersionCatalogResult>("query_version_catalog", {
+    root: options.root,
+    query: options.query ?? "",
+    betacraftPhase: options.betacraftPhase ?? "all",
+    legacySource: options.legacySource ?? "all",
+  });
 }
 
 /** Push the chosen Java download source into the Rust side so the mirror
@@ -230,7 +220,7 @@ export async function probeDownloadSources(
 }
 
 export async function getInstalledVersions(root: string): Promise<InstalledVersion[]> {
-  if (!isDesktop) return demoInstalledVersions();
+  if (!isDesktop) return (await loadDemo()).demoInstalledVersions();
   return invoke<InstalledVersion[]>("get_installed_versions", { root });
 }
 
@@ -276,7 +266,7 @@ export async function fetchHomePage(url: string): Promise<string> {
 export async function getVersionLoaders(
   mcVersion: string,
 ): Promise<VersionLoadersCatalog> {
-  if (!isDesktop) return demoVersionLoaders(mcVersion);
+  if (!isDesktop) return (await loadDemo()).demoVersionLoaders(mcVersion);
   return invoke<VersionLoadersCatalog>("get_version_loaders", { mcVersion });
 }
 
@@ -289,7 +279,7 @@ export async function searchContent(options: {
   offset?: number;
   limit?: number;
 }): Promise<SearchContentResult> {
-  if (!isDesktop) return demoSearchContent(options);
+  if (!isDesktop) return (await loadDemo()).demoSearchContent(options);
   return invoke<SearchContentResult>("search_content", {
     query: options.query || "",
     projectType: options.projectType,
@@ -306,7 +296,9 @@ export async function getContentVersions(
   gameVersion?: string,
   loader?: string,
 ): Promise<ContentVersionItem[]> {
-  if (!isDesktop) return demoGetContentVersions(projectIdOrSlug, gameVersion, loader);
+  if (!isDesktop) {
+    return (await loadDemo()).demoGetContentVersions(projectIdOrSlug, gameVersion, loader);
+  }
   return invoke<ContentVersionItem[]>("get_content_versions", {
     projectIdOrSlug,
     gameVersion: gameVersion || null,
@@ -317,7 +309,7 @@ export async function getContentVersions(
 export async function downloadContentFile(
   request: DownloadContentRequest,
 ): Promise<DownloadContentResult> {
-  if (!isDesktop) return demoDownloadContentFile(request);
+  if (!isDesktop) return (await loadDemo()).demoDownloadContentFile(request);
   return invoke<DownloadContentResult>("download_content_file", { request });
 }
 
@@ -327,7 +319,7 @@ export async function installVersion(
   concurrency?: number,
   selection?: LoaderSelection,
 ): Promise<InstallResult> {
-  if (!isDesktop) return demoInstall(versionId, concurrency, selection);
+  if (!isDesktop) return (await loadDemo()).demoInstall(versionId, concurrency, selection);
   return invoke<InstallResult>("install_version", {
     request: { versionId, root, concurrency, selection },
   });
@@ -342,35 +334,35 @@ export async function deleteVersion(
   root: string,
   versionId: string,
 ): Promise<void> {
-  if (!isDesktop) return demoDeleteVersion(versionId);
+  if (!isDesktop) return (await loadDemo()).demoDeleteVersion(versionId);
   return invoke<void>("delete_version", { root, versionId });
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
-  if (!isDesktop) return demoSystemInfo();
+  if (!isDesktop) return (await loadDemo()).demoSystemInfo();
   return invoke<SystemInfo>("get_system_info");
 }
 
 export async function detectJava(root: string): Promise<JavaInstall[]> {
-  if (!isDesktop) return demoDetectJava();
+  if (!isDesktop) return (await loadDemo()).demoDetectJava();
   return invoke<JavaInstall[]>("detect_java", { root });
 }
 
 export async function launchGame(request: LaunchRequest): Promise<number> {
-  if (!isDesktop) return demoLaunch(request);
+  if (!isDesktop) return (await loadDemo()).demoLaunch(request);
   return invoke<number>("launch_game", { request });
 }
 
 export async function stopGame(): Promise<void> {
   if (!isDesktop) {
-    demoStopGame();
+    (await loadDemo()).demoStopGame();
     return;
   }
   await invoke("stop_game");
 }
 
 export async function checkAppUpdate(): Promise<AppUpdateInfo> {
-  if (!isDesktop) return demoCheckAppUpdate();
+  if (!isDesktop) return (await loadDemo()).demoCheckAppUpdate();
   return invoke<AppUpdateInfo>("check_app_update");
 }
 
@@ -430,17 +422,17 @@ export async function resolveMcmodEntry(
 }
 
 export async function getBedrockStatus(root?: string): Promise<BedrockStatus> {
-  if (!isDesktop) return demoGetBedrockStatus();
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockStatus();
   return invoke<BedrockStatus>("get_bedrock_status", { root });
 }
 
 export async function getBedrockVersions(apiSource?: string): Promise<BedrockVersionItem[]> {
-  if (!isDesktop) return demoGetBedrockVersions(apiSource);
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockVersions(apiSource);
   return invoke<BedrockVersionItem[]>("get_bedrock_versions", { apiSource });
 }
 
 export async function getBedrockContent(category?: string): Promise<BedrockContentItem[]> {
-  if (!isDesktop) return demoGetBedrockContent(category);
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockContent(category);
   return invoke<BedrockContentItem[]>("get_bedrock_content", { category });
 }
 
@@ -451,7 +443,7 @@ export async function installBedrockVersion(
   apiSource?: string,
   threads?: number,
 ): Promise<string> {
-  if (!isDesktop) return demoInstallBedrockVersion(versionId);
+  if (!isDesktop) return (await loadDemo()).demoInstallBedrockVersion(versionId);
   return invoke<string>("install_bedrock_version", {
     versionId,
     downloadUrl,
@@ -465,7 +457,7 @@ export async function deleteBedrockVersion(
   versionId: string,
   root?: string,
 ): Promise<void> {
-  if (!isDesktop) return demoDeleteBedrockVersion(versionId);
+  if (!isDesktop) return (await loadDemo()).demoDeleteBedrockVersion(versionId);
   return invoke<void>("delete_bedrock_version", { versionId, root });
 }
 
@@ -474,12 +466,12 @@ export async function installBedrockPack(
   filename?: string,
   root?: string,
 ): Promise<InstallPackResult> {
-  if (!isDesktop) return demoInstallBedrockPack(source, filename);
+  if (!isDesktop) return (await loadDemo()).demoInstallBedrockPack(source, filename);
   return invoke<InstallPackResult>("install_bedrock_pack", { source, filename, root });
 }
 
 export async function cleanDownloadCache(root?: string): Promise<number> {
-  if (!isDesktop) return demoCleanDownloadCache();
+  if (!isDesktop) return (await loadDemo()).demoCleanDownloadCache();
   return invoke<number>("clean_download_cache", { root });
 }
 
@@ -505,7 +497,7 @@ export async function launchBedrock(
     (bedrockOfflineAccount !== null
       ? bedrockOfflineAccount
       : localStorage.getItem("osml.offlineMode") === "1");
-  if (!isDesktop) return demoLaunchBedrock();
+  if (!isDesktop) return (await loadDemo()).demoLaunchBedrock();
   return invoke<string>("launch_bedrock", {
     versionId,
     root,
@@ -807,7 +799,7 @@ export async function autoInstallBdsFallback(versionId: string, root?: string): 
 export async function getBedrockLoaders(
   mcVersion: string,
 ): Promise<BedrockLoadersCatalog> {
-  if (!isDesktop) return demoGetBedrockLoaders(mcVersion);
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockLoaders(mcVersion);
   return invoke<BedrockLoadersCatalog>("get_bedrock_loaders", { mcVersion });
 }
 
@@ -817,7 +809,9 @@ export async function installBedrockLoader(
   loaderVersion: string,
   root?: string,
 ): Promise<string> {
-  if (!isDesktop) return demoInstallBedrockLoader(versionId, loaderType, loaderVersion);
+  if (!isDesktop) {
+    return (await loadDemo()).demoInstallBedrockLoader(versionId, loaderType, loaderVersion);
+  }
   return invoke<string>("install_bedrock_loader", {
     versionId,
     loaderType,
@@ -830,7 +824,7 @@ export async function getBedrockMods(
   versionId: string,
   root?: string,
 ): Promise<BedrockModItem[]> {
-  if (!isDesktop) return demoGetBedrockMods(versionId);
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockMods(versionId);
   return invoke<BedrockModItem[]>("get_bedrock_mods", { versionId, root });
 }
 
@@ -840,7 +834,7 @@ export async function toggleBedrockMod(
   enabled: boolean,
   root?: string,
 ): Promise<void> {
-  if (!isDesktop) return demoToggleBedrockMod(versionId, modId, enabled);
+  if (!isDesktop) return (await loadDemo()).demoToggleBedrockMod(versionId, modId, enabled);
   return invoke<void>("toggle_bedrock_mod", { versionId, modId, enabled, root });
 }
 
@@ -849,7 +843,7 @@ export async function deleteBedrockMod(
   modId: string,
   root?: string,
 ): Promise<void> {
-  if (!isDesktop) return demoDeleteBedrockMod(versionId, modId);
+  if (!isDesktop) return (await loadDemo()).demoDeleteBedrockMod(versionId, modId);
   return invoke<void>("delete_bedrock_mod", { versionId, modId, root });
 }
 
@@ -858,7 +852,7 @@ export async function installBedrockModFile(
   filePath: string,
   root?: string,
 ): Promise<string> {
-  if (!isDesktop) return demoInstallBedrockModFile(versionId, filePath);
+  if (!isDesktop) return (await loadDemo()).demoInstallBedrockModFile(versionId, filePath);
   return invoke<string>("install_bedrock_mod_file", { versionId, filePath, root });
 }
 
@@ -1118,7 +1112,7 @@ export async function checkJavaWorldUpdate(
  * Java `versions/<id>/mods` folder, so they get their own manager commands.
  */
 export async function getBedrockPacks(root?: string): Promise<BedrockPackItem[]> {
-  if (!isDesktop) return demoGetBedrockPacks();
+  if (!isDesktop) return (await loadDemo()).demoGetBedrockPacks();
   return invoke<BedrockPackItem[]>("get_bedrock_packs", { root });
 }
 
@@ -1127,7 +1121,7 @@ export async function setBedrockPackEnabled(
   enabled: boolean,
   root?: string,
 ): Promise<void> {
-  if (!isDesktop) return demoSetBedrockPackEnabled(path, enabled);
+  if (!isDesktop) return (await loadDemo()).demoSetBedrockPackEnabled(path, enabled);
   return invoke<void>("set_bedrock_pack_enabled", { path, enabled, root });
 }
 
@@ -1135,7 +1129,7 @@ export async function deleteBedrockPack(
   path: string,
   root?: string,
 ): Promise<void> {
-  if (!isDesktop) return demoDeleteBedrockPack(path);
+  if (!isDesktop) return (await loadDemo()).demoDeleteBedrockPack(path);
   return invoke<void>("delete_bedrock_pack", { path, root });
 }
 
@@ -1143,7 +1137,7 @@ export async function importBedrockPackFile(
   filePath: string,
   root?: string,
 ): Promise<InstallPackResult> {
-  if (!isDesktop) return demoImportBedrockPackFile(filePath);
+  if (!isDesktop) return (await loadDemo()).demoImportBedrockPackFile(filePath);
   return invoke<InstallPackResult>("import_bedrock_pack_file", { filePath, root });
 }
 
@@ -1187,7 +1181,7 @@ export async function importBedrockWorldFile(
   filePath: string,
   root?: string,
 ): Promise<InstallPackResult> {
-  if (!isDesktop) return demoImportBedrockPackFile(filePath);
+  if (!isDesktop) return (await loadDemo()).demoImportBedrockPackFile(filePath);
   return invoke<InstallPackResult>("import_bedrock_world_file", { filePath, root });
 }
 
@@ -1294,7 +1288,9 @@ let demoInstallState: MultiplayerInstallState = {
 };
 
 function demoPushMultiplayerStatus(): void {
-  demoEmit("multiplayer:status", { ...demoMultiplayerStatus });
+  void loadDemo().then(({ demoEmit }) =>
+    demoEmit("multiplayer:status", { ...demoMultiplayerStatus }),
+  );
 }
 
 const demoWait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -1385,6 +1381,7 @@ export async function installEasytier(root?: string): Promise<MultiplayerStatus>
       resumable: true,
       partialBytes: 0,
     };
+    const { demoEmit } = await loadDemo();
     demoEmit("multiplayer:install", { ...demoInstallState });
     await demoWait(900);
     demoInstallState = {
@@ -1428,7 +1425,7 @@ export async function startMultiplayer(
       allowPublicStun: config.allowPublicStun,
       listenPort: config.listenPort,
     };
-    demoEmit("multiplayer:log", {
+    (await loadDemo()).demoEmit("multiplayer:log", {
       stream: "cobble",
       line: `启动 EasyTier（模拟）· 虚拟地址 ${config.overlayIpv4}`,
     });
@@ -1525,6 +1522,7 @@ export async function cloneRoomResources(
       ...(includeShaders ? resources.shaders : []),
       ...(includeDatapacks ? resources.datapacks : []),
     ];
+    const { demoEmit } = await loadDemo();
     demoEmit("multiplayer:clone", {
       stage: "start",
       done: 0,
@@ -1596,7 +1594,10 @@ export async function stopMultiplayer(root?: string): Promise<MultiplayerStatus>
     };
     demoLanBridges.clear();
     demoMultiplayerPeers = [];
-    demoEmit("multiplayer:log", { stream: "cobble", line: "EasyTier 已停止（模拟）" });
+    (await loadDemo()).demoEmit("multiplayer:log", {
+      stream: "cobble",
+      line: "EasyTier 已停止（模拟）",
+    });
     demoPushMultiplayerStatus();
     return { ...demoMultiplayerStatus };
   }
@@ -1703,7 +1704,7 @@ export async function startLanBridge(
       connectAddress: `127.0.0.1:${demoBridgePort}`,
     };
     demoLanBridges.set(info.localPort, info);
-    demoEmit("multiplayer:log", {
+    (await loadDemo()).demoEmit("multiplayer:log", {
       stream: "cobble",
       line: `已在局域网广播 ${host}:${port}（模拟）`,
     });

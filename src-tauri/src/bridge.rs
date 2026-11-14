@@ -96,6 +96,15 @@ async fn dispatch(app: AppHandle, command: &str, args: Value) -> Result<Value, S
             crate::get_betacraft_manifest(argument(&args, "root")?, argument(&args, "force")?)
                 .await?,
         ),
+        "query_version_catalog" => to_value(
+            crate::query_version_catalog(
+                argument(&args, "root")?,
+                argument(&args, "query")?,
+                argument(&args, "betacraftPhase")?,
+                argument(&args, "legacySource")?,
+            )
+            .await?,
+        ),
         "get_installed_versions" => {
             to_value(crate::get_installed_versions(argument(&args, "root")?)?)
         }
