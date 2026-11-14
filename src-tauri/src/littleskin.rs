@@ -18,6 +18,7 @@
 use crate::auth::{
     self, AccountRecord, DeviceCodeInfo, Entitlements, MinecraftToken, MsProfile,
 };
+use crate::download;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -775,14 +776,9 @@ pub async fn ensure_injector(data_dir: &Path) -> Result<PathBuf, String> {
         let _ = tokio::fs::remove_file(&jar).await;
     }
 
-    net::download_file_with_mirrors(
-        &latest.download_url,
-        &jar,
-        None,
-        None,
-        net::download_threads().clamp(1, 8),
-        None,
-        None,
+    download::download(
+        download::DownloadRequest::new(&latest.download_url, &jar)
+            .threads(download::download_threads().clamp(1, 8)),
     )
     .await
     .map_err(|error| format!("下载 authlib-injector 失败: {error}"))?;

@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::engine::{download, download_file_multithreaded, download_file_resumable};
-use super::resume::{ResumeMeta, resume_meta_path};
+use super::engine::download;
+use super::resume::{resume_meta_path, resume_progress, ResumeMeta};
 use super::segments::compute_segments;
-use super::verify::{part_path};
-use super::resume::resume_progress;
+use super::types::DownloadRequest;
+use super::verify::part_path;
 
 fn fixture_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index % 251) as u8).collect()
@@ -195,15 +195,12 @@ async fn segmented_download_reassembles_ranges_in_order() {
     let dest = fixture_path("segmented.bin");
     let _ = std::fs::remove_file(&dest);
 
-    let size = download_file_multithreaded(
-        &server.url,
-        &dest,
-        None,
-        Some(payload.len() as u64),
-        4,
-        None,
-        None,
-    )
+    let size = download(
+            DownloadRequest::new(&server.url, &dest)
+                .size(Some(payload.len() as u64))
+                .threads(4)
+                .sources(vec![server.url.clone()]),
+        )
     .await
     .expect("segmented download should succeed");
 
@@ -219,15 +216,12 @@ async fn falls_back_to_single_stream_without_range_support() {
     let dest = fixture_path("single.bin");
     let _ = std::fs::remove_file(&dest);
 
-    let size = download_file_multithreaded(
-        &server.url,
-        &dest,
-        None,
-        Some(payload.len() as u64),
-        4,
-        None,
-        None,
-    )
+    let size = download(
+            DownloadRequest::new(&server.url, &dest)
+                .size(Some(payload.len() as u64))
+                .threads(4)
+                .sources(vec![server.url.clone()]),
+        )
     .await
     .expect("single stream fallback should succeed");
 
@@ -247,15 +241,12 @@ async fn stalled_segments_fall_back_to_single_stream() {
 
     let size = tokio::time::timeout(
         Duration::from_secs(90),
-        download_file_multithreaded(
-            &server.url,
-            &dest,
-            None,
-            Some(payload.len() as u64),
-            4,
-            None,
-            None,
-        ),
+        download(
+                DownloadRequest::new(&server.url, &dest)
+                    .size(Some(payload.len() as u64))
+                    .threads(4)
+                    .sources(vec![server.url.clone()]),
+            ),
     )
     .await
     .expect("watchdog must not hang forever")
@@ -302,7 +293,12 @@ async fn resumes_without_refetching_completed_segments() {
     .unwrap();
     assert_eq!(resume_progress(&dest), Some(meta.done_bytes));
 
-    let size = download_file_resumable(&server.url, &dest, None, None, 4, None, None)
+    let size = download(
+        DownloadRequest::new(&server.url, &dest)
+            .threads(4)
+            .resume(true)
+            .sources(vec![server.url.clone()]),
+    )
         .await
         .expect("续传应该成功");
 
@@ -343,7 +339,12 @@ async fn restarts_when_partial_file_is_missing() {
     .unwrap();
     assert_eq!(resume_progress(&dest), None);
 
-    let size = download_file_resumable(&server.url, &dest, None, None, 4, None, None)
+    let size = download(
+        DownloadRequest::new(&server.url, &dest)
+            .threads(4)
+            .resume(true)
+            .sources(vec![server.url.clone()]),
+    )
         .await
         .expect("应该重头下完");
 
@@ -371,7 +372,12 @@ async fn slow_parallel_pass_finishes_remaining_ranges_on_one_connection() {
 
     let size = tokio::time::timeout(
         Duration::from_secs(120),
-        download_file_resumable(&server.url, &dest, None, None, 4, None, None),
+        download(
+        DownloadRequest::new(&server.url, &dest)
+            .threads(4)
+            .resume(true)
+            .sources(vec![server.url.clone()]),
+    ),
     )
     .await
     .expect("不能挂死")
@@ -396,7 +402,12 @@ async fn resumable_falls_back_without_range_support() {
     let server = spawn_range_server(payload.clone(), false, false).await;
     let dest = clean_fixture("no-range.bin");
 
-    let size = download_file_resumable(&server.url, &dest, None, None, 4, None, None)
+    let size = download(
+        DownloadRequest::new(&server.url, &dest)
+            .threads(4)
+            .resume(true)
+            .sources(vec![server.url.clone()]),
+    )
         .await
         .expect("不支持 Range 也要能下载");
 
@@ -409,7 +420,6 @@ async fn resumable_falls_back_without_range_support() {
 // 统一入口（DownloadRequest）的行为测试
 // ---------------------------------------------------------------------------
 
-use super::DownloadRequest;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 /// 绑定端口后立刻释放，得到一个必然"连接被拒"的死源地址。

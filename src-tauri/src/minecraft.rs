@@ -1,4 +1,5 @@
 use crate::java::{self, JavaProgressFn};
+use crate::download;
 use crate::net;
 use futures_util::StreamExt;
 use futures_util::future::try_join_all;
@@ -579,7 +580,7 @@ pub async fn fetch_manifest(root: &Path, force: bool) -> Result<VersionManifest,
     // Race every mirror at once: a slow or unreachable mirror must not delay
     // the others. The first one returning a complete, parsable manifest wins.
     let mut pending = FuturesUnordered::new();
-    for url in net::preferred_urls(VERSION_MANIFEST_URL) {
+    for url in download::preferred_urls(VERSION_MANIFEST_URL) {
         pending.push(fetch_manifest_from(url));
     }
 
@@ -1231,12 +1232,8 @@ async fn load_version(root: &Path, summary: &VersionSummary) -> Result<VersionDe
         }
     }
 
-    net::download_file(
-        &summary.url,
-        &json_path,
-        summary.sha1.as_deref(),
-        None,
-        None,
+    download::download(
+        download::DownloadRequest::new(&summary.url, &json_path).sha1(summary.sha1.as_deref()),
     )
     .await
     .map_err(|e| format!("下载版本信息失败: {e}"))?;
@@ -1679,7 +1676,7 @@ struct DownloadTracker {
     stages: Mutex<Vec<StageProgress>>,
     pending_file_logs: Mutex<Vec<InstallFileLog>>,
     speed_samples: Mutex<VecDeque<(Instant, u64)>>,
-    smoothed_speed: Mutex<net::SpeedSmoother>,
+    smoothed_speed: Mutex<download::SpeedSmoother>,
     last_emit: Mutex<Instant>,
 }
 
@@ -1751,7 +1748,7 @@ impl DownloadTracker {
             stages: Mutex::new(stages),
             pending_file_logs: Mutex::new(Vec::new()),
             speed_samples: Mutex::new(samples),
-            smoothed_speed: Mutex::new(net::SpeedSmoother::new()),
+            smoothed_speed: Mutex::new(download::SpeedSmoother::new()),
             last_emit: Mutex::new(now - Duration::from_secs(1)),
         })
     }
@@ -2088,12 +2085,12 @@ async fn download_jobs_with_tracker(
 
                 let started_at = Instant::now();
                 let mut was_skipped = false;
-                if net::looks_complete(&job.dest, job.size) {
+                if download::looks_complete(&job.dest, job.size) {
                     was_skipped = true;
                     if job.verify_existing {
                         if let Some(expected) = &job.sha1 {
                             if !expected.is_empty() {
-                                match net::sha1_file(&job.dest).await {
+                                match download::sha1_file(&job.dest).await {
                                     Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
                                     _ => {
                                         was_skipped = false;
@@ -2119,7 +2116,7 @@ async fn download_jobs_with_tracker(
                     // 单个文件的线程预算：小文件无法切片，交给并发文件池；
                     // 大文件或未知大小的文件按“用户线程数 / 当前并发文件数”
                     // 分配分片，只有一个任务时可以吃满全部线程。
-                    let configured_threads = net::per_file_threads(job.size);
+                    let configured_threads = download::per_file_threads(job.size);
                     let file_threads = if configured_threads <= 1 {
                         1
                     } else {
@@ -2128,7 +2125,7 @@ async fn download_jobs_with_tracker(
                             .max(2)
                             .min(configured_threads)
                     };
-                    let segments = net::recommended_segments(job.size, file_threads);
+                    let segments = download::recommended_segments(job.size, file_threads);
                     tracker.set_worker_task(
                         worker_id,
                         Some(ActiveDownloadTask {
@@ -2156,16 +2153,16 @@ async fn download_jobs_with_tracker(
                         );
                     };
 
-                    let downloaded_res = net::download_file_with_mirrors(
-                        &job.url,
-                        &job.dest,
-                        job.sha1.as_deref(),
-                        job.size,
-                        file_threads,
-                        Some(&tracker.retried_files),
-                        Some(&mut on_progress),
+                    let downloaded_res = download::download(
+                        download::DownloadRequest::new(&job.url, &job.dest)
+                            .sha1(job.sha1.as_deref())
+                            .size(job.size)
+                            .threads(file_threads)
+                            .retry_counter(Some(&tracker.retried_files))
+                            .on_progress(&mut on_progress),
                     )
-                    .await;
+                    .await
+                    .map_err(|err| err.to_string());
 
                     match downloaded_res {
                         Ok(bytes) => {
@@ -2430,10 +2427,10 @@ async fn prepare_assets_plan(
 
     let mut need_download = true;
     if patched_index {
-        need_download = !net::looks_complete(&index_path, None);
-    } else if net::looks_complete(&index_path, index_ref.size) {
+        need_download = !download::looks_complete(&index_path, None);
+    } else if download::looks_complete(&index_path, index_ref.size) {
         if let Some(expected) = &index_ref.sha1 {
-            if let Ok(actual) = net::sha1_file(&index_path).await {
+            if let Ok(actual) = download::sha1_file(&index_path).await {
                 need_download = !actual.eq_ignore_ascii_case(expected);
             }
         } else {
@@ -2446,14 +2443,13 @@ async fn prepare_assets_plan(
         } else {
             (index_ref.sha1.as_deref(), index_ref.size)
         };
-        net::download_file(
-            &index_ref.url,
-            &index_path,
-            expected_sha1,
-            expected_size,
-            None,
+        download::download(
+            download::DownloadRequest::new(&index_ref.url, &index_path)
+                .sha1(expected_sha1)
+                .size(expected_size),
         )
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     let text = tokio::fs::read_to_string(&index_path)
@@ -2573,7 +2569,7 @@ async fn download_client_with_tracker(
                 .and_then(|d| d.client.as_ref())
                 .and_then(|c| c.sha1.as_deref())
             {
-                net::sha1_file(&dest)
+                download::sha1_file(&dest)
                     .await
                     .map(|actual| actual.eq_ignore_ascii_case(expected))
                     .unwrap_or(false)
@@ -2615,9 +2611,9 @@ async fn download_client_with_tracker(
     tracker.ensure_stage_total_bytes("client", total);
     let started_at = Instant::now();
 
-    if net::looks_complete(&dest, client.size) {
+    if download::looks_complete(&dest, client.size) {
         let valid = if let Some(expected) = &client.sha1 {
-            net::sha1_file(&dest)
+            download::sha1_file(&dest)
                 .await
                 .map(|actual| actual.eq_ignore_ascii_case(expected))
                 .unwrap_or(false)
@@ -2644,7 +2640,7 @@ async fn download_client_with_tracker(
     }
 
     let client_threads = concurrency.clamp(1, 64);
-    let segments = net::recommended_segments(client.size, client_threads);
+    let segments = download::recommended_segments(client.size, client_threads);
     let jar_name = format!("{}.jar", version.id);
     let worker_count = (segments as usize).max(1);
 
@@ -2710,16 +2706,16 @@ async fn download_client_with_tracker(
         );
     };
 
-    let res = net::download_file_with_mirrors(
-        client.url.as_deref().unwrap_or_default(),
-        &dest,
-        client.sha1.as_deref(),
-        client.size,
-        client_threads,
-        Some(&tracker.retried_files),
-        Some(&mut on_progress),
+    let res = download::download(
+        download::DownloadRequest::new(client.url.as_deref().unwrap_or_default(), &dest)
+            .sha1(client.sha1.as_deref())
+            .size(client.size)
+            .threads(client_threads)
+            .retry_counter(Some(&tracker.retried_files))
+            .on_progress(&mut on_progress),
     )
-    .await;
+    .await
+    .map_err(|err| err.to_string());
 
     let downloaded = match res {
         Ok(b) => b,
@@ -2776,8 +2772,14 @@ async fn download_log_config(
         return Ok(None);
     };
     let dest = assets_dir(root).join("log_configs").join(&file.id);
-    if !net::looks_complete(&dest, file.size) {
-        net::download_file(&file.url, &dest, file.sha1.as_deref(), file.size, None).await?;
+    if !download::looks_complete(&dest, file.size) {
+        download::download(
+            download::DownloadRequest::new(&file.url, &dest)
+                .sha1(file.sha1.as_deref())
+                .size(file.size),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
     Ok(Some(dest))
 }
@@ -5237,7 +5239,7 @@ pub async fn check_version_files(
             continue;
         }
         checked += 1;
-        if !net::looks_complete(path, None) {
+        if !download::looks_complete(path, None) {
             missing_paths.push(path.clone());
         }
     }
@@ -5260,7 +5262,7 @@ pub async fn check_version_files(
             instance_dir.join(format!("{version_id}.jar"))
         }
     };
-    if !net::looks_complete(&client_jar, None) {
+    if !download::looks_complete(&client_jar, None) {
         missing_paths.push(client_jar);
     }
 
@@ -5318,7 +5320,7 @@ pub async fn check_version_files(
                 // references this exact path; don't double-count or duplicate.
                 if seen.insert(client_path.clone()) {
                     checked += 1;
-                    if !net::looks_complete(&client_path, None) {
+                    if !download::looks_complete(&client_path, None) {
                         missing_paths.push(client_path);
                     }
                 }
@@ -5379,7 +5381,7 @@ pub async fn prepare_launch(
 
     let version_id = request.version_id.clone();
     let app_progress = progress.clone();
-    let java_threads = net::download_threads().clamp(2, 16);
+    let java_threads = download::download_threads().clamp(2, 16);
     let java_progress: JavaProgressFn = Arc::new(move |p| {
         let mut item = InstallProgress::basic(
             version_id.clone(),

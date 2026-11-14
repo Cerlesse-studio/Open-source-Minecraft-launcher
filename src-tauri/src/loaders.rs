@@ -1,4 +1,5 @@
 use crate::minecraft::{Arguments, Artifact, Library, LibraryDownloads, VersionDetail};
+use crate::download;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -1069,14 +1070,11 @@ pub async fn ensure_forge_or_neoforge_client_jar(
             let vanilla_client_url = official.client_url.unwrap_or_else(|| {
                 format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/client")
             });
-            let _ = net::download_file_with_mirrors(
-                &vanilla_client_url,
-                &vanilla_jar,
-                official.client_sha1.as_deref(),
-                official.client_size,
-                net::download_threads(),
-                None,
-                None,
+            let _ = download::download(
+                download::DownloadRequest::new(&vanilla_client_url, &vanilla_jar)
+                    .sha1(official.client_sha1.as_deref())
+                    .size(official.client_size)
+                    .threads(download::download_threads()),
             )
             .await;
         }
@@ -1103,14 +1101,9 @@ pub async fn ensure_forge_or_neoforge_client_jar(
             let vanilla_json_url = official.json_urls.first().cloned().unwrap_or_else(|| {
                 format!("https://bmclapi2.bangbang93.com/version/{clean_mc}/json")
             });
-            let _ = net::download_file_with_mirrors(
-                &vanilla_json_url,
-                &vanilla_json,
-                None,
-                None,
-                net::download_threads(),
-                None,
-                None,
+            let _ = download::download(
+                download::DownloadRequest::new(&vanilla_json_url, &vanilla_json)
+                    .threads(download::download_threads()),
             )
             .await;
         }
@@ -1122,18 +1115,13 @@ pub async fn ensure_forge_or_neoforge_client_jar(
     let (installer_urls, _, file_name) = get_installer_info(clean_mc, loader_type, clean_loader_ver);
     let installer_path = installers_dir.join(&file_name);
 
-    if !net::looks_complete(&installer_path, None) {
+    if !download::looks_complete(&installer_path, None) {
         let mut ok = false;
         let mut last_err = String::new();
         for url in &installer_urls {
-            match net::download_file_with_mirrors(
-                url,
-                &installer_path,
-                None,
-                None,
-                net::download_threads(),
-                None,
-                None,
+            match download::download(
+                download::DownloadRequest::new(url, &installer_path)
+                    .threads(download::download_threads()),
             )
             .await
             {
@@ -1141,7 +1129,7 @@ pub async fn ensure_forge_or_neoforge_client_jar(
                     ok = true;
                     break;
                 }
-                Err(e) => last_err = e,
+                Err(e) => last_err = e.to_string(),
             }
         }
         if !ok {
@@ -1282,18 +1270,13 @@ async fn apply_forge_or_neoforge(
         get_installer_info(mc_version, loader_type, loader_version);
 
     let installer_path = installers_dir.join(&file_name);
-    if !net::looks_complete(&installer_path, None) {
+    if !download::looks_complete(&installer_path, None) {
         let mut last_err = String::new();
         let mut ok = false;
         for url in &installer_urls {
-            match net::download_file_with_mirrors(
-                url,
-                &installer_path,
-                None,
-                None,
-                net::download_threads(),
-                None,
-                None,
+            match download::download(
+                download::DownloadRequest::new(url, &installer_path)
+                    .threads(download::download_threads()),
             )
             .await
             {
@@ -1302,7 +1285,7 @@ async fn apply_forge_or_neoforge(
                     break;
                 }
                 Err(e) => {
-                    last_err = e;
+                    last_err = e.to_string();
                 }
             }
         }

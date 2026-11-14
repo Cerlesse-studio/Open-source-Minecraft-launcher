@@ -1,4 +1,5 @@
 use crate::bridge::AppHandle;
+use crate::download;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1352,7 +1353,7 @@ pub async fn download_content_file(
     } else {
         request.title.clone()
     };
-    let threads = net::download_threads();
+    let threads = download::download_threads();
     let total_bytes = request.size.unwrap_or(0);
 
     let emit =
@@ -1406,7 +1407,7 @@ pub async fn download_content_file(
         let mut last_emit = Instant::now();
         let mut last_bytes = 0u64;
         let mut current_speed = 0u64;
-        let mut speed_smoother = net::SpeedSmoother::new();
+        let mut speed_smoother = download::SpeedSmoother::new();
         let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
             let elapsed_ms = now.duration_since(last_emit).as_millis();
@@ -1429,19 +1430,18 @@ pub async fn download_content_file(
             }
         };
 
-        let bytes = match net::download_file_with_mirrors(
-            &request.url,
-            &archive,
-            request.sha1.as_deref(),
-            request.size,
-            threads,
-            None,
-            Some(&mut progress_cb),
+        let bytes = match download::download(
+            download::DownloadRequest::new(&request.url, &archive)
+                .sha1(request.sha1.as_deref())
+                .size(request.size)
+                .threads(threads)
+                .on_progress(&mut progress_cb),
         )
         .await
         {
             Ok(bytes) => bytes,
             Err(e) => {
+                let e = e.to_string();
                 emit(
                     "error",
                     last_bytes,
@@ -1588,7 +1588,7 @@ pub async fn download_content_file(
         let mut last_emit = Instant::now();
         let mut last_bytes = 0u64;
         let mut current_speed = 0u64;
-        let mut speed_smoother = net::SpeedSmoother::new();
+        let mut speed_smoother = download::SpeedSmoother::new();
 
         let mut progress_cb = |done: u64, total: u64, _delta: u64| {
             let now = Instant::now();
@@ -1710,7 +1710,7 @@ pub async fn download_content_file(
     let mut last_emit = Instant::now();
     let mut last_bytes = 0u64;
     let mut current_speed = 0u64;
-    let mut speed_smoother = net::SpeedSmoother::new();
+    let mut speed_smoother = download::SpeedSmoother::new();
 
     let mut progress_callback = |done: u64, total: u64, _delta: u64| {
         let now = Instant::now();
@@ -1736,14 +1736,12 @@ pub async fn download_content_file(
         }
     };
 
-    let download_res = net::download_file_with_mirrors(
-        &request.url,
-        &dest,
-        request.sha1.as_deref(),
-        request.size,
-        threads,
-        None,
-        Some(&mut progress_callback),
+    let download_res = download::download(
+        download::DownloadRequest::new(&request.url, &dest)
+            .sha1(request.sha1.as_deref())
+            .size(request.size)
+            .threads(threads)
+            .on_progress(&mut progress_callback),
     )
     .await;
 
@@ -1754,6 +1752,7 @@ pub async fn download_content_file(
             b
         }
         Err(e) => {
+            let e = e.to_string();
             emit(
                 "error",
                 last_bytes,

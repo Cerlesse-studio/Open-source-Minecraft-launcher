@@ -56,9 +56,3 @@ pub use task::{format_download_failure, LoadState, LoaderTaskView, NetFile, NetS
 pub use types::{DownloadRequest, MAX_RETRIES, MIN_MULTITHREAD_SIZE, MIN_SEGMENT_SIZE, SEGMENT_IDLE_TIMEOUT,
     SEGMENT_MIN_RATE_BYTES, SEGMENT_SLOW_GRACE, SEGMENT_WATCHDOG_INTERVAL};
 pub use verify::{looks_complete, sha1_file, FileChecker};
-
-// 兼容包装：旧的四条入口（阶段 3 迁移调用点后删除）。
-pub use engine::{
-    download_file, download_file_with_mirrors, download_file_multithreaded,
-    download_file_resumable,
-};

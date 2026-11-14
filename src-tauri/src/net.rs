@@ -65,41 +65,6 @@ pub async fn get_prefer_direct(
 }
 
 // ---------------------------------------------------------------------------
-// 下载设置与统计（薄包装，转发给 download::limit）
-// ---------------------------------------------------------------------------
-
-/// PCL2 `NetTaskSpeedLimitHigh`: `0` removes the cap (the default).
-pub fn set_download_speed_limit(bytes_per_sec: u64) {
-    crate::download::set_speed_limit(bytes_per_sec);
-}
-
-pub fn download_speed_limit() -> Option<u64> {
-    crate::download::speed_limit()
-}
-
-/// PCL2 `NetTaskThreadCount`, for the download progress view.
-pub fn download_active_threads() -> u32 {
-    crate::download::active_threads()
-}
-
-// ---------------------------------------------------------------------------
-// 下载引擎兼容层：旧 `net::` 路径继续可用（阶段 3 迁移调用点后移除）。
-// ---------------------------------------------------------------------------
-
-pub use crate::download::engine::{
-    download_file, download_file_with_mirrors, download_file_multithreaded,
-    download_file_resumable,
-};
-pub use crate::download::resume::{resume_progress, resume_sidecar_path};
-pub use crate::download::segments::recommended_segments;
-pub use crate::download::source::{
-    download_threads, get_mirror_urls, per_file_threads, preferred_urls, probe_download_sources,
-    set_download_preference, DownloadSourceProbe,
-};
-pub use crate::download::speed::SpeedSmoother;
-pub use crate::download::verify::{looks_complete, sha1_file};
-
-// ---------------------------------------------------------------------------
 // JSON 拉取
 // ---------------------------------------------------------------------------
 

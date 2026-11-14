@@ -1,3 +1,4 @@
+use crate::download;
 use crate::net;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -4844,7 +4845,7 @@ pub async fn install_bedrock_version(
         },
     );
 
-    if !net::looks_complete(&pkg_path, None) {
+    if !download::looks_complete(&pkg_path, None) {
         let mut downloaded = false;
         let mut last_error = String::new();
 
@@ -4857,7 +4858,7 @@ pub async fn install_bedrock_version(
             let actual_total_ref = actual_total_bytes.clone();
             let max_pct_ref = max_reported_pct.clone();
 
-            let mut speed_smoother = net::SpeedSmoother::new();
+            let mut speed_smoother = download::SpeedSmoother::new();
             let mut on_progress_cb = |done: u64, total: u64, _delta: u64| {
                 if total > 0 {
                     actual_total_ref.fetch_max(total, Ordering::Relaxed);
@@ -4931,14 +4932,11 @@ pub async fn install_bedrock_version(
                 }
             };
 
-            match net::download_file_multithreaded(
-                url,
-                &pkg_path,
-                None,
-                None,
-                threads,
-                None,
-                Some(&mut on_progress_cb),
+            match download::download(
+                download::DownloadRequest::new(url, &pkg_path)
+                    .threads(threads)
+                    .sources(vec![url.to_string()])
+                    .on_progress(&mut on_progress_cb),
             )
             .await
             {
@@ -4948,7 +4946,7 @@ pub async fn install_bedrock_version(
                     break;
                 }
                 Err(e) => {
-                    last_error = e;
+                    last_error = e.to_string();
                     let _ = tokio::fs::remove_file(&pkg_path).await;
                 }
             }
@@ -6397,17 +6395,14 @@ pub async fn install_bedrock_pack<'a>(
         let dest = cache_dir.join(&safe_file_name);
         // Addons share the unified downloader: source preference, mirror
         // fallback, retries and the configured thread count.
-        net::download_file_with_mirrors(
-            source_path_or_url,
-            &dest,
-            None,
-            None,
-            net::download_threads(),
-            None,
-            on_progress,
-        )
-        .await
-        .map_err(|e| format!("下载基岩版附加包失败: {e}"))?;
+        let mut request = download::DownloadRequest::new(source_path_or_url, &dest)
+            .threads(download::download_threads());
+        if let Some(callback) = on_progress {
+            request = request.on_progress(callback);
+        }
+        download::download(request)
+            .await
+            .map_err(|e| format!("下载基岩版附加包失败: {e}"))?;
         (dest, true)
     } else {
         (PathBuf::from(source_path_or_url), false)
@@ -7686,14 +7681,9 @@ pub async fn install_bedrock_loader(
         );
         let zip_path = cache_dir.join(format!("levilamina-{loader_version}.zip"));
 
-        net::download_file_with_mirrors(
-            &zip_url,
-            &zip_path,
-            None,
-            None,
-            net::download_threads(),
-            None,
-            None,
+        download::download(
+            download::DownloadRequest::new(&zip_url, &zip_path)
+                .threads(download::download_threads()),
         )
         .await
         .map_err(|e| format!("下载 LeviLamina 失败 ({zip_url}): {e}"))?;
@@ -7748,14 +7738,9 @@ pub async fn install_bedrock_loader(
         );
         let zip_path = cache_dir.join(format!("amethyst-{loader_version}.zip"));
 
-        net::download_file_with_mirrors(
-            &zip_url,
-            &zip_path,
-            None,
-            None,
-            net::download_threads(),
-            None,
-            None,
+        download::download(
+            download::DownloadRequest::new(&zip_url, &zip_path)
+                .threads(download::download_threads()),
         )
         .await
         .map_err(|e| format!("下载 Amethyst 失败 ({zip_url}): {e}"))?;

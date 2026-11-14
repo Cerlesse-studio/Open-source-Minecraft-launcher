@@ -11,6 +11,7 @@
 //! 的局域网发现机制能看见对方的世界。
 
 use crate::bridge::{AppHandle, State};
+use crate::download;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -625,7 +626,7 @@ fn install_state_path(root: &Path) -> PathBuf {
 
 /// 磁盘上可续传的字节数（`.part` + `.part.meta`）。
 fn partial_progress(root: &Path) -> Option<u64> {
-    net::resume_progress(&kernel_zip(root))
+    download::resume_progress(&kernel_zip(root))
 }
 
 /// 上次运行留下的任务。还在下载中的记录会变成“已中断、可继续”。
@@ -736,7 +737,7 @@ fn easytier_download_urls(url: &str) -> Vec<String> {
         format!("https://edgeone.gh-proxy.org/{url}"),
         url.to_string(),
     ];
-    for mirror in net::get_mirror_urls(url) {
+    for mirror in download::get_mirror_urls(url) {
         if !candidates.contains(&mirror) {
             candidates.push(mirror);
         }
@@ -759,7 +760,7 @@ async fn download_candidate(
     let mut last_emit = Instant::now() - INSTALL_EMIT_INTERVAL;
     let mut last_done = 0u64;
     let mut last_speed = 0u64;
-    let mut speed_smoother = net::SpeedSmoother::new();
+    let mut speed_smoother = download::SpeedSmoother::new();
 
     let mut on_progress = move |done: u64, total: u64, _delta: u64| {
         *activity_cb
@@ -790,15 +791,17 @@ async fn download_candidate(
     };
 
     // 断点续传版下载器：切换线路或重启启动器后只补没完成的分片。
-    let mut download = Box::pin(net::download_file_resumable(
-        url,
-        dest,
-        None,
-        None,
-        threads,
-        None,
-        Some(&mut on_progress),
-    ));
+    let mut download = Box::pin(async {
+        download::download(
+            download::DownloadRequest::new(url, dest)
+                .threads(threads)
+                .resume(true)
+                .sources(vec![url.to_string()])
+                .on_progress(&mut on_progress),
+        )
+        .await
+        .map_err(|err| err.to_string())
+    });
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;
@@ -842,7 +845,7 @@ pub async fn install_easytier(
         "https://github.com/EasyTier/EasyTier/releases/download/{EASYTIER_VERSION}/{asset}"
     );
     let zip_path = kernel_zip(&root_path);
-    let threads = net::download_threads().clamp(1, 64);
+    let threads = download::download_threads().clamp(1, 64);
     // 有 `.part` 就接着下：换线路、重启启动器都不会从 0 开始。
     let resumed = partial_progress(&root_path).unwrap_or(0);
 
@@ -956,7 +959,7 @@ pub async fn install_easytier(
     if let Err(error) = extracted {
         // 压缩包本身有问题就别留着，下次重新下载（并清掉旧的续传记录）。
         let _ = tokio::fs::remove_file(&zip_path).await;
-        let _ = tokio::fs::remove_file(net::resume_sidecar_path(&zip_path)).await;
+        let _ = tokio::fs::remove_file(download::resume_sidecar_path(&zip_path)).await;
         update_install(&state, |install| {
             install.active = false;
             install.stage = "error".to_string();

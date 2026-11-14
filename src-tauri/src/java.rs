@@ -8,6 +8,7 @@ fn probe_cache()
 -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (SystemTime, JavaInstall)>> {
     PROBED_JAVA_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
+use crate::download;
 use crate::net;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -764,18 +765,16 @@ pub async fn ensure_java(
 
     // Adoptium 的包链接一般指向 GitHub Releases，国内直连经常很慢甚至超时。
     // 走带镜像回退的下载器，失败时能自动切到加速镜像，而不是让用户干等。
-    let download_result = net::download_file_with_mirrors(
-        &package.link,
-        &archive_path,
-        None,
-        package.size,
-        net::download_threads().clamp(2, 32),
-        None,
-        Some(&mut on_progress),
+    let download_result = download::download(
+        download::DownloadRequest::new(&package.link, &archive_path)
+            .size(package.size)
+            .threads(download::download_threads().clamp(2, 32))
+            .on_progress(&mut on_progress),
     )
     .await;
     if let Err(error) = download_result {
         let _ = std::fs::remove_file(&archive_path);
+        let error = error.to_string();
         if let Some(path) = compatible_fallback(&installs, major) {
             emit(
                 "prepare",

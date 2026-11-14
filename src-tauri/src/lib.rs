@@ -222,7 +222,7 @@ pub fn default_root(_app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn set_download_preference(source: String, custom_url: Option<String>, threads: Option<u32>) {
-    net::set_download_preference(
+    download::set_download_preference(
         &source,
         custom_url.as_deref().unwrap_or(""),
         threads.map(|value| value as usize),
@@ -231,7 +231,7 @@ fn set_download_preference(source: String, custom_url: Option<String>, threads: 
 
 /// PCL2 `NetTaskSpeedLimitHigh`. `null` / `0` means unlimited.
 fn set_download_speed_limit(bytes_per_second: Option<u64>) {
-    net::set_download_speed_limit(bytes_per_second.unwrap_or(0));
+    download::set_speed_limit(bytes_per_second.unwrap_or(0));
 }
 
 /// PCL2 `NetManagerClass` state, exposed for the download progress view.
@@ -246,15 +246,15 @@ pub struct DownloadStats {
 
 fn get_download_stats() -> DownloadStats {
     DownloadStats {
-        speed_limit_bps: net::download_speed_limit(),
-        active_threads: net::download_active_threads(),
-        thread_limit: crate::download::thread_limit(),
-        speed_limit_low_bps: crate::download::NET_TASK_SPEED_LIMIT_LOW,
+        speed_limit_bps: download::speed_limit(),
+        active_threads: download::active_threads(),
+        thread_limit: download::thread_limit(),
+        speed_limit_low_bps: download::NET_TASK_SPEED_LIMIT_LOW,
     }
 }
 
-async fn probe_download_sources(custom_url: Option<String>) -> Vec<net::DownloadSourceProbe> {
-    net::probe_download_sources(custom_url.as_deref()).await
+async fn probe_download_sources(custom_url: Option<String>) -> Vec<download::DownloadSourceProbe> {
+    download::probe_download_sources(custom_url.as_deref()).await
 }
 
 async fn get_version_manifest(
