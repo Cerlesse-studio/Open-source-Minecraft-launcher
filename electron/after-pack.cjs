@@ -125,6 +125,71 @@ function resolveExecutablePath(appOutDir, platformName, productFilename) {
 }
 
 /**
+ * [L2 5.1] Linux 沙盒启动包装：根治 AppImage 的 SUID sandbox FATAL
+ *
+ * 根因链：
+ *  1. electron 官方 npm 包里的 `chrome-sandbox` 自带 SUID 位（4755, root）；
+ *  2. electron-builder / app-builder 在复制到 `linux-unpacked` 时按安全惯例
+ *     **剥掉 SUID 位**（实测 4755 → 755）；
+ *  3. 打 AppImage 时该文件被存进 squashfs，模式固定为 755；
+ *  4. AppImage 运行时用 FUSE 以普通用户挂载，文件显示为 root:root 但模式仍是
+ *     755（且挂载带 nosuid，SUID 位即使存进去也不会生效）。
+ *
+ * Chromium 的判定只有三条分支（sandbox/linux/suid/sandbox_host.cc）：
+ *   - chrome-sandbox 存在且 root+4755 → 启用 SUID 沙盒；
+ *   - chrome-sandbox 不存在          → 回退 namespace 沙盒；
+ *   - chrome-sandbox 存在但配置不正确 → `LOG(FATAL)` 直接 abort：
+ *       "The SUID sandbox helper binary was found, but is not configured correctly."
+ * 第三条正是 AppImage 的必然结局——普通用户永远无法给容器内文件设置 root+4755。
+ *
+ * 上游 electron-builder 也认这个事实：AppImage 的 .desktop 默认就写死
+ * `Exec=AppRun --no-sandbox %U`（见 app-builder-lib/out/targets/AppImageTarget.js）。
+ * 但那只是 desktop 入口；**终端直接执行 `./xxx.AppImage` 时 AppRun 不带任何参数**，
+ * 于是仍然 FATAL。
+ *
+ * 这里在 afterPack 阶段做一次启动包装，让三条入口行为完全一致：
+ *   - 真实 Electron 二进制改名为 `<name>.bin`；
+ *   - 原路径放一个 shell 包装，固定注入 `--no-sandbox` 后 exec 真实二进制。
+ *
+ * 真实二进制通过 exec 替换进程映像，Electron 内部 /proc/self/exe 仍指向
+ * `.bin`，因此 `process.execPath` / `app.getPath('exe')` 语义不变。
+ *
+ * @param {string} appOutDir
+ * @param {string} productFilename
+ */
+function applyLinuxNoSandboxWrapper(appOutDir, productFilename) {
+  const exePath = resolveExecutablePath(appOutDir, 'linux', productFilename);
+  if (!fs.existsSync(exePath)) {
+    console.warn(`[Chromium L2 沙盒修复] 未找到 Linux 主程序，跳过启动包装: ${exePath}`);
+    return { applied: false };
+  }
+  // 已经是包装脚本则不重复处理（electron-builder 可能重复调用钩子）
+  if (exePath.endsWith('.bin')) {
+    return { applied: true, alreadyWrapped: true, realPath: exePath };
+  }
+
+  const realPath = `${exePath}.bin`;
+  fs.renameSync(exePath, realPath);
+  fs.chmodSync(realPath, 0o755);
+
+  const wrapper = `#!/bin/sh
+# 由 electron/after-pack.cjs 自动生成，请勿手工编辑。
+#
+# AppImage 以普通用户通过 FUSE 挂载，容器内的 chrome-sandbox 无法获得
+# root 所有 + 4755 SUID 位，Chromium 的 SUID sandbox 检查会 FATAL abort。
+# 此包装固定注入 --no-sandbox，使终端 / 桌面菜单 / 文件管理器三条启动
+# 入口的行为完全一致。
+SELF=$(readlink -f "$0")
+DIR=$(dirname "$SELF")
+exec "$DIR/$(basename "$SELF").bin" --no-sandbox "$@"
+`;
+  fs.writeFileSync(exePath, wrapper, { mode: 0o755 });
+  fs.chmodSync(exePath, 0o755);
+
+  return { applied: true, realPath, wrapperPath: exePath };
+}
+
+/**
  * electron-builder afterPack 入口
  * @param {import('electron-builder').AfterPackContext} context
  */
@@ -154,8 +219,20 @@ exports.default = async function afterPack(context) {
   } else {
     console.warn(`[Chromium L2 Fuses] 未找到可执行文件，跳过 Fuse 翻转: ${exePath}`);
   }
+
+  // 4. L2 Linux 沙盒根治：AppImage 无法设置 SUID，固定注入 --no-sandbox
+  if (electronPlatformName === 'linux') {
+    const wrapped = applyLinuxNoSandboxWrapper(appOutDir, productFilename);
+    if (wrapped.applied) {
+      console.log(
+        '[Chromium L2 沙盒修复] 已启用 Linux 启动包装（固定注入 --no-sandbox），' +
+          '避免 AppImage 挂载后 chrome-sandbox 缺少 root+4755 SUID 位导致 FATAL abort'
+      );
+    }
+  }
 };
 
 module.exports.pruneLocales = pruneLocales;
 module.exports.verifyCoreAndLicenses = verifyCoreAndLicenses;
+module.exports.applyLinuxNoSandboxWrapper = applyLinuxNoSandboxWrapper;
 module.exports.ALLOWED_LOCALES = ALLOWED_LOCALES;
